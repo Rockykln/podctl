@@ -13,7 +13,7 @@ jobs:
     name: musl static build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       # rust-toolchain.toml pins 1.89; install that exact channel plus the
       # musl target's rust-std component. Using @stable here would install
