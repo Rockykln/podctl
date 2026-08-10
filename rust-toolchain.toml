@@ -1,10 +1,4 @@
 [toolchain]
-# 1.89 is the effective MSRV:
-#   - if-let chains in the daemon / install / bluez code need 1.88.
-#   - cargo-audit (the RustSec advisory check we run in CI) pulls in
-#     smol_str 0.3 which requires 1.89.
-#   - zbus 5.15+ requires 1.87.
-# Edition 2024 itself only needs 1.85.
 channel = "1.97"
 components = ["clippy", "rustfmt"]
 profile = "minimal"
