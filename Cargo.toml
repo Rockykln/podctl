@@ -55,7 +55,7 @@ tiny-skia = "0.12"
 fontdue = "0.9"
 wayland-client = "0.31"
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
-x11rb = "0.13"
+x11rb = "0.14"
 
 # BlueZ + L2CAP are talked to directly: subprocess `bluetoothctl` for the
 # device-level ops (connect/disconnect/list/trust), `dbus-send` for the
