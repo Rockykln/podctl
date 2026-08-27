@@ -25,6 +25,7 @@ use render::{CARD_H, CARD_W, Pod, Snapshot, Theme};
 
 const REST_MARGIN: i32 = 24;
 const DEMO_ANIM_MS: u32 = 200;
+const DEMO_HOLD_MS: u64 = 5_000;
 const DEBOUNCE_MS: u64 = 500;
 const BACKOFF_INITIAL_MS: u64 = 500;
 const BACKOFF_MAX_MS: u64 = 30_000;
@@ -82,7 +83,7 @@ async fn run() -> ExitCode {
     let theme = Theme::by_name(&cfg.theme);
     let hold = Duration::from_millis(cfg.duration_ms);
     let anim_ms = cfg.anim_ms;
-    let visible = Duration::from_millis(cfg.duration_ms + 2 * anim_ms as u64);
+    let visible = Duration::from_millis(config::visible_ms(&cfg));
 
     let (tx, rx) = mpsc::channel::<Cmd>();
     let render = thread::spawn(move || render_loop(rx, &pick, theme, anim_ms, hold));
@@ -172,7 +173,11 @@ fn show_cycle(
     snap: Snapshot,
 ) -> Outcome {
     let mut bgra = render::to_bgra_premul(&render::render(&snap, theme));
-    let mut be = match open_backend(pick) {
+    // Slides included — the notification backend hands this to the server
+    // as the expire timeout, and a bubble the server retires early is
+    // exactly the "gone too soon" the hold is meant to prevent.
+    let on_screen = hold + 2 * Duration::from_millis(anim_ms as u64);
+    let mut be = match open_backend(pick, on_screen) {
         Ok(b) => b,
         Err(e) => {
             eprintln!("podctl-popup: backend: {e:#}");
@@ -245,37 +250,47 @@ async fn watch(tx: &Sender<Cmd>, visible: Duration) {
     let mut shown_until: Option<Instant> = None;
     let mut low_armed = false;
     loop {
-        serve(tx, &mut snap, &mut shown_until, &mut low_armed, visible).await;
+        let attached = serve(tx, &mut snap, &mut shown_until, &mut low_armed, visible).await;
         if shown_until.take().is_some() {
             let _ = tx.send(Cmd::Hide);
         }
+        // Only a stream we never got backs off. Without this reset the
+        // delay ratcheted up to 30 s for the lifetime of the process, so
+        // a daemon restart could leave the popup deaf to lid events for
+        // half a minute — the bubble just never appeared.
+        backoff = if attached {
+            BACKOFF_INITIAL_MS
+        } else {
+            backoff.saturating_mul(2).min(BACKOFF_MAX_MS)
+        };
         tokio::time::sleep(Duration::from_millis(backoff)).await;
-        backoff = backoff.saturating_mul(2).min(BACKOFF_MAX_MS);
     }
 }
 
+/// Run one watch session. Returns true if the event stream was actually
+/// established, which is what tells the caller whether to back off.
 async fn serve(
     tx: &Sender<Cmd>,
     snap: &mut Snapshot,
     shown_until: &mut Option<Instant>,
     low_armed: &mut bool,
     visible: Duration,
-) {
+) -> bool {
     if let Ok(Response::State(ds)) = oneshot(&Request::Status).await {
         apply_status(snap, ds);
     }
 
     let stream = match UnixStream::connect(socket_path()).await {
         Ok(s) => s,
-        Err(_) => return,
+        Err(_) => return false,
     };
     let (rx, mut wx) = stream.into_split();
     let Ok(mut hello) = serde_json::to_vec(&Request::Watch) else {
-        return;
+        return false;
     };
     hello.push(b'\n');
     if wx.write_all(&hello).await.is_err() || wx.flush().await.is_err() {
-        return;
+        return false;
     }
     drop(wx);
 
@@ -290,7 +305,7 @@ async fn serve(
                 *shown_until = Some(Instant::now() + visible);
             }
             line = lines.next_line() => {
-                let Ok(Some(l)) = line else { return };
+                let Ok(Some(l)) = line else { return true };
                 if l.is_empty() {
                     continue;
                 }
@@ -329,6 +344,7 @@ fn handle_event(
             }
         }
         Event::Battery(b) => {
+            let was_blank = snap.blank();
             apply_battery(snap, &b);
             if snap.low() && !*low_armed {
                 // Crossed below the low-battery threshold — pop once.
@@ -338,7 +354,16 @@ fn handle_event(
                 if battery_recovered(&b) {
                     *low_armed = false;
                 }
-                if is_shown(shown_until) {
+                if !is_shown(shown_until) {
+                    return;
+                }
+                if was_blank && !snap.blank() {
+                    // The bubble went up before the first battery frame
+                    // landed, so it has been showing three em-dashes.
+                    // Restart the hold: the numbers get the full window,
+                    // not whatever was left of it.
+                    show_now(tx, snap, pending_open, shown_until, visible);
+                } else {
                     let _ = tx.send(Cmd::Refresh(snap.clone()));
                 }
             }
@@ -477,14 +502,14 @@ fn dump(path: &str, theme: &Theme) -> std::io::Result<()> {
 fn demo(theme: &Theme, want: &str) -> anyhow::Result<()> {
     let pm = render::render(&Snapshot::sample(), theme);
     let bgra = render::to_bgra_premul(&pm);
-    let mut be = open_backend(want)?;
+    let mut be = open_backend(want, Duration::from_millis(DEMO_HOLD_MS))?;
     eprintln!("podctl-popup: backend {}", be.kind());
     present(be.as_mut(), &bgra)?;
     be.close()?;
     Ok(())
 }
 
-fn open_backend(pick: &str) -> anyhow::Result<Box<dyn Backend>> {
+fn open_backend(pick: &str, on_screen: Duration) -> anyhow::Result<Box<dyn Backend>> {
     let order: &[&str] = match pick {
         "wl" | "wayland" | "wl_layer" => &["wl", "x11", "notify"],
         "x11" | "x11_or" => &["x11", "notify"],
@@ -498,6 +523,7 @@ fn open_backend(pick: &str) -> anyhow::Result<Box<dyn Backend>> {
             "x11" => Box::new(backend::x11_or::X11Or::new()),
             _ => Box::new(backend::notify::Notify::new()),
         };
+        be.set_hold(on_screen);
         match be.open(CARD_W, CARD_H) {
             Ok(()) => return Ok(be),
             Err(e) => last = e.context(format!("{kind} backend")),
@@ -512,7 +538,7 @@ fn present(be: &mut dyn Backend, bgra: &[u8]) -> anyhow::Result<()> {
         push(be, bgra, m)?;
         sleep(FRAME);
     }
-    for _ in 0..(5000 / 100) {
+    for _ in 0..(DEMO_HOLD_MS / 100) {
         push(be, bgra, REST_MARGIN as f32)?;
         sleep(Duration::from_millis(100));
     }

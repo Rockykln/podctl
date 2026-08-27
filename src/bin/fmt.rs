@@ -8,7 +8,7 @@ use podctl::model::{
 
 pub fn print_state(verb: &str, s: &DeviceState) {
     match verb {
-        "battery" | "bat" | "b" => print_battery(&s.battery, s.connected),
+        "battery" | "bat" | "b" => print_battery(&s.battery, s.connected, s.aap_linked),
         _ => print_full(s),
     }
 }
@@ -42,7 +42,7 @@ fn print_full(s: &DeviceState) {
     }
 
     println!();
-    print_battery(&s.battery, s.connected);
+    print_battery(&s.battery, s.connected, s.aap_linked);
 
     if s.capabilities.has_in_ear_detection {
         println!();
@@ -172,8 +172,8 @@ fn print_full(s: &DeviceState) {
     }
 }
 
-fn print_battery(b: &Battery, connected: bool) {
-    if !connected && b.left.is_none() && b.right.is_none() && b.case.is_none() {
+fn print_battery(b: &Battery, connected: bool, aap_linked: bool) {
+    if !connected && !b.any_known() {
         println!("battery — no data (disconnected)");
         return;
     }
@@ -184,6 +184,15 @@ fn print_battery(b: &Battery, connected: bool) {
     print!("   ");
     print_cell("C", b.case, b.case_charging);
     println!();
+    // Empty cells on a live device are ambiguous — say which half is
+    // missing rather than leaving the user guessing at three dashes.
+    if connected && !b.any_known() {
+        if aap_linked {
+            println!("          (AAP link up, device has not reported a level yet)");
+        } else {
+            println!("          (no AAP link — battery needs PSM 0x1001; see 'podctl debug')");
+        }
+    }
 }
 
 fn print_cell(label: &str, val: Option<u8>, charging: bool) {

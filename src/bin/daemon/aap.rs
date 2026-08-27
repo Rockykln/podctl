@@ -6,7 +6,7 @@
 
 use std::os::unix::io::AsRawFd;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 
 use tracing::{debug, info, warn};
 
@@ -26,24 +26,40 @@ const HANDSHAKE: &[u8] = &[
 /// notifications. Exact bytes from LibrePods Linux source (airpods_packets.h:
 /// SET_SPECIFIC_FEATURES). The `0xD7` mask (not `0xFF`) is what actually
 /// enables battery notifications on the Pro 2.
-const SET_FEATURES_PRO2: &[u8] = &[
+pub const SET_FEATURES_PRO2: &[u8] = &[
     0x04, 0x00, 0x04, 0x00, 0x4D, 0x00, 0xD7, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 ];
 
 /// Subscribe to the full notification stream. Five payload bytes (not four
 /// as the public AAP Definitions doc shows) — confirmed against the
 /// LibrePods Linux source, which is what actually works on Pro 2.
-const SUBSCRIBE_NOTIFICATIONS: &[u8] = &[
+pub const SUBSCRIBE_NOTIFICATIONS: &[u8] = &[
     0x04, 0x00, 0x04, 0x00, 0x0F, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
 ];
 
 pub struct AapTask {
     cancelled: Arc<AtomicBool>,
     fd: Arc<AtomicI32>,
+    frames: Arc<AtomicU64>,
     join: Option<std::thread::JoinHandle<()>>,
 }
 
 impl AapTask {
+    /// True once the worker thread has returned — L2CAP connect gave up,
+    /// the device closed the socket, or a read errored. The supervisor in
+    /// `link.rs` polls this so a dead task gets reaped and respawned
+    /// instead of silently leaving the daemon without battery data.
+    pub fn is_finished(&self) -> bool {
+        self.join.as_ref().is_some_and(|j| j.is_finished())
+    }
+
+    /// Frames read off the socket so far. Zero on an open-but-mute link,
+    /// which is the shape that needs a fresh connection rather than
+    /// another subscribe.
+    pub fn frames(&self) -> u64 {
+        self.frames.load(Ordering::Relaxed)
+    }
+
     pub fn shutdown(mut self) {
         self.cancelled.store(true, Ordering::SeqCst);
         let fd = self.fd.load(Ordering::SeqCst);
@@ -61,18 +77,21 @@ impl AapTask {
 pub fn spawn(daemon: Arc<Daemon>, mac: String) -> AapTask {
     let cancelled = Arc::new(AtomicBool::new(false));
     let fd = Arc::new(AtomicI32::new(-1));
+    let frames = Arc::new(AtomicU64::new(0));
     let handle = tokio::runtime::Handle::current();
     let join = {
         let cancelled = cancelled.clone();
         let fd = fd.clone();
+        let frames = frames.clone();
         std::thread::Builder::new()
             .name(format!("aap-{}", short_mac(&mac)))
-            .spawn(move || run(daemon, mac, cancelled, fd, handle))
+            .spawn(move || run(daemon, mac, cancelled, fd, frames, handle))
             .expect("spawn aap thread")
     };
     AapTask {
         cancelled,
         fd,
+        frames,
         join: Some(join),
     }
 }
@@ -82,15 +101,13 @@ fn run(
     mac: String,
     cancelled: Arc<AtomicBool>,
     fd_slot: Arc<AtomicI32>,
+    frames: Arc<AtomicU64>,
     rt: tokio::runtime::Handle,
 ) {
     info!(mac = %short_mac(&mac), "opening AAP socket on PSM 0x1001");
-    let stream = match L2capStream::connect(&mac, aap::AAP_PSM) {
-        Ok(s) => Arc::new(s),
-        Err(e) => {
-            warn!(error = %e, "L2CAP connect failed");
-            return;
-        }
+    let stream = match connect_with_retry(&mac, &cancelled) {
+        Some(s) => Arc::new(s),
+        None => return,
     };
     fd_slot.store(stream.as_raw_fd(), Ordering::SeqCst);
 
@@ -132,6 +149,7 @@ fn run(
             }
             Ok(n) => {
                 frame_count += 1;
+                frames.store(frame_count, Ordering::Relaxed);
                 let opcode = if n >= 5 { buf[4] } else { 0xFF };
                 let preview: String = buf[..n.min(24)]
                     .iter()
@@ -155,6 +173,45 @@ fn run(
     }
     rt.block_on(daemon.set_aap_stream(None));
     info!(mac = %short_mac(&mac), frame_count, "AAP loop exited");
+}
+
+/// Delays between L2CAP connect attempts. BlueZ reports "Connected" as
+/// soon as the ACL link is up, but the AirPods only start accepting PSM
+/// 0x1001 once their own profile setup finishes — the first attempt
+/// routinely fails with ECONNREFUSED/EHOSTDOWN. One attempt was enough
+/// to lose battery data for the whole session, so retry across ~5 s.
+const CONNECT_BACKOFF_MS: &[u64] = &[0, 300, 700, 1200, 2000];
+
+fn connect_with_retry(mac: &str, cancelled: &AtomicBool) -> Option<L2capStream> {
+    let mut last: Option<std::io::Error> = None;
+    for (attempt, wait) in CONNECT_BACKOFF_MS.iter().enumerate() {
+        if cancelled.load(Ordering::SeqCst) {
+            return None;
+        }
+        if *wait > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(*wait));
+            if cancelled.load(Ordering::SeqCst) {
+                return None;
+            }
+        }
+        match L2capStream::connect(mac, aap::AAP_PSM) {
+            Ok(s) => {
+                if attempt > 0 {
+                    info!(attempt = attempt + 1, "L2CAP connected after retry");
+                }
+                return Some(s);
+            }
+            Err(e) => {
+                debug!(attempt = attempt + 1, error = %e, "L2CAP connect attempt failed");
+                last = Some(e);
+            }
+        }
+    }
+    match last {
+        Some(e) => warn!(error = %e, attempts = CONNECT_BACKOFF_MS.len(), "L2CAP connect failed"),
+        None => warn!("L2CAP connect failed"),
+    }
+    None
 }
 
 unsafe extern "C" {

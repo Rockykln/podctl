@@ -12,6 +12,14 @@ pub struct Battery {
     pub case_charging: bool,
 }
 
+impl Battery {
+    /// True once at least one component has reported a level. Used to
+    /// tell "the device says nothing yet" from "the device told us".
+    pub fn any_known(&self) -> bool {
+        self.left.is_some() || self.right.is_some() || self.case.is_some()
+    }
+}
+
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Mode {
@@ -321,6 +329,11 @@ pub struct DeviceState {
     pub capabilities: Capabilities,
     pub info: DeviceInfo,
     pub battery: Battery,
+    /// Whether the AAP/L2CAP channel is open. `connected` only reflects
+    /// BlueZ; the two come apart exactly when battery data goes missing,
+    /// so the distinction is worth showing.
+    #[serde(default)]
+    pub aap_linked: bool,
     pub in_ear: InEar,
     pub case_lid_open: Option<bool>,
     pub press_counts: PressCounts,
@@ -368,4 +381,25 @@ pub enum PressKind {
     Double,
     Triple,
     Long,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Battery;
+
+    #[test]
+    fn any_known_needs_one_component() {
+        assert!(!Battery::default().any_known());
+        let case_only = Battery {
+            case: Some(47),
+            ..Battery::default()
+        };
+        assert!(case_only.any_known());
+        // A charging flag on its own is not a level.
+        let flag_only = Battery {
+            left_charging: true,
+            ..Battery::default()
+        };
+        assert!(!flag_only.any_known());
+    }
 }

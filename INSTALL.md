@@ -111,6 +111,20 @@ auto-detected:
 | GNOME Wayland (no layer-shell) | notification fallback |
 | X11 (i3, Xfce, MATE, …) | override-redirect window |
 
+Everything about the bubble is tunable in `~/.config/podctl/popup.toml`
+(the file is optional — these are the defaults):
+
+```
+enabled     = true      # false disables the bubble entirely
+backend     = "auto"    # auto | wl | x11 | notify
+theme       = "dark"    # dark | light
+duration_ms = 6500      # time on screen, 500 … 60000
+anim_ms     = 200       # slide in/out, 0 … 2000
+```
+
+`duration_ms` counts the hold only; the two slides add `2 × anim_ms` on
+top. Out-of-range values are clamped rather than rejected.
+
 ## Multi-adapter hosts
 
 If `/sys/class/bluetooth` lists more than one `hci*` device and the

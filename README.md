@@ -37,10 +37,11 @@ Two optional desktop components ship alongside the CLI:
   disconnect). Works on Plasma, Hyprland/waybar, sway, Xfce, MATE; GNOME
   needs the AppIndicator extension.
 - **`podctl-popup`** — the case-open bubble. Slides in at the bottom of
-  the screen, shows model + L / R / Case rings, auto-hides after five
-  seconds. Backend is auto-detected (wlr-layer-shell on Hyprland / KDE /
-  sway / Wayfire, X11 override-redirect on i3 / Xfce / MATE, freedesktop
-  Notification fallback on GNOME Wayland).
+  the screen, shows model + L / R / Case rings, auto-hides after 6.5
+  seconds (`duration_ms` in `~/.config/podctl/popup.toml`). Backend is
+  auto-detected (wlr-layer-shell on Hyprland / KDE / sway / Wayfire, X11
+  override-redirect on i3 / Xfce / MATE, freedesktop Notification
+  fallback on GNOME Wayland).
 
 ## Screenshots
 

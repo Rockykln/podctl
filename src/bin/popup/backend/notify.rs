@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use zbus::zvariant::Value;
@@ -9,6 +10,7 @@ use crate::render;
 
 const SVC: &str = "org.freedesktop.Notifications";
 const PATH: &str = "/org/freedesktop/Notifications";
+const DEFAULT_EXPIRE_MS: i32 = 6_500;
 
 pub struct Notify {
     w: u32,
@@ -16,6 +18,7 @@ pub struct Notify {
     img: PathBuf,
     id: u32,
     fp: u64,
+    expire_ms: i32,
 }
 
 impl Notify {
@@ -27,6 +30,7 @@ impl Notify {
             img: PathBuf::from(dir).join("podctl-popup.png"),
             id: 0,
             fp: 0,
+            expire_ms: DEFAULT_EXPIRE_MS,
         }
     }
 
@@ -41,6 +45,12 @@ impl Notify {
 impl Backend for Notify {
     fn kind(&self) -> &'static str {
         "notify"
+    }
+
+    fn set_hold(&mut self, hold: Duration) {
+        // Round up: expiring a hair before the hold loop closes the
+        // notification ourselves would flash the bubble out early.
+        self.expire_ms = hold.as_millis().min(i32::MAX as u128) as i32 + 250;
     }
 
     fn open(&mut self, w: u32, h: u32) -> Result<()> {
@@ -61,6 +71,7 @@ impl Backend for Notify {
 
         let uri = format!("file://{}", self.img.display());
         let replaces = self.id;
+        let expire_ms = self.expire_ms;
         let id = Self::rt()?.block_on(async {
             let conn = zbus::Connection::session().await?;
             let mut hints: HashMap<&str, Value> = HashMap::new();
@@ -82,7 +93,7 @@ impl Backend for Notify {
                         "",
                         Vec::<&str>::new(),
                         hints,
-                        5000i32,
+                        expire_ms,
                     ),
                 )
                 .await?;

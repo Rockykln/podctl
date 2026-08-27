@@ -73,6 +73,16 @@ pub fn run(no_redact: bool) -> String {
     );
     let _ = writeln!(out, "  socket exists {}", yesno(sock_present));
     let _ = writeln!(out, "  reachable     {}", yesno(daemon_pong()));
+    match daemon_status() {
+        Some(st) => {
+            let _ = writeln!(out, "  bluez link    {}", yesno(st.connected));
+            let _ = writeln!(out, "  aap link      {}", yesno(st.aap_linked));
+            let _ = writeln!(out, "  battery data  {}", yesno(st.battery.any_known()));
+        }
+        None => {
+            let _ = writeln!(out, "  bluez link    ?  (no answer from daemon)");
+        }
+    }
 
     section(&mut out, "airpods");
     match bluez::primary_airpods() {
@@ -226,6 +236,26 @@ fn bluez_daemon_status() -> String {
     {
         Ok(o) => String::from_utf8_lossy(&o.stdout).trim().to_string(),
         Err(_) => "?".into(),
+    }
+}
+
+/// One-shot `status` against the daemon. `None` if it isn't answering —
+/// the caller already reports reachability separately.
+fn daemon_status() -> Option<podctl::DeviceState> {
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixStream;
+    use std::time::Duration;
+
+    let s = UnixStream::connect(podctl::socket_path()).ok()?;
+    // Generous: `status` may nudge the device for a battery dump first.
+    let _ = s.set_read_timeout(Some(Duration::from_millis(2500)));
+    let mut w = &s;
+    writeln!(w, r#"{{"op":"status"}}"#).ok()?;
+    let mut line = String::new();
+    BufReader::new(&s).read_line(&mut line).ok()?;
+    match serde_json::from_str::<podctl::Response>(line.trim()).ok()? {
+        podctl::Response::State(st) => Some(st),
+        _ => None,
     }
 }
 

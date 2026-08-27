@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
@@ -18,6 +18,9 @@ use crate::state::TrayState;
 
 const BACKOFF_INITIAL_MS: u64 = 500;
 const BACKOFF_MAX_MS: u64 = 30_000;
+/// A session that ran at least this long counts as healthy: the next
+/// reconnect starts from the short delay again.
+const HEALTHY_SESSION: Duration = Duration::from_secs(5);
 
 pub fn spawn(state: SharedState, conn: Connection, notifier: Option<Arc<Notifier>>) {
     tokio::spawn(async move { run(state, conn, notifier).await });
@@ -26,13 +29,22 @@ pub fn spawn(state: SharedState, conn: Connection, notifier: Option<Arc<Notifier
 async fn run(state: SharedState, conn: Connection, notifier: Option<Arc<Notifier>>) {
     let mut backoff = BACKOFF_INITIAL_MS;
     loop {
+        let started = Instant::now();
         match serve(&state, &conn, notifier.as_deref()).await {
             Ok(()) => debug!("watch stream closed, reconnecting"),
             Err(e) => warn!(error = %e, "watch stream errored, reconnecting"),
         }
         mark_disconnected(&state, &conn, notifier.as_deref()).await;
+        // The backoff used to ratchet up permanently: after a handful of
+        // daemon restarts the tray sat out 30 s before every reconnect,
+        // showing "Not connected" long after the daemon was back. Only a
+        // session that failed fast extends the delay.
+        backoff = if started.elapsed() >= HEALTHY_SESSION {
+            BACKOFF_INITIAL_MS
+        } else {
+            (backoff.saturating_mul(2)).min(BACKOFF_MAX_MS)
+        };
         sleep(Duration::from_millis(backoff)).await;
-        backoff = (backoff.saturating_mul(2)).min(BACKOFF_MAX_MS);
     }
 }
 

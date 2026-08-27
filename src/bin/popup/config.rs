@@ -30,6 +30,13 @@ impl Pick {
     }
 }
 
+/// Bounds for the tunables. A `duration_ms = 0` typo would make the
+/// bubble flash and vanish; an unbounded one would pin it to the screen
+/// with no way to dismiss it.
+const DURATION_MIN_MS: u64 = 500;
+const DURATION_MAX_MS: u64 = 60_000;
+const ANIM_MAX_MS: u32 = 2_000;
+
 #[derive(Clone, Debug)]
 pub struct Config {
     pub enabled: bool,
@@ -45,7 +52,10 @@ impl Default for Config {
             enabled: true,
             backend: Pick::Auto,
             theme: "dark".into(),
-            duration_ms: 5000,
+            // Five seconds was too tight to read the rings and register
+            // the mode line, especially when the bubble is triggered by
+            // a lid open you weren't looking at.
+            duration_ms: 6500,
             anim_ms: 200,
         }
     }
@@ -61,7 +71,11 @@ pub fn load() -> Config {
     let Ok(text) = std::fs::read_to_string(path()) else {
         return Config::default();
     };
-    let kv = parse_flat(&text);
+    from_text(&text)
+}
+
+fn from_text(text: &str) -> Config {
+    let kv = parse_flat(text);
     let mut cfg = Config::default();
     if let Some(v) = kv.get("enabled").and_then(|s| parse_bool(s)) {
         cfg.enabled = v;
@@ -74,13 +88,18 @@ pub fn load() -> Config {
     {
         cfg.theme = v.clone();
     }
-    if let Some(v) = kv.get("duration_ms").and_then(|s| s.parse().ok()) {
-        cfg.duration_ms = v;
+    if let Some(v) = kv.get("duration_ms").and_then(|s| s.parse::<u64>().ok()) {
+        cfg.duration_ms = v.clamp(DURATION_MIN_MS, DURATION_MAX_MS);
     }
-    if let Some(v) = kv.get("anim_ms").and_then(|s| s.parse().ok()) {
-        cfg.anim_ms = v;
+    if let Some(v) = kv.get("anim_ms").and_then(|s| s.parse::<u32>().ok()) {
+        cfg.anim_ms = v.min(ANIM_MAX_MS);
     }
     cfg
+}
+
+/// Total time the bubble occupies the screen: hold plus both slides.
+pub fn visible_ms(cfg: &Config) -> u64 {
+    cfg.duration_ms + 2 * cfg.anim_ms as u64
 }
 
 fn parse_bool(s: &str) -> Option<bool> {
@@ -116,7 +135,7 @@ mod tests {
         let c = Config::default();
         assert!(c.enabled);
         assert_eq!(c.backend, Pick::Auto);
-        assert_eq!(c.duration_ms, 5000);
+        assert_eq!(c.duration_ms, 6500);
         assert_eq!(c.anim_ms, 200);
     }
 
@@ -134,6 +153,25 @@ anim_ms = 150
         assert_eq!(Pick::parse(kv.get("backend").unwrap()), Some(Pick::X11));
         assert_eq!(parse_bool(kv.get("enabled").unwrap()), Some(false));
         assert_eq!(kv.get("duration_ms").unwrap(), "3000");
+    }
+
+    #[test]
+    fn clamps_out_of_range_durations() {
+        assert_eq!(from_text("duration_ms = 0").duration_ms, DURATION_MIN_MS);
+        assert_eq!(
+            from_text("duration_ms = 999999").duration_ms,
+            DURATION_MAX_MS
+        );
+        assert_eq!(from_text("anim_ms = 99999").anim_ms, ANIM_MAX_MS);
+        // A negative value isn't a u64 — the field keeps its default.
+        assert_eq!(from_text("duration_ms = -1").duration_ms, 6500);
+        assert_eq!(from_text("duration_ms = 3000").duration_ms, 3000);
+    }
+
+    #[test]
+    fn visible_covers_both_slides() {
+        let c = Config::default();
+        assert_eq!(visible_ms(&c), c.duration_ms + 2 * c.anim_ms as u64);
     }
 
     #[test]

@@ -7,7 +7,8 @@ mod link;
 mod server;
 
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::Mutex;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use tokio::sync::{RwLock, broadcast};
 use tracing::debug;
@@ -19,6 +20,15 @@ use podctl::{
 
 const EVENT_BUS_CAPACITY: usize = 64;
 
+/// Minimum gap between two re-subscribe requests. The link watchdog and
+/// every incoming `status` / `battery` may ask; the device only needs
+/// one nudge.
+const RESUBSCRIBE_COOLDOWN: Duration = Duration::from_secs(5);
+/// How long a `status` / `battery` request waits for the dump it just
+/// asked for. Long enough for a healthy link, short enough that the CLI
+/// still feels instant.
+const BATTERY_WAIT: Duration = Duration::from_millis(900);
+
 const NOT_IMPL: &str =
     "not implemented for this device — no verified AAP packet for this setting yet";
 
@@ -26,6 +36,7 @@ pub struct Daemon {
     state: RwLock<DeviceState>,
     events: broadcast::Sender<Event>,
     aap_stream: RwLock<Option<std::sync::Arc<podctl::l2cap::L2capStream>>>,
+    last_resubscribe: Mutex<Option<Instant>>,
 }
 
 impl Daemon {
@@ -35,6 +46,7 @@ impl Daemon {
             state: RwLock::new(DeviceState::default()),
             events: tx,
             aap_stream: RwLock::new(None),
+            last_resubscribe: Mutex::new(None),
         }
     }
 
@@ -42,7 +54,11 @@ impl Daemon {
     /// handshake/subscribe sequence has been written. Stored here so
     /// CLI-driven setters can write outgoing frames.
     pub async fn set_aap_stream(&self, stream: Option<std::sync::Arc<podctl::l2cap::L2capStream>>) {
+        let linked = stream.is_some();
         *self.aap_stream.write().await = stream;
+        let mut s = self.state.write().await;
+        s.aap_linked = linked;
+        Self::touch(&mut s);
     }
 
     /// Send a raw AAP frame to the device. Returns an error if the AAP
@@ -53,6 +69,65 @@ impl Daemon {
             return Err("AAP socket not connected".into());
         };
         stream.send(frame).map_err(|e| format!("AAP write: {e}"))
+    }
+
+    /// Ask the AirPods to re-send their whole state dump.
+    ///
+    /// The device pushes battery and settings on change plus exactly once
+    /// after a subscribe. Miss that one dump — a frame lost while the
+    /// device was still setting up its profiles — and the daemon shows an
+    /// empty battery for the rest of the session. Re-sending the same
+    /// feature-flags + subscribe pair is the only way to ask again; the
+    /// device answers with a fresh dump and the frames are idempotent.
+    ///
+    /// Unthrottled — the link watchdog paces its own calls. Request
+    /// handlers go through `aap_resubscribe_throttled` instead.
+    pub async fn aap_resubscribe(&self) -> Result<(), String> {
+        self.aap_send(aap::SET_FEATURES_PRO2).await?;
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        self.aap_send(aap::SUBSCRIBE_NOTIFICATIONS).await
+    }
+
+    /// `aap_resubscribe` behind the cooldown. Returns whether it ran.
+    async fn aap_resubscribe_throttled(&self) -> bool {
+        {
+            let mut last = match self.last_resubscribe.lock() {
+                Ok(g) => g,
+                Err(p) => p.into_inner(),
+            };
+            if last.is_some_and(|t| t.elapsed() < RESUBSCRIBE_COOLDOWN) {
+                return false;
+            }
+            *last = Some(Instant::now());
+        }
+        match self.aap_resubscribe().await {
+            Ok(()) => true,
+            Err(e) => {
+                debug!(error = %e, "re-subscribe failed");
+                false
+            }
+        }
+    }
+
+    /// Snapshot for `status` / `battery`. When the link is up but no
+    /// battery level has ever arrived, nudge the device once and give it
+    /// a moment to answer rather than handing back three em-dashes.
+    async fn snapshot_fresh(&self) -> DeviceState {
+        let snap = self.snapshot().await;
+        if !snap.connected || snap.battery.any_known() {
+            return snap;
+        }
+        if !self.aap_resubscribe_throttled().await {
+            return snap;
+        }
+        let deadline = Instant::now() + BATTERY_WAIT;
+        while Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            if self.state.read().await.battery.any_known() {
+                break;
+            }
+        }
+        self.snapshot().await
     }
 
     /// Send an AAP `09 00 [id] [val] 00 00 00` setting-write frame.
@@ -185,8 +260,8 @@ impl Daemon {
     pub async fn handle(&self, req: Request) -> Response {
         debug!(?req, "request");
         match req {
-            Request::Status => Response::ok_state(self.snapshot().await),
-            Request::Battery => Response::ok_state(self.snapshot().await),
+            Request::Status => Response::ok_state(self.snapshot_fresh().await),
+            Request::Battery => Response::ok_state(self.snapshot_fresh().await),
             Request::Ping => Response::ok_pong(),
 
             Request::SetMode { mode } => self.set_mode(mode).await,

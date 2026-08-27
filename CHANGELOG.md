@@ -5,6 +5,58 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- **Battery could stay empty for a whole session.** The AAP worker was
+  started once per BlueZ connect edge and never checked again. If the
+  L2CAP connect lost the race against the AirPods' own profile setup, or
+  the device dropped the socket while the ACL link stayed up, the slot
+  kept a dead thread and nothing ever restarted it — `podctl b`, the
+  tray and the popup showed `—` until the user disconnected by hand.
+  There is now a supervisor that reaps a finished worker and respawns it
+  under a 2 s … 60 s backoff, plus five retries (~5 s) on the initial
+  L2CAP connect itself.
+- Battery watchdog: the AirPods push their state once after a subscribe
+  and then only on change, so a lost dump left the daemon blind. A live
+  link reporting no battery at all is now re-subscribed twice, 6 s apart,
+  and `podctl status` / `podctl b` nudge the device and wait up to 0.9 s
+  rather than answering with three em-dashes.
+- **Wedged AAP socket.** Reproduced on a live Pro 2: the L2CAP connect
+  succeeds, handshake and subscribe both write cleanly, and the device
+  then sends nothing at all — not even the handshake reply — for as long
+  as that socket stays open. Re-subscribing on it changes nothing; a
+  fresh connection delivers the whole ~34-frame dump, battery included,
+  within a second. So when re-subscribing doesn't help, the watchdog now
+  recycles the socket (twice per connected period, then it stops poking).
+- `podctl status` / `podctl b` say *why* the levels are missing —
+  whether the AAP link is up and the device just hasn't reported, or
+  there is no AAP link at all — instead of three bare dashes. `podctl
+  debug` gained matching `bluez link` / `aap link` / `battery data`
+  lines, and `aap_linked` is part of the daemon's state snapshot.
+- The reconnect backoff in `podctl-popup` and `podctl-tray` ratcheted up
+  permanently — it was never reset after a session that worked. A few
+  daemon restarts were enough to put both on a fixed 30 s retry, so the
+  popup missed lid events and the tray sat on "Not connected". Only a
+  session that fails fast extends the delay now.
+- Disconnecting clears `case_lid_open` along with the rest of the
+  AAP-derived state. Leaving it at `Some(true)` swallowed the lid edge on
+  the next connect, and with it the popup that edge triggers.
+- The notification fallback backend hard-coded a 5 s expire timeout, so
+  on GNOME Wayland the bubble vanished before the hold loop was done. It
+  follows `duration_ms` now.
+
+### Changed
+- `podctl-popup` stays up for 6.5 s instead of 5 s. Five was too tight to
+  read the rings and the mode line on a bubble you weren't already
+  looking at. `duration_ms` in `~/.config/podctl/popup.toml` overrides
+  it, and the popup config is documented in `INSTALL.md` for the first
+  time.
+- A battery frame that lands *after* the bubble is already on screen
+  (rings still showing `—`) restarts the hold, so the real numbers get
+  the full window instead of its remainder.
+- `duration_ms` and `anim_ms` are clamped (500…60000 ms and 0…2000 ms)
+  instead of being taken verbatim — `duration_ms = 0` used to make the
+  bubble flash and vanish.
+
 ## [0.1.1] - 2026-05-27
 
 ### Fixed

@@ -48,6 +48,13 @@ impl Snapshot {
             .any(|p| p.level.is_some_and(|l| l < LOW_PCT))
     }
 
+    /// No component has a level yet — the rings would all read "—".
+    pub fn blank(&self) -> bool {
+        [self.left, self.right, self.case]
+            .iter()
+            .all(|p| p.level.is_none())
+    }
+
     pub fn sample() -> Self {
         Snapshot {
             model: "AirPods Pro 2".into(),
@@ -751,6 +758,23 @@ mod tests {
             .chunks_exact(4)
             .filter(|p| p[0] > 180 && p[1] < 120 && p[2] < 120 && p[3] > 180)
             .count()
+    }
+
+    #[test]
+    fn blank_tracks_missing_levels() {
+        let mut s = Snapshot::sample();
+        assert!(!s.blank());
+        s.left = Pod::default();
+        s.right = Pod::default();
+        assert!(!s.blank(), "the case still has a level");
+        s.case = Pod::default();
+        assert!(s.blank());
+        // Charging with no level reported is still blank.
+        s.case = Pod {
+            level: None,
+            charging: true,
+        };
+        assert!(s.blank());
     }
 
     #[test]
