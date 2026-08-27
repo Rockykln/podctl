@@ -56,6 +56,34 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 - `duration_ms` and `anim_ms` are clamped (500…60000 ms and 0…2000 ms)
   instead of being taken verbatim — `duration_ms = 0` used to make the
   bubble flash and vanish.
+- Both man pages announced `podctl 0.1.0` in their `.TH` header through
+  the whole 0.1.1 release. A test now asserts the header carries
+  `CARGO_PKG_VERSION`, so it cannot drift again.
+- `podctl version` was missing from all three shell completions, and
+  `podctl.1` documented press-tone only under its `tone` alias. Tests
+  now check every command against the man page and the completions.
+- README claimed button presses "arrive unsolicited". They don't: no
+  press opcode is confirmed, so `Event::Press` is never emitted and the
+  `press counts` block in `podctl status` stays at zero. Documented as
+  unimplemented alongside the other AAP gaps.
+
+### Added
+- `podctl debug` gained a `[desktop services]` section: whether
+  `graphical-session.target` is active, the state of the three user
+  units, and whether the systemd user manager actually carries
+  `WAYLAND_DISPLAY` / `DISPLAY` — it flags a variable that is set in
+  your shell but missing from the user environment. That mismatch is why
+  the popup silently falls back to plain notifications on compositors
+  without systemd session integration; `INSTALL.md` now documents the
+  two lines that fix it.
+- `CONTRIBUTING.md` notes that `rust-toolchain.toml` is only honoured
+  with rustup — without it your distro Rust is used and local clippy
+  results won't match CI either way.
+
+### Changed
+- `chunks_exact(N)` with constant `N` replaced by `as_chunks::<N>()` in
+  the meter and the popup renderer. Equivalent, and it keeps clippy
+  quiet on toolchains newer than the 1.89 pin.
 
 ## [0.1.1] - 2026-05-27
 

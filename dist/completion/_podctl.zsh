@@ -38,6 +38,7 @@ _pods() {
         'debug:diagnostic report'
         'install:install podctl to ~/.local'
         'uninstall:remove installed files'
+        'version:CLI + daemon version'
         'help:detailed help'
     )
     if (( CURRENT == 2 )); then

@@ -11,7 +11,12 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 ```
 
-All four must pass. CI runs the same.
+All four must pass. CI runs the same commands — but only matches your
+results if you have [rustup](https://rustup.rs): the pin in
+`rust-toolchain.toml` is what CI resolves, and without rustup your
+package manager's Rust is used instead and the file is silently ignored.
+A newer distro toolchain will fail on clippy lints CI never sees, and an
+older one on syntax CI accepts.
 
 ## Scope
 

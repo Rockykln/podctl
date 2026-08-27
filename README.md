@@ -27,7 +27,8 @@ property via `dbus-send`.
 
 Spatial audio, loud-sound reduction and the per-bud press-action /
 tone-on-press configs are currently no-ops — their AAP setting IDs
-aren't pinned down yet.
+aren't pinned down yet. Press *events* (which bud, how many taps) are
+likewise unimplemented: the parser exists, the opcode doesn't.
 
 Two optional desktop components ship alongside the CLI:
 
@@ -216,9 +217,13 @@ Frames are:
 04 00 04 00  <opcode>  <subop>  <payload …>
 ```
 
-Battery, in-ear, button presses arrive unsolicited. Settings (mode,
-conversation awareness, button mappings) are written by sending the
-same families back. See `src/aap.rs` for the opcode table.
+Battery (`0x04`) and in-ear (`0x06`) arrive unsolicited, as do settings
+echoes (`0x09`); those same families are written back to change a
+setting. Button presses are *not* wired up — `aap::parse_press` and the
+`press counts` block in `podctl status` are ready for it, but no press
+opcode has been confirmed yet, so the counters stay at zero and
+`podctl watch` never emits a press event. See `src/aap.rs` for the
+opcode table.
 
 ## Limitations (not Linux-fixable)
 

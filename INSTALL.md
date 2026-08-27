@@ -125,6 +125,33 @@ anim_ms     = 200       # slide in/out, 0 … 2000
 `duration_ms` counts the hold only; the two slides add `2 × anim_ms` on
 top. Out-of-range values are clamped rather than rejected.
 
+## Compositors without systemd session integration
+
+`podctl-tray` and `podctl-popup` install as systemd **user** units wanted
+by `graphical-session.target`, and they need two things from the session
+that not every compositor provides:
+
+- **`graphical-session.target` has to be reached**, or the units are
+  enabled but never autostart at the next login. `podctl install` starts
+  them with `--now`, so the gap only shows up after a reboot.
+- **The systemd user manager has to know `WAYLAND_DISPLAY` / `DISPLAY`.**
+  Units inherit nothing from your shell. Without those variables the
+  popup can't find the compositor and quietly falls back to plain
+  desktop notifications instead of the layer-shell bubble.
+
+Plasma and GNOME do both for you. Hyprland, sway, river, Wayfire and
+bare X11 sessions generally do not — add this once, early in the
+compositor's startup (Hyprland `exec-once`, sway `exec`, i3 `exec`):
+
+```
+dbus-update-activation-environment --systemd WAYLAND_DISPLAY DISPLAY XDG_CURRENT_DESKTOP
+systemctl --user start graphical-session.target
+```
+
+`podctl debug` reports both under `[desktop services]` — it flags a
+variable that is set in your shell but missing from the systemd user
+environment, which is the exact failure above.
+
 ## Multi-adapter hosts
 
 If `/sys/class/bluetooth` lists more than one `hci*` device and the

@@ -103,8 +103,8 @@ fn rms_peak(buf: &[u8]) -> (f64, f64) {
     let mut sum_sq: f64 = 0.0;
     let mut peak: u16 = 0;
     let mut n: u64 = 0;
-    for chunk in buf.chunks_exact(2) {
-        let v = i16::from_le_bytes([chunk[0], chunk[1]]);
+    for chunk in buf.as_chunks::<2>().0 {
+        let v = i16::from_le_bytes(*chunk);
         let av = v.unsigned_abs();
         if av > peak {
             peak = av;

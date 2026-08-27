@@ -4,7 +4,7 @@ function __pods_no_subcmd
     test (count $cmd) -lt 2
 end
 
-complete -c podctl -n __pods_no_subcmd -a "status battery ping mode conv spatial ear mic loud-reduction press tone-on-press rename one-bud-anc auto-anc chime connect disconnect pair unpair list auto-connect volume mute profile codec default latency watch meter tray popup reboot completion debug install uninstall help" -d 'podctl command'
+complete -c podctl -n __pods_no_subcmd -a "status battery ping mode conv spatial ear mic loud-reduction press tone-on-press rename one-bud-anc auto-anc chime connect disconnect pair unpair list auto-connect volume mute profile codec default latency watch meter tray popup reboot completion debug install uninstall version help" -d 'podctl command'
 
 complete -c podctl -n '__fish_seen_subcommand_from mode'             -a 'off anc transparency adaptive'
 complete -c podctl -n '__fish_seen_subcommand_from conv'             -a 'on off'

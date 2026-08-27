@@ -709,7 +709,7 @@ fn blit(pm: &mut Pixmap, cov: &[u8], dim: (usize, usize), pos: (f32, f32), color
 
 pub fn to_bgra_premul(pm: &Pixmap) -> Vec<u8> {
     let mut out = pm.data().to_vec();
-    for px in out.chunks_exact_mut(4) {
+    for px in out.as_chunks_mut::<4>().0 {
         px.swap(0, 2);
     }
     out
@@ -719,7 +719,7 @@ pub fn to_bgra_premul(pm: &Pixmap) -> Vec<u8> {
 /// only gets the BGRA frame but the notification daemon wants an image.
 pub fn png_from_bgra(bgra: &[u8], w: u32, h: u32) -> Option<Vec<u8>> {
     let mut rgba = bgra.to_vec();
-    for px in rgba.chunks_exact_mut(4) {
+    for px in rgba.as_chunks_mut::<4>().0 {
         px.swap(0, 2);
     }
     let size = tiny_skia::IntSize::from_wh(w, h)?;
@@ -755,7 +755,9 @@ mod tests {
 
     fn red_pixels(pm: &Pixmap) -> usize {
         pm.data()
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .filter(|p| p[0] > 180 && p[1] < 120 && p[2] < 120 && p[3] > 180)
             .count()
     }

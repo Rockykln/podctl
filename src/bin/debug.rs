@@ -159,6 +159,41 @@ pub fn run(no_redact: bool) -> String {
         );
     }
 
+    // Tray and popup run as systemd *user* units wanted by
+    // graphical-session.target. Two things silently break them on
+    // compositors that don't integrate with systemd: the target never
+    // activates (so they don't autostart at login), and the user manager
+    // never learns WAYLAND_DISPLAY / DISPLAY (so the popup falls back to
+    // plain notifications instead of the layer-shell bubble).
+    section(&mut out, "desktop services");
+    let _ = writeln!(
+        out,
+        "  graphical-session       {}",
+        unit_state("graphical-session.target")
+    );
+    for unit in ["podctld", "podctl-tray", "podctl-popup"] {
+        let _ = writeln!(
+            out,
+            "  {unit:<22}  {}",
+            unit_state(&format!("{unit}.service"))
+        );
+    }
+    for var in ["WAYLAND_DISPLAY", "DISPLAY"] {
+        let here = std::env::var_os(var).is_some();
+        let systemd = systemd_env_has(var);
+        let note = if here && !systemd {
+            "  <- set here but NOT in the systemd user env"
+        } else {
+            ""
+        };
+        let _ = writeln!(
+            out,
+            "  {var:<22}  shell {} / systemd {}{note}",
+            yesno(here),
+            yesno(systemd)
+        );
+    }
+
     section(&mut out, "env");
     let _ = writeln!(
         out,
@@ -237,6 +272,50 @@ fn bluez_daemon_status() -> String {
         Ok(o) => String::from_utf8_lossy(&o.stdout).trim().to_string(),
         Err(_) => "?".into(),
     }
+}
+
+/// `active` / `inactive` / `not installed` for a systemd user unit.
+fn unit_state(unit: &str) -> String {
+    let Ok(out) = Command::new("systemctl")
+        .args(["--user", "is-active", unit])
+        .output()
+    else {
+        return "? (no systemctl)".into();
+    };
+    let state = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if state.is_empty() {
+        return "?".into();
+    }
+    // `is-active` says "inactive" both for a stopped unit and for one
+    // that was never installed; `cat` tells the two apart.
+    if state != "active" {
+        let installed = Command::new("systemctl")
+            .args(["--user", "cat", unit])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !installed {
+            return "not installed".into();
+        }
+    }
+    state
+}
+
+/// Whether the systemd *user manager* carries `var`. The session sets
+/// this via `import-environment` / `dbus-update-activation-environment`;
+/// without it the tray and popup start blind.
+fn systemd_env_has(var: &str) -> bool {
+    Command::new("systemctl")
+        .args(["--user", "show-environment"])
+        .output()
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .any(|l| l.split('=').next() == Some(var))
+        })
+        .unwrap_or(false)
 }
 
 /// One-shot `status` against the daemon. `None` if it isn't answering —

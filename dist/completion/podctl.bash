@@ -3,7 +3,7 @@ _pods() {
     local cur prev words cword
     _init_completion || return
 
-    local cmds="status battery ping mode conv spatial ear mic loud-reduction press tone-on-press rename one-bud-anc auto-anc chime connect disconnect pair unpair list auto-connect volume mute profile codec default latency watch meter tray popup reboot completion debug install uninstall help"
+    local cmds="status battery ping mode conv spatial ear mic loud-reduction press tone-on-press rename one-bud-anc auto-anc chime connect disconnect pair unpair list auto-connect volume mute profile codec default latency watch meter tray popup reboot completion debug install uninstall version help"
 
     if [[ $cword -eq 1 ]]; then
         COMPREPLY=( $(compgen -W "$cmds --help --version --json" -- "$cur") )
