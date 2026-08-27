@@ -5,6 +5,8 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-08-27
+
 ### Fixed
 - **Battery could stay empty for a whole session.** The AAP worker was
   started once per BlueZ connect edge and never checked again. If the

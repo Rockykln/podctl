@@ -52,7 +52,8 @@ const VERBS: &[&str] = &[
 ];
 
 /// The `.TH` line carries the version users see in `man podctl`. It was
-/// left at 0.1.0 through the 0.1.1 release; this keeps it honest.
+/// was left at 0.1.0 through the whole 0.1.1 release; this keeps it
+/// honest, and catches a release bump that forgot the man pages.
 #[test]
 fn man_pages_carry_the_crate_version() {
     let want = format!("\"podctl {}\"", env!("CARGO_PKG_VERSION"));
