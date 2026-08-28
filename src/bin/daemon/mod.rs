@@ -8,6 +8,7 @@ mod server;
 
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use tokio::sync::{RwLock, broadcast};
@@ -29,14 +30,29 @@ const RESUBSCRIBE_COOLDOWN: Duration = Duration::from_secs(5);
 /// still feels instant.
 const BATTERY_WAIT: Duration = Duration::from_millis(900);
 
+const NO_POPUP: &str =
+    "no popup process is listening — start it with 'systemctl --user enable --now podctl-popup'";
+
 const NOT_IMPL: &str =
     "not implemented for this device — no verified AAP packet for this setting yet";
+
+/// Drops a popup registration when its watch connection ends.
+pub struct PopupGuard(Arc<Daemon>);
+
+impl Drop for PopupGuard {
+    fn drop(&mut self) {
+        self.0.popup_listeners.fetch_sub(1, Ordering::Relaxed);
+    }
+}
 
 pub struct Daemon {
     state: RwLock<DeviceState>,
     events: broadcast::Sender<Event>,
     aap_stream: RwLock<Option<std::sync::Arc<podctl::l2cap::L2capStream>>>,
     last_resubscribe: Mutex<Option<Instant>>,
+    /// Watch connections that declared `WatchRole::Popup`, i.e. processes
+    /// that will actually draw a bubble for `Event::ShowPopup`.
+    popup_listeners: AtomicUsize,
 }
 
 impl Daemon {
@@ -47,7 +63,18 @@ impl Daemon {
             events: tx,
             aap_stream: RwLock::new(None),
             last_resubscribe: Mutex::new(None),
+            popup_listeners: AtomicUsize::new(0),
         }
+    }
+
+    /// Register a popup watcher for as long as the returned guard lives.
+    pub fn attach_popup(self: &Arc<Self>) -> PopupGuard {
+        self.popup_listeners.fetch_add(1, Ordering::Relaxed);
+        PopupGuard(Arc::clone(self))
+    }
+
+    fn popup_attached(&self) -> bool {
+        self.popup_listeners.load(Ordering::Relaxed) > 0
     }
 
     /// Called by the AAP runtime once the socket is open and the
@@ -299,11 +326,20 @@ impl Daemon {
                 Response::ok_done()
             }
             Request::ShowPopup => {
-                self.broadcast_event(Event::ShowPopup);
-                Response::ok_done()
+                // Nobody draws the bubble but podctl-popup. Answering
+                // `ok` with the service down made both the tray click and
+                // `podctl popup` silent no-ops.
+                if self.popup_attached() {
+                    self.broadcast_event(Event::ShowPopup);
+                    Response::ok_done()
+                } else {
+                    Response::err(NO_POPUP)
+                }
             }
 
-            Request::Watch => Response::err("watch is a streaming request — handled separately"),
+            Request::Watch { .. } => {
+                Response::err("watch is a streaming request — handled separately")
+            }
         }
     }
 

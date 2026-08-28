@@ -8,7 +8,7 @@ pub mod l2cap;
 pub mod model;
 
 pub use caps::{Capabilities, Model};
-pub use ipc::{OkPayload, PressSide, Request, Response, socket_path};
+pub use ipc::{OkPayload, PressSide, Request, Response, WatchRole, socket_path};
 pub use model::{
     AudioState, Battery, BtState, ConvAwareness, DeviceInfo, DeviceState, EarStatus, Event, InEar,
     MicSelection, Mode, PairedDevice, PodSettings, PressAction, PressCounts, PressKind, Profile,

@@ -14,9 +14,11 @@ use tokio::net::UnixStream;
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::time::sleep_until;
 
+use tracing::{debug, info};
+
 use podctl::exitcode;
 use podctl::model::{Battery, DeviceState, Event};
-use podctl::{Request, Response, socket_path};
+use podctl::{Request, Response, WatchRole, socket_path};
 
 use anim::{FRAME, Slide};
 use backend::{Backend, Frame};
@@ -32,6 +34,7 @@ const BACKOFF_MAX_MS: u64 = 30_000;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
+    init_tracing();
     let args: Vec<String> = std::env::args().skip(1).collect();
 
     if args.iter().any(|a| a == "-h" || a == "--help") {
@@ -62,6 +65,7 @@ async fn main() -> ExitCode {
 async fn run() -> ExitCode {
     let cfg = config::load();
     if !cfg.enabled {
+        info!("popup disabled by config — exiting");
         return ExitCode::SUCCESS;
     }
 
@@ -70,7 +74,7 @@ async fn run() -> ExitCode {
     let _lock = match single_instance() {
         Some(f) => f,
         None => {
-            eprintln!("podctl-popup: another instance is already running");
+            info!("another instance already holds the lock — exiting");
             return ExitCode::SUCCESS;
         }
     };
@@ -84,6 +88,13 @@ async fn run() -> ExitCode {
     let hold = Duration::from_millis(cfg.duration_ms);
     let anim_ms = cfg.anim_ms;
     let visible = Duration::from_millis(config::visible_ms(&cfg));
+
+    info!(
+        backend = %pick,
+        theme = %cfg.theme,
+        visible_ms = visible.as_millis() as u64,
+        "podctl-popup ready"
+    );
 
     let (tx, rx) = mpsc::channel::<Cmd>();
     let render = thread::spawn(move || render_loop(rx, &pick, theme, anim_ms, hold));
@@ -285,7 +296,9 @@ async fn serve(
         Err(_) => return false,
     };
     let (rx, mut wx) = stream.into_split();
-    let Ok(mut hello) = serde_json::to_vec(&Request::Watch) else {
+    let Ok(mut hello) = serde_json::to_vec(&Request::Watch {
+        role: WatchRole::Popup,
+    }) else {
         return false;
     };
     hello.push(b'\n');
@@ -376,7 +389,10 @@ fn handle_event(
             snap.connected = true;
             show_now(tx, snap, pending_open, shown_until, visible);
         }
-        Event::ShowPopup => show_now(tx, snap, pending_open, shown_until, visible),
+        Event::ShowPopup => {
+            debug!("show-popup requested");
+            show_now(tx, snap, pending_open, shown_until, visible)
+        }
         Event::Disconnected => {
             snap.connected = false;
             snap.mode = None;
@@ -452,6 +468,19 @@ async fn oneshot(req: &Request) -> anyhow::Result<Response> {
     let mut buf = String::new();
     BufReader::new(rx).read_line(&mut buf).await?;
     Ok(serde_json::from_str(buf.trim())?)
+}
+
+/// Without this podctl-popup wrote nothing at all — not a startup line,
+/// not an error — so a bubble that never appeared left no trace in the
+/// journal. The unit sets RUST_LOG=info and that went nowhere.
+fn init_tracing() {
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_target(false)
+        .with_writer(std::io::stderr)
+        .init();
 }
 
 fn single_instance() -> Option<std::fs::File> {

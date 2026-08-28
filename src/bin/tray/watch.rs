@@ -8,7 +8,7 @@ use tracing::{debug, warn};
 use zbus::Connection;
 
 use podctl::model::{Battery, DeviceState, Event};
-use podctl::{Request, Response, socket_path};
+use podctl::{Request, Response, WatchRole, socket_path};
 
 use crate::ipc;
 use crate::menu::{self, Menu};
@@ -58,7 +58,9 @@ async fn serve(
     let path = socket_path();
     let stream = UnixStream::connect(&path).await?;
     let (rx, mut tx) = stream.into_split();
-    let mut line = serde_json::to_vec(&Request::Watch)?;
+    let mut line = serde_json::to_vec(&Request::Watch {
+        role: WatchRole::Observer,
+    })?;
     line.push(b'\n');
     tx.write_all(&line).await?;
     tx.flush().await?;

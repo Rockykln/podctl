@@ -5,6 +5,23 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- **A left-click on the tray icon did nothing, and said it worked.**
+  The click asks the daemon to broadcast `ShowPopup`, which only
+  `podctl-popup` draws. With that service down the event went to nobody
+  and `podctl popup` still answered `ok` with exit 0 — no error, no log
+  line, nothing to go on. Watch connections now declare a role, the
+  daemon tracks whether a popup is attached, and refuses the request
+  with the command to start it when none is. All three binaries have to
+  be on the same version for this: an older `podctl-popup` attaches as a
+  plain observer.
+- **`podctl-popup` initialised no logging at all.** `podctld` and
+  `podctl-tray` both set up a subscriber; the popup never did, so its
+  unit's `RUST_LOG=info` went nowhere and the journal held nothing but
+  systemd's own "Started" line — a bubble that never appeared left no
+  trace. It logs its backend, theme and hold on startup, and the
+  show/exit paths at debug.
+
 ## [0.1.2] - 2026-08-27
 
 ### Fixed

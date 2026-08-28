@@ -20,6 +20,20 @@ unsafe extern "C" {
     fn libc_getuid() -> u32;
 }
 
+/// What a watch connection is for. The daemon cannot tell this from the
+/// event channel alone — the tray and every `podctl watch` subscribe to
+/// it too, so a non-zero receiver count says nothing about the popup in
+/// particular, and `show-popup` needs to know whether anyone will draw.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WatchRole {
+    /// `podctl watch`, the tray — anything that only observes.
+    #[default]
+    Observer,
+    /// `podctl-popup`, the one process that draws the bubble.
+    Popup,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Request {
@@ -98,7 +112,12 @@ pub enum Request {
     },
     ShowPopup,
 
-    Watch,
+    /// `role` is defaulted so an older client sending a bare
+    /// `{"op":"watch"}` still attaches as an observer.
+    Watch {
+        #[serde(default)]
+        role: WatchRole,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]

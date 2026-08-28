@@ -5,7 +5,7 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use podctl::{
-    PressSide, Response, exitcode,
+    PressSide, Response, WatchRole, exitcode,
     ipc::Request,
     model::{ConvAwareness, MicSelection, Mode, PressAction, Profile, SpatialAudio},
 };
@@ -345,7 +345,9 @@ fn parse_verb(verb: &str, rest: &[String]) -> Result<Request, CliError> {
             Request::SetAutoAncLevel { level }
         }
 
-        "watch" | "w" => Request::Watch,
+        "watch" | "w" => Request::Watch {
+            role: WatchRole::Observer,
+        },
 
         other => {
             return Err(CliError::usage(format!(
@@ -555,7 +557,10 @@ fn stream_events(json: bool) -> Result<i32, CliError> {
     writeln!(
         writer,
         "{}",
-        serde_json::to_string(&Request::Watch).expect("serialise")
+        serde_json::to_string(&Request::Watch {
+            role: WatchRole::Observer,
+        })
+        .expect("serialise")
     )
     .map_err(|e| CliError::oserr(format!("write: {e}")))?;
     writer

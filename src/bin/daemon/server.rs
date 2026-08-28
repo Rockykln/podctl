@@ -10,7 +10,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tracing::{debug, info, warn};
 
-use podctl::{Request, Response};
+use podctl::{Request, Response, WatchRole};
 
 use super::Daemon;
 
@@ -88,8 +88,14 @@ async fn handle_connection(sock: UnixStream, daemon: Arc<Daemon>) -> anyhow::Res
     };
 
     // `watch` flips this connection into a long-lived event stream.
-    if matches!(req, Request::Watch) {
+    if let Request::Watch { role } = req {
         write_line(&mut tx, &Response::ok_done()).await?;
+        // Held for the life of the stream so `show-popup` can tell
+        // whether anyone is left to draw the bubble.
+        let _popup = match role {
+            WatchRole::Popup => Some(daemon.attach_popup()),
+            WatchRole::Observer => None,
+        };
         let mut events = daemon.subscribe();
         loop {
             match events.recv().await {

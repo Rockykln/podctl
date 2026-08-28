@@ -47,7 +47,9 @@ pub fn dispatch(req: &Request) -> Response {
              run 'podctl setup' to install.",
         ),
 
-        Request::Watch => Response::err("watch needs the daemon — install it with 'podctl setup'."),
+        Request::Watch { .. } => {
+            Response::err("watch needs the daemon — install it with 'podctl setup'.")
+        }
 
         Request::DebugEmitCaseLid { .. } => {
             Response::err("debug emit-case-lid needs the daemon (it broadcasts on the event bus).")
