@@ -438,7 +438,7 @@ struct XdgPaths {
     bin: Vec<PathBuf>,
     unit: Vec<PathBuf>,
     man: Vec<PathBuf>,
-    completion: PathBuf,
+    completion: Vec<PathBuf>,
     marker_dir: PathBuf,
 }
 
@@ -461,7 +461,14 @@ impl XdgPaths {
                 unit_dir.join("podctl-popup.service"),
             ],
             man: vec![man_dir.join("podctl.1"), man_dir.join("podctld.1")],
-            completion: completion_path(&detect_shell(), home),
+            // Every shell's path, not just this shell's: install
+            // writes the one for $SHELL, but a user who later
+            // uninstalls from a different shell would otherwise leave
+            // the first one behind for good.
+            completion: ["bash", "zsh", "fish"]
+                .iter()
+                .map(|sh| completion_path(sh, home))
+                .collect(),
             marker_dir,
         }
     }
@@ -470,7 +477,7 @@ impl XdgPaths {
         let mut v: Vec<PathBuf> = self.bin.to_vec();
         v.extend(self.unit.iter().cloned());
         v.extend(self.man.iter().cloned());
-        v.push(self.completion.clone());
+        v.extend(self.completion.iter().cloned());
         v.push(self.marker_dir.join("no-daemon"));
         v
     }

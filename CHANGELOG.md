@@ -42,6 +42,10 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 - `podctl tray status` reported a tray that was never installed as
   `inactive`, which reads like it is one `start` away. It says
   `not installed` and points at `--with-tray`.
+- `uninstall` removed the completion script for `$SHELL` only, so
+  uninstalling from a different shell than you installed from stranded
+  the first one — on the machine this was found on, a fish completion
+  survived a full uninstall. It sweeps bash, zsh and fish.
 
 ### Changed
 - `podctl install` offers the tray icon and the case-open popup when
