@@ -5,6 +5,8 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-08-29
+
 ### Fixed
 - **A left-click on the tray icon did nothing, and said it worked.**
   The click asks the daemon to broadcast `ShowPopup`, which only
