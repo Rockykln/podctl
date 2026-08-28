@@ -64,7 +64,7 @@ _pods() {
         tray)       _values 'action' start stop status restart ;;
         completion) _values 'shell' bash zsh fish ;;
         debug)      _values 'arg' emit-case-lid --no-redact ;;
-        install)    _values 'flag' --yes --no-daemon --no-completion --no-manpages --with-tray --with-popup ;;
+        install)    _values 'flag' --yes --no-daemon --no-completion --no-manpages --no-tray --no-popup --with-tray --with-popup ;;
         uninstall)  _values 'flag' --yes ;;
         help)       _describe 'topic' cmds ;;
     esac

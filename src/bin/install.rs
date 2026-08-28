@@ -15,8 +15,10 @@ pub fn install(args: &[String]) -> i32 {
     let no_daemon = args.iter().any(|a| a == "--no-daemon");
     let no_completion = args.iter().any(|a| a == "--no-completion");
     let no_manpages = args.iter().any(|a| a == "--no-manpages");
-    let with_tray = args.iter().any(|a| a == "--with-tray");
-    let with_popup = args.iter().any(|a| a == "--with-popup");
+    let no_tray = args.iter().any(|a| a == "--no-tray");
+    let tray_flag = args.iter().any(|a| a == "--with-tray");
+    let no_popup = args.iter().any(|a| a == "--no-popup");
+    let popup_flag = args.iter().any(|a| a == "--with-popup");
 
     let Ok(cur_pods) = std::env::current_exe() else {
         eprintln!("podctl: cannot resolve current binary path");
@@ -38,7 +40,7 @@ pub fn install(args: &[String]) -> i32 {
         .parent()
         .map(|p| p.join("podctl-tray"))
         .unwrap_or_default();
-    if with_tray && !cur_pods_tray.exists() {
+    if tray_flag && !cur_pods_tray.exists() {
         eprintln!(
             "podctl: podctl-tray binary not next to podctl at {}",
             cur_pods_tray.display()
@@ -50,7 +52,7 @@ pub fn install(args: &[String]) -> i32 {
         .parent()
         .map(|p| p.join("podctl-popup"))
         .unwrap_or_default();
-    if with_popup && !cur_pods_popup.exists() {
+    if popup_flag && !cur_pods_popup.exists() {
         eprintln!(
             "podctl: podctl-popup binary not next to podctl at {}",
             cur_pods_popup.display()
@@ -90,17 +92,30 @@ pub fn install(args: &[String]) -> i32 {
 
     let shell = detect_shell();
     let completion_target = completion_path(&shell, &home);
+    let has_systemctl = have_systemctl();
+
+    // Tray and popup are optional UI, so they are offered rather than
+    // assumed: ask whenever the binary is at hand and no flag decided.
+    // Skipping the popup silently is what left the tray's own left-click
+    // — which asks podctl-popup to draw — doing nothing at all.
+    let tray_offered = !no_tray && !tray_flag && cur_pods_tray.exists() && has_systemctl;
+    let popup_offered = !no_popup && !popup_flag && cur_pods_popup.exists() && has_systemctl;
+    let asked = "   (optional — asked below)";
+    let tray_note = if tray_offered { asked } else { "" };
+    let popup_note = if popup_offered { asked } else { "" };
+    let mut with_tray = tray_flag;
+    let mut with_popup = popup_flag;
 
     println!("podctl will install the following:");
     println!();
     println!("  binaries:");
     println!("    {}", pods_dst.display());
     println!("    {}", podsd_dst.display());
-    if with_tray {
-        println!("    {}", pods_tray_dst.display());
+    if tray_flag || tray_offered {
+        println!("    {}{tray_note}", pods_tray_dst.display());
     }
-    if with_popup {
-        println!("    {}", pods_popup_dst.display());
+    if popup_flag || popup_offered {
+        println!("    {}{popup_note}", pods_popup_dst.display());
     }
     if !no_completion {
         println!("  shell completion ({shell}):");
@@ -115,13 +130,13 @@ pub fn install(args: &[String]) -> i32 {
         println!("  systemd user service:");
         println!("    {}", unit_path.display());
     }
-    if with_tray {
+    if tray_flag || tray_offered {
         println!("  systemd user service (tray):");
-        println!("    {}", tray_unit_path.display());
+        println!("    {}{tray_note}", tray_unit_path.display());
     }
-    if with_popup {
+    if popup_flag || popup_offered {
         println!("  systemd user service (popup):");
-        println!("    {}", popup_unit_path.display());
+        println!("    {}{popup_note}", popup_unit_path.display());
     }
     println!();
     println!("no root needed; rollback any time with 'podctl uninstall'.");
@@ -130,6 +145,14 @@ pub fn install(args: &[String]) -> i32 {
     if !yes && !confirm("Proceed?", true) {
         println!("aborted.");
         return exitcode::OK;
+    }
+
+    // Asked up front so a "no" leaves no stray binary behind.
+    if tray_offered {
+        with_tray = yes || confirm("Install the tray icon (podctl-tray)?", true);
+    }
+    if popup_offered {
+        with_popup = yes || confirm("Install the case-open popup (podctl-popup)?", true);
     }
 
     if let Err(e) = std::fs::create_dir_all(&bin_dir) {
@@ -186,7 +209,6 @@ pub fn install(args: &[String]) -> i32 {
     let mut daemon_enabled = false;
     let mut tray_enabled = false;
     let mut popup_enabled = false;
-    let has_systemctl = have_systemctl();
     if !no_daemon && !has_systemctl {
         println!();
         println!("note: systemctl not found — skipping systemd user service install.");
@@ -327,10 +349,29 @@ pub fn uninstall(args: &[String]) -> i32 {
     };
 
     let xdg = XdgPaths::from_home(&home);
-    let system_pkg = system_installed();
+
+    // A distro package is detected no matter which copy is running, but it
+    // is only ours to remove when we *are* that copy: `podctl install`
+    // shadows /usr/bin/podctl in $PATH, and the user-level uninstall must
+    // not reach into a package it was not asked about.
+    let pkg = owning_package();
+    let owned = pkg.is_some() && running_from_system_bin();
+    let system_pkg = if owned { pkg.clone() } else { None };
+    let foreign_pkg = if owned { None } else { pkg };
 
     if system_pkg.is_none() && !xdg.any_exists() {
-        println!("podctl: nothing to remove (neither system package nor user files found).");
+        match &foreign_pkg {
+            Some(pkg) => {
+                println!("podctl: no per-user files to remove.");
+                println!("note: system package '{pkg}' is installed and was left alone.");
+                println!("      remove it with: sudo pacman -R {pkg}");
+            }
+            None => {
+                println!(
+                    "podctl: nothing to remove (neither system package nor user files found)."
+                );
+            }
+        }
         return exitcode::OK;
     }
 
@@ -349,6 +390,11 @@ pub fn uninstall(args: &[String]) -> i32 {
             println!("    {}", p.display());
         }
     }
+    if let Some(pkg) = &foreign_pkg {
+        println!("  left alone:");
+        println!("    system package '{pkg}' — /usr/bin/podctl and its services");
+        println!("    remove it with: sudo pacman -R {pkg}");
+    }
     println!();
 
     if !yes && !confirm("Proceed?", true) {
@@ -357,12 +403,14 @@ pub fn uninstall(args: &[String]) -> i32 {
     }
 
     // Stop services before removing units, otherwise systemd holds a
-    // reference to the now-vanished unit file. Skip silently on
-    // non-systemd hosts — nothing to disable there.
+    // reference to the now-vanished unit file. Only ever touch a unit this
+    // run also removes — stopping a packaged service we are leaving in
+    // place would silently kill a tray the user never asked us about.
+    // Skip silently on non-systemd hosts — nothing to disable there.
     if have_systemctl() {
-        let _ = run("systemctl", &["--user", "disable", "--now", "podctld"]);
-        let _ = run("systemctl", &["--user", "disable", "--now", "podctl-tray"]);
-        let _ = run("systemctl", &["--user", "disable", "--now", "podctl-popup"]);
+        for unit in xdg.units_to_disable(system_pkg.is_some()) {
+            let _ = run("systemctl", &["--user", "disable", "--now", unit]);
+        }
     }
 
     let mut rc = exitcode::OK;
@@ -435,6 +483,26 @@ impl XdgPaths {
         self.all().iter().any(|p| p.exists())
     }
 
+    /// Service names whose unit files this run removes: the per-user ones
+    /// that exist, plus all three when the package itself is going away.
+    fn units_to_disable(&self, removing_package: bool) -> Vec<&'static str> {
+        const UNITS: [(&str, &str); 3] = [
+            ("podctld", "podctld.service"),
+            ("podctl-tray", "podctl-tray.service"),
+            ("podctl-popup", "podctl-popup.service"),
+        ];
+        UNITS
+            .iter()
+            .filter(|(_, file)| {
+                removing_package
+                    || self.unit.iter().any(|p| {
+                        p.file_name().and_then(|n| n.to_str()) == Some(*file) && p.exists()
+                    })
+            })
+            .map(|(name, _)| *name)
+            .collect()
+    }
+
     fn purge(&self) {
         for p in self.all() {
             let _ = std::fs::remove_file(&p);
@@ -443,14 +511,12 @@ impl XdgPaths {
     }
 }
 
-/// `Some(pkg_name)` if the *currently running* binary is at `/usr/bin/podctl`
-/// or `/usr/local/bin/podctl` and a distro package owns it.
-fn system_installed() -> Option<String> {
-    let current = std::env::current_exe().ok()?;
-    if !(current.starts_with("/usr/bin") || current.starts_with("/usr/local/bin")) {
-        return None;
-    }
-    owning_package()
+/// Whether the running binary is the packaged one, and `uninstall` may
+/// therefore hand the package to the package manager.
+fn running_from_system_bin() -> bool {
+    std::env::current_exe()
+        .map(|p| p.starts_with("/usr/bin") || p.starts_with("/usr/local/bin"))
+        .unwrap_or(false)
 }
 
 fn pacman_remove(pkg: &str) -> i32 {
@@ -616,3 +682,43 @@ pub fn have_systemctl() -> bool {
 const BASH_COMPLETION: &str = include_str!("../../dist/completion/podctl.bash");
 const ZSH_COMPLETION: &str = include_str!("../../dist/completion/_podctl.zsh");
 const FISH_COMPLETION: &str = include_str!("../../dist/completion/podctl.fish");
+
+#[cfg(test)]
+mod tests {
+    use super::XdgPaths;
+    use std::path::PathBuf;
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("podctl-install-test-{name}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".config/systemd/user")).unwrap();
+        dir
+    }
+
+    /// A packaged tray/popup kept running once `podctl install` shadowed
+    /// /usr/bin/podctl in $PATH: uninstall stopped all three services
+    /// while removing only the per-user daemon unit.
+    #[test]
+    fn only_units_we_remove_get_disabled() {
+        let home = scratch("units");
+        std::fs::write(home.join(".config/systemd/user/podctld.service"), "").unwrap();
+        let xdg = XdgPaths::from_home(&home);
+
+        assert_eq!(xdg.units_to_disable(false), vec!["podctld"]);
+
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn removing_the_package_disables_all_of_its_units() {
+        let home = scratch("pkg");
+        let xdg = XdgPaths::from_home(&home);
+
+        assert_eq!(
+            xdg.units_to_disable(true),
+            vec!["podctld", "podctl-tray", "podctl-popup"]
+        );
+
+        let _ = std::fs::remove_dir_all(&home);
+    }
+}

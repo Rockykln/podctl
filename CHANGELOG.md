@@ -21,6 +21,33 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
   systemd's own "Started" line — a bubble that never appeared left no
   trace. It logs its backend, theme and hold on startup, and the
   show/exit paths at debug.
+- **`uninstall` stopped services it did not remove.** It ran
+  `systemctl --user disable --now` on `podctld`, `podctl-tray` and
+  `podctl-popup` unconditionally, including the units shipped by the
+  `podctl-bin` / `podctl-git` packages. Removing a `~/.local` install on
+  a machine that also had the package left the packaged tray and popup
+  stopped and disabled, with nothing in the output saying so. Only units
+  whose files the same run deletes are touched now.
+- **A distro package went undetected once `podctl install` had run.**
+  Package detection bailed out unless the *running* binary sat in
+  `/usr/bin`, and `~/.local/bin/podctl` shadows it in `$PATH`. The
+  package is now found either way: removed as before when it is the copy
+  you invoked, otherwise listed under `left alone:` with the `pacman -R`
+  line to remove it yourself.
+- `podctl tray start` only started the service; the help had promised
+  "enable + start" since the verb existed, so a tray started this way was
+  gone after the next login. `start` enables, `stop` disables.
+- `podctl tray status` reported a tray that was never installed as
+  `inactive`, which reads like it is one `start` away. It says
+  `not installed` and points at `--with-tray`.
+
+### Changed
+- `podctl install` offers the tray icon and the case-open popup when
+  their binaries sit next to `podctl`, instead of silently skipping them
+  without `--with-tray` / `--with-popup`. Skipping the popup by default
+  is what left the tray's own left-click with nothing to draw it.
+  `--no-tray` / `--no-popup` skip the questions, the `--with-` flags
+  still take them without asking, and `--yes` accepts both.
 
 ## [0.1.2] - 2026-08-27
 

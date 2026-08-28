@@ -29,7 +29,7 @@ _pods() {
         tray)            COMPREPLY=( $(compgen -W "start stop status restart" -- "$cur") );;
         completion)      COMPREPLY=( $(compgen -W "bash zsh fish" -- "$cur") );;
         debug)           COMPREPLY=( $(compgen -W "emit-case-lid --no-redact" -- "$cur") );;
-        install)         COMPREPLY=( $(compgen -W "--yes --no-daemon --no-completion --no-manpages --with-tray --with-popup" -- "$cur") );;
+        install)         COMPREPLY=( $(compgen -W "--yes --no-daemon --no-completion --no-manpages --no-tray --no-popup --with-tray --with-popup" -- "$cur") );;
         uninstall)       COMPREPLY=( $(compgen -W "--yes" -- "$cur") );;
         help)            COMPREPLY=( $(compgen -W "$cmds" -- "$cur") );;
     esac

@@ -24,5 +24,5 @@ complete -c podctl -n '__fish_seen_subcommand_from tray'             -a 'start s
 complete -c podctl -n '__fish_seen_subcommand_from completion'       -a 'bash zsh fish'
 complete -c podctl -n '__fish_seen_subcommand_from debug'            -a 'emit-case-lid --no-redact'
 complete -c podctl -n '__fish_seen_subcommand_from emit-case-lid'    -a 'open close'
-complete -c podctl -n '__fish_seen_subcommand_from install'          -a '--yes --no-daemon --no-completion --no-manpages --with-tray --with-popup'
+complete -c podctl -n '__fish_seen_subcommand_from install'          -a '--yes --no-daemon --no-completion --no-manpages --no-tray --no-popup --with-tray --with-popup'
 complete -c podctl -n '__fish_seen_subcommand_from uninstall'        -a '--yes'

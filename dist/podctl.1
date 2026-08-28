@@ -167,10 +167,23 @@ Restart the installed systemd user services
 .RB ( podctld ", " podctl-tray ", " podctl-popup ).
 No root required; units that are not installed are skipped.
 .TP
-.BR "install " [ --yes "] [" --no-daemon "] [" --no-completion "] [" --no-manpages "] [" --with-tray "] [" --with-popup ]
+.BR "install " [ --yes "] [" --no-daemon "] [" --no-completion "] [" --no-manpages "] [" --no-tray "] [" --no-popup "] [" --with-tray "] [" --with-popup ]
 Install binaries, completion, man pages and systemd user services to
 .IR ~/.local .
-No root required.
+No root required. The tray icon and the case-open popup are offered
+interactively when the
+.B podctl-tray
+and
+.B podctl-popup
+binaries sit next to
+.BR podctl ;
+the
+.B --with-
+flags take them without asking and
+.BR --no-tray " / " --no-popup
+skip the questions. The tray's left-click asks
+.B podctl-popup
+to draw, so a tray installed without it has nothing to show.
 .TP
 .BR "uninstall " [ --yes ]
 Remove everything
@@ -187,6 +200,11 @@ package), this verb delegates to
 instead and stops the user services first. Use
 .B --yes
 to skip the prompt; the sudo password prompt still appears.
+.IP
+Run from
+.I ~/.local/bin
+while such a package is also installed, only the per-user files go. The
+package and its running services are reported and left alone.
 .SH OPTIONS
 .TP
 .B --json

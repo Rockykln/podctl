@@ -8,8 +8,8 @@ const UNIT: &str = "podctl-tray";
 pub fn run(args: &[String]) -> i32 {
     let verb = args.first().map(String::as_str).unwrap_or("status");
     match verb {
-        "start" => systemctl(&["start", UNIT]),
-        "stop" => systemctl(&["stop", UNIT]),
+        "start" => systemctl(&["enable", "--now", UNIT]),
+        "stop" => systemctl(&["disable", "--now", UNIT]),
         "restart" => systemctl(&["restart", UNIT]),
         "status" => status(),
         "help" | "-h" | "--help" => {
@@ -28,7 +28,7 @@ fn print_help() {
     println!("usage: podctl tray <start|stop|restart|status>");
     println!();
     println!("  start    enable + start the podctl-tray user service");
-    println!("  stop     stop the service");
+    println!("  stop     stop the service and disable it for the next login");
     println!("  restart  restart the service");
     println!("  status   show service state, watcher presence, and config");
 }
@@ -48,6 +48,7 @@ fn systemctl(args: &[&str]) -> i32 {
 }
 
 fn status() -> i32 {
+    let installed = unit_installed(UNIT);
     let active = systemctl_is("is-active", UNIT);
     let enabled = systemctl_is("is-enabled", UNIT);
     let watcher = watcher_present();
@@ -55,8 +56,15 @@ fn status() -> i32 {
     let cfg_exists = cfg_path.exists();
     let cfg_summary = read_config_summary(&cfg_path);
 
-    println!("service:    {}", active.as_deref().unwrap_or("unknown"));
-    println!("enabled:    {}", enabled.as_deref().unwrap_or("unknown"));
+    if installed == Some(false) {
+        // `is-active` reports a unit that does not exist as plain
+        // "inactive", which reads like a service one `start` away.
+        println!("service:    not installed");
+        println!("            install it with: podctl install --with-tray");
+    } else {
+        println!("service:    {}", active.as_deref().unwrap_or("unknown"));
+        println!("enabled:    {}", enabled.as_deref().unwrap_or("unknown"));
+    }
     println!(
         "watcher:    {}",
         match watcher {
@@ -85,6 +93,18 @@ fn status() -> i32 {
         );
     }
     exitcode::OK
+}
+
+/// `None` when systemctl is missing entirely.
+fn unit_installed(unit: &str) -> Option<bool> {
+    let status = Command::new("systemctl")
+        .env("LC_ALL", "C")
+        .args(["--user", "cat", unit])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .ok()?;
+    Some(status.success())
 }
 
 fn systemctl_is(verb: &str, unit: &str) -> Option<String> {

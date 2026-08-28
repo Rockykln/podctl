@@ -472,7 +472,9 @@ podctl install — install podctl globally for your user
 Copies the binaries to ~/.local/bin/, drops shell completion into the
 right place for your shell (fish/bash/zsh autodetected from \\$SHELL),
 installs man pages to ~/.local/share/man/man1/, and asks whether you
-want a systemd user service that keeps the daemon running.
+want a systemd user service that keeps the daemon running. When the
+podctl-tray / podctl-popup binaries sit next to podctl it offers those
+too — the tray's left-click needs podctl-popup to draw anything.
 
 No root needed. Run from the build directory or anywhere the binaries
 are co-located.
@@ -482,10 +484,15 @@ FLAGS
     --no-daemon        skip the systemd unit
     --no-completion    skip shell completion
     --no-manpages      skip man pages
+    --no-tray          do not offer the tray icon
+    --no-popup         do not offer the case-open bubble
+    --with-tray        install the tray icon without asking
+    --with-popup       install the case-open bubble without asking
 
 EXAMPLES
     podctl install
     podctl install --yes --no-daemon
+    podctl install --with-tray --with-popup
 
 After install: re-open your shell so completion + PATH kick in.
 ";
@@ -496,6 +503,11 @@ podctl uninstall — remove what 'install' put in place
 Removes binaries from ~/.local/bin/, the systemd user unit (after
 disabling it), the completion script, the man pages, and the no-daemon
 marker. Idempotent: missing files are ignored.
+
+Only ever touches what it lists. If podctl is *also* installed as a
+distro package and you run this from ~/.local/bin, the package and its
+services are left running — the listing names it and the pacman command
+to remove it yourself.
 
     podctl uninstall
     podctl uninstall --yes
