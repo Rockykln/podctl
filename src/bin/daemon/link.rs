@@ -48,6 +48,9 @@ pub async fn run(daemon: Arc<Daemon>) {
     let mut prev_addr: Option<String> = None;
     let mut prev_connected = false;
     let mut aap = AapSupervisor::default();
+    // A link that was already up when the daemon started is no new
+    // connection; announcing it pops the bubble on every restart.
+    let mut first_poll = true;
     loop {
         // BlueZ + PipeWire calls are sync subprocess work; park them on
         // a blocking thread so we don't stall the runtime if pactl is slow.
@@ -92,7 +95,7 @@ pub async fn run(daemon: Arc<Daemon>) {
                     {
                         prev_addr = Some(addr.clone());
                         prev_connected = s.connected;
-                        if s.connected {
+                        if s.connected && !first_poll {
                             let _ = daemon.events.send(Event::Connected {
                                 name: s.name.clone().unwrap_or_default(),
                                 address: addr.clone(),
@@ -107,6 +110,7 @@ pub async fn run(daemon: Arc<Daemon>) {
                     let _ = daemon.events.send(Event::Disconnected);
                 }
             }
+            first_poll = false;
             // Spawn, restart or stop the AAP loop.
             aap.sync(&daemon, &snap_addr, snap_connected).await;
             aap.watchdog(&daemon).await;

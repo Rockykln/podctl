@@ -41,6 +41,19 @@ pub fn primary_sink() -> Option<SinkInfo> {
     None
 }
 
+/// Whether the AirPods sink is actually playing something right now
+/// (PipeWire reports `RUNNING`; idle and suspended sinks carry no audio).
+pub fn primary_sink_running() -> bool {
+    let Ok(out) = pactl(&["list", "sinks", "short"]) else {
+        return false;
+    };
+    out.lines().any(|l| {
+        let cols: Vec<&str> = l.split('\t').collect();
+        cols.get(1).is_some_and(|n| n.starts_with("bluez_output."))
+            && cols.last() == Some(&"RUNNING")
+    })
+}
+
 pub fn primary_card() -> Option<CardInfo> {
     let sink = primary_sink()?;
     let target = format!("bluez_card.{}", sink.address.replace(':', "_"));

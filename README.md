@@ -27,8 +27,10 @@ property via `dbus-send`.
 
 `podctld` also does the host-side part an iPhone would: taking a bud out
 pauses whatever MPRIS player is playing and putting it back resumes it
-(tied to `podctl ear`), and while you talk the AirPods volume fades down
-a little and back (tied to `podctl conv`).
+(tied to `podctl ear`). Conversation awareness uses the AirPods' own
+speech detection with a volume stage of podctl's own: it measures how
+loud the music really plays and fades it to a level you can talk over,
+more for loud music, less for quiet (tied to `podctl conv`).
 
 Spatial audio, loud-sound reduction and the per-bud press-action /
 tone-on-press configs are currently no-ops — their AAP setting IDs

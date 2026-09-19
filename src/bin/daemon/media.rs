@@ -18,17 +18,38 @@ const RESUME_WINDOW: Duration = Duration::from_secs(15 * 60);
 /// After a reconnect from the case the AirPods sink needs a moment to
 /// reappear; resuming earlier would play through the speakers.
 const SINK_WAIT: Duration = Duration::from_secs(15);
+/// The in-ear sensor flickers while a bud is pulled out (out, in, out
+/// within half a second). Resume only once the buds have stayed in.
+const RESUME_SETTLE: Duration = Duration::from_secs(1);
 /// Proxies (browser integration, scrobblers) mirror another player's
 /// track, and some turn Pause/Play into a toggle — calling both would
 /// pause and unpause the same song. Only one player per track is touched,
 /// after a short wait for the mirrors to catch up.
 const SETTLE: Duration = Duration::from_millis(400);
-/// Speech ducks to this share of the current volume. PipeWire's percent
-/// scale is cubic, so 75 % is roughly -7.5 dB: clearly quieter, not muted.
-const DUCK_PERCENT: u32 = 75;
+/// Speech ducks the music by an amount that grows with how loud it
+/// plays (measured before the sink volume, plus the sink volume in dB).
+/// Tuned by ear: 10 dB at a normal -35 dBFS, 0.6 dB more per dB louder —
+/// a 1:1 rule left loud-ish music too quiet.
+const DUCK_REF_DB: f64 = -35.0;
+const DUCK_REF_CUT: f64 = 10.0;
+const DUCK_SLOPE: f64 = 0.6;
+/// Always a noticeable dip, never all the way to silence.
+const DUCK_MIN_DB: f64 = 6.0;
+const DUCK_MAX_DB: f64 = 30.0;
+/// Below this the music is effectively silent; nothing to duck.
+const SILENCE_DB: f64 = -70.0;
+/// The buds report the end of speech at every pause between sentences;
+/// only restore once it has stayed quiet this long.
+const RESTORE_HOLD: Duration = Duration::from_millis(1500);
+/// Measured in 50 ms blocks; the duck follows the loud parts, so a quiet
+/// bar at the wrong moment does not leave the music too loud.
+const MEASURE: Duration = Duration::from_millis(600);
+const BLOCK_SAMPLES: usize = 44_100 / 20 * 2;
 /// Volume changes are faded in 2.5-point steps, not jumped.
 const FADE_STEP_TENTHS: i32 = 25;
+/// Down quickly so the first words are heard, back up gently.
 const FADE_TICK: Duration = Duration::from_millis(25);
+const RESTORE_TICK: Duration = Duration::from_millis(80);
 
 #[derive(Default)]
 pub struct Media {
@@ -44,6 +65,11 @@ struct Inner {
     resume_at_count: u8,
     /// Volume to restore once speech ends.
     ducked_from: Option<u8>,
+    /// Bumped on every in-ear change so a pending resume can tell it
+    /// was overtaken.
+    ear_gen: u64,
+    /// Bumped whenever speech is (still) detected.
+    speech_gen: u64,
 }
 
 impl Media {
@@ -54,6 +80,8 @@ impl Media {
             return;
         }
         let mut inner = self.inner.lock().await;
+        inner.ear_gen += 1;
+        let my_gen = inner.ear_gen;
         if after < before {
             // Second bud out after the first: already paused, and the
             // resume target stays what it was before the first removal.
@@ -70,6 +98,12 @@ impl Media {
             return;
         }
         if inner.paused.is_empty() || after < inner.resume_at_count {
+            return;
+        }
+        drop(inner);
+        tokio::time::sleep(RESUME_SETTLE).await;
+        let mut inner = self.inner.lock().await;
+        if inner.ear_gen != my_gen || inner.paused.is_empty() {
             return;
         }
         let fresh = inner.paused_at.is_some_and(|t| t.elapsed() < RESUME_WINDOW);
@@ -93,23 +127,47 @@ impl Media {
         let mut inner = self.inner.lock().await;
         match level {
             1..=3 if enabled => {
-                if inner.ducked_from.is_some() {
+                // Cancels a restore still waiting out the pause between sentences.
+                inner.speech_gen += 1;
+                if inner.ducked_from.is_some() || !inner.music_playing().await {
                     return;
                 }
                 let Some(vol) = current_volume().await else {
                     return;
                 };
-                let target = (u32::from(vol) * DUCK_PERCENT / 100) as u8;
+                let Some(level) = measure_db().await else {
+                    return;
+                };
+                if level < SILENCE_DB {
+                    return;
+                }
+                let target = duck_target(vol, level);
                 if target >= vol {
                     return;
                 }
-                if fade(vol, target).await {
-                    info!(from = vol, to = target, "speech detected — volume lowered");
+                if fade(vol, target, FADE_TICK).await {
+                    info!(
+                        from = vol,
+                        to = target,
+                        level_db = format!("{level:.1}"),
+                        "speech detected — volume lowered"
+                    );
                     inner.ducked_from = Some(vol);
                 }
             }
             1..=3 => {}
-            _ => inner.restore_volume().await,
+            _ => {
+                if inner.ducked_from.is_none() {
+                    return;
+                }
+                let my_gen = inner.speech_gen;
+                drop(inner);
+                tokio::time::sleep(RESTORE_HOLD).await;
+                let mut inner = self.inner.lock().await;
+                if inner.speech_gen == my_gen {
+                    inner.restore_volume().await;
+                }
+            }
         }
     }
 
@@ -125,7 +183,7 @@ impl Inner {
             return;
         };
         let from = current_volume().await.unwrap_or(vol);
-        if fade(from, vol).await {
+        if fade(from, vol, RESTORE_TICK).await {
             info!(to = vol, "speech ended — volume restored");
         }
     }
@@ -141,6 +199,26 @@ impl Inner {
             }
         }
         self.conn.clone()
+    }
+
+    /// Ducking silence only makes the volume jump in the OSD and mixer.
+    /// Both must agree: the sink carries audio and a player says Playing.
+    async fn music_playing(&mut self) -> bool {
+        let running = tokio::task::spawn_blocking(audio::primary_sink_running)
+            .await
+            .unwrap_or(false);
+        if !running {
+            return false;
+        }
+        let Some(conn) = self.connection().await else {
+            return false;
+        };
+        for name in players(&conn).await {
+            if status(&conn, &name).await.as_deref() == Some("Playing") {
+                return true;
+            }
+        }
+        false
     }
 
     async fn pause_playing(&mut self) -> Vec<String> {
@@ -280,7 +358,68 @@ async fn current_volume() -> Option<u8> {
         .flatten()
 }
 
-async fn fade(from: u8, to: u8) -> bool {
+/// PipeWire maps volume percent to gain cubically: dB = 60 · log10(v).
+fn duck_target(vol: u8, level_db: f64) -> u8 {
+    let v = f64::from(vol.max(1)) / 100.0;
+    let heard = level_db + 60.0 * v.log10();
+    let cut = (DUCK_REF_CUT + DUCK_SLOPE * (heard - DUCK_REF_DB)).clamp(DUCK_MIN_DB, DUCK_MAX_DB);
+    (f64::from(vol) * 10f64.powf(-cut / 60.0)).round() as u8
+}
+
+/// RMS level of what is playing to the AirPods, before the sink volume.
+/// Captured with `pw-record` on the sink itself: PipeWire's pulse
+/// `.monitor` source hands `parec` silence for Bluetooth sinks.
+async fn measure_db() -> Option<f64> {
+    tokio::task::spawn_blocking(|| {
+        let sink = audio::primary_sink()?;
+        let mut child = std::process::Command::new("pw-record")
+            .args(["--target", &sink.name, "-P", "{ stream.capture.sink=true }"])
+            .args(["--format", "s16", "--rate", "44100", "--channels", "2", "-"])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .ok()?;
+        let mut out = child.stdout.take()?;
+        let want = (44_100.0 * 4.0 * MEASURE.as_secs_f64()) as usize;
+        let mut buf = vec![0u8; want];
+        let mut got = 0;
+        while got < want {
+            match std::io::Read::read(&mut out, &mut buf[got..]) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => got += n,
+            }
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+        loud_db(buf[..got].as_chunks::<2>().0)
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+/// 80th-percentile block RMS in dBFS.
+fn loud_db(samples: &[[u8; 2]]) -> Option<f64> {
+    let mut blocks: Vec<f64> = samples
+        .chunks(BLOCK_SAMPLES)
+        .filter(|c| c.len() == BLOCK_SAMPLES)
+        .map(|c| {
+            let sum: f64 = c
+                .iter()
+                .map(|b| f64::from(i16::from_le_bytes(*b)).powi(2))
+                .sum();
+            (sum / c.len() as f64).sqrt()
+        })
+        .collect();
+    if blocks.is_empty() {
+        return None;
+    }
+    blocks.sort_by(f64::total_cmp);
+    let rms = blocks[blocks.len() * 4 / 5].max(1.0);
+    Some(20.0 * (rms / 32768.0).log10())
+}
+
+async fn fade(from: u8, to: u8, tick: Duration) -> bool {
     tokio::task::spawn_blocking(move || {
         let Some(sink) = audio::primary_sink() else {
             return false;
@@ -296,10 +435,37 @@ async fn fade(from: u8, to: u8) -> bool {
             if audio::set_volume_tenths(&sink, v as u16).is_err() {
                 return false;
             }
-            std::thread::sleep(FADE_TICK);
+            std::thread::sleep(tick);
         }
         audio::set_volume(&sink, to).is_ok()
     })
     .await
     .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BLOCK_SAMPLES, duck_target, loud_db};
+
+    #[test]
+    fn a_quiet_moment_does_not_lower_the_measurement() {
+        let loud = (8192i16).to_le_bytes();
+        let quiet = (256i16).to_le_bytes();
+        let mut s = vec![loud; BLOCK_SAMPLES * 8];
+        s.extend(vec![quiet; BLOCK_SAMPLES * 2]);
+        let db = loud_db(&s).unwrap();
+        assert!((db - -12.04).abs() < 0.1, "{db}");
+    }
+
+    #[test]
+    fn louder_music_is_ducked_further() {
+        // A normal listening level: 10 dB down.
+        assert_eq!(duck_target(100, -35.0), 68);
+        // Loud: 19 dB, not the 25 a 1:1 rule gave (too quiet by ear).
+        assert_eq!(duck_target(100, -20.0), 48);
+        // Already quiet: only the minimum dip.
+        assert_eq!(duck_target(100, -55.0), 79);
+        // Never below the floor.
+        assert_eq!(duck_target(100, 0.0), 32);
+    }
 }

@@ -13,11 +13,17 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
   back out of the case resume the music instead of starting it on the
   speakers. Players that mirror another one (browser integration,
   scrobblers) are left alone, since some of them turn Pause into a
-  toggle and would undo it. Follows the `podctl ear` setting.
+  toggle and would undo it. The in-ear sensor flickers while a bud is
+  pulled out, so playback resumes only after the bud has stayed in for
+  a second. Follows the `podctl ear` setting.
 - **Volume ducking for conversation awareness.** The buds only report
   that you are talking; the volume change was left to the host and
-  never happened. `podctld` now fades the AirPods volume to 75 % while
-  you talk and back afterwards. Follows the `podctl conv` setting.
+  never happened. `podctld` now measures how loud the music actually is
+  (what plays times the sink volume) and fades it down to a level you
+  can talk over — a little for quiet music, more for loud music,
+  never to silence — and fades back up once you have stopped talking
+  for a moment. Nothing moves while no audio is playing. Follows the
+  `podctl conv` setting.
 
 ### Changed
 - **`podctl watch --json`: mode and conversation events carry a named
@@ -38,6 +44,11 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
   mode by themselves on insertion and removal; the popup treated that
   like a mode change you made. Mode changes within 3 s of an in-ear
   change no longer show it.
+- **The bubble opened halfway and vanished.** After every connect the
+  lid state is unknown; the first battery frame without the case then
+  counted as a "lid closed" edge and hid the bubble the connect had just
+  shown. A daemon restart also announced the existing link as a new
+  connection.
 - `podctl help watch` listed stem-press events that are never sent, and
   its shell example matched output `watch` does not produce.
 

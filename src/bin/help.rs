@@ -171,8 +171,9 @@ const CONV: &str = "\
 podctl conv — conversation awareness
 
 When your own voice is detected the buds switch towards transparency
-and podctld fades the AirPods volume down to 75% (about -7.5 dB), fading
-it back when you stop talking. Only AirPods Pro 2 and AirPods 4 ANC.
+and podctld fades the music down to a level you can talk over: it
+measures how loud the music plays and lowers it by 6 to 30 dB to match,
+fading back 1.5 s after you stop. Only AirPods Pro 2 and AirPods 4 ANC.
 
     podctl conv on
     podctl c off

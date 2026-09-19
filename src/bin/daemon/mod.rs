@@ -242,12 +242,15 @@ impl Daemon {
     /// (case-battery visibility) until a real lid opcode is captured.
     pub async fn update_case_lid(&self, open: bool) -> Option<bool> {
         let mut s = self.state.write().await;
-        if s.case_lid_open == Some(open) {
+        let prev = s.case_lid_open.replace(open);
+        if prev == Some(open) {
             return None;
         }
-        s.case_lid_open = Some(open);
         Self::touch(&mut s);
-        Some(open)
+        // After a (re)connect the lid is unknown; "closed" is then no
+        // edge, and announcing it would hide the bubble the connect
+        // just opened.
+        (open || prev.is_some()).then_some(open)
     }
 
     /// Apply `f` to the cached settings; touches the timestamp and returns
