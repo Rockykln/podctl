@@ -73,6 +73,15 @@ keeps the daemon running. No root needed; `podctl uninstall` rolls it back.
 If `~/.local/bin` isn't on your `$PATH`, the installer prints the line
 your shell rc needs.
 
+On Arch, the AUR has `podctl-bin` (prebuilt release) and `podctl-git` (latest
+`main`). Both ship the binaries, man pages, completion and systemd user units:
+
+```
+yay -S podctl-bin                                     # or any other AUR helper
+systemctl --user enable --now podctld
+systemctl --user enable --now podctl-tray podctl-popup  # optional
+```
+
 `podctl uninstall` also handles the AUR install: if the binary lives in
 `/usr/bin/` it delegates to `sudo pacman -R podctl-bin` (or `podctl-git`)
 after stopping the user services. Same exit point either way.
@@ -281,7 +290,8 @@ that streams `Event`s.
       no-ops listed under Status)
 - [ ] AAP captures from AirPods 4 ANC and AirPods Max to confirm the
       capability matrix beyond Pro 2 USB-C
-- [ ] Distro packaging (AUR, deb, rpm)
+- [x] AUR packages (`podctl-bin`, `podctl-git`)
+- [ ] deb and rpm packages
 
 ## License
 
