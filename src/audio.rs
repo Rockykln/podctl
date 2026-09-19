@@ -142,6 +142,15 @@ pub fn set_volume(sink: &SinkInfo, percent: u8) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Volume in tenths of a percent, for fades finer than whole steps.
+/// Written as a raw PulseAudio value (65536 = 100 %) so no decimal
+/// separator is involved.
+pub fn set_volume_tenths(sink: &SinkInfo, tenths: u16) -> anyhow::Result<()> {
+    let raw = u32::from(tenths) * 65536 / 1000;
+    pactl(&["set-sink-volume", &sink.name, &raw.to_string()])?;
+    Ok(())
+}
+
 pub fn set_muted(sink: &SinkInfo, muted: bool) -> anyhow::Result<()> {
     pactl(&["set-sink-mute", &sink.name, if muted { "1" } else { "0" }])?;
     Ok(())

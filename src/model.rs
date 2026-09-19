@@ -356,8 +356,12 @@ pub enum Event {
     CaseLid {
         open: bool,
     },
-    Mode(Mode),
-    ConvAwareness(ConvAwareness),
+    Mode {
+        mode: Mode,
+    },
+    ConvAwareness {
+        conv: ConvAwareness,
+    },
     Press {
         side: Side,
         kind: PressKind,
@@ -385,7 +389,21 @@ pub enum PressKind {
 
 #[cfg(test)]
 mod tests {
-    use super::Battery;
+    use super::{Battery, ConvAwareness, Event, Mode};
+
+    #[test]
+    fn mode_and_conv_events_carry_a_named_value() {
+        let mode = serde_json::to_string(&Event::Mode {
+            mode: Mode::Transparency,
+        })
+        .unwrap();
+        assert_eq!(mode, r#"{"event":"mode","mode":"transparency"}"#);
+        let conv = serde_json::to_string(&Event::ConvAwareness {
+            conv: ConvAwareness::On,
+        })
+        .unwrap();
+        assert_eq!(conv, r#"{"event":"conv_awareness","conv":"on"}"#);
+    }
 
     #[test]
     fn any_known_needs_one_component() {

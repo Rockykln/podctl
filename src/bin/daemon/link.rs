@@ -56,13 +56,16 @@ pub async fn run(daemon: Arc<Daemon>) {
             let prev_addr_for_event = prev_addr.clone();
             let snap_addr = snap.address.clone();
             let snap_connected = snap.connected;
-            // Preserve cached AAP-derived fields (battery / in_ear) — the
-            // BlueZ snapshot doesn't know about them.
+            // Preserve cached AAP-derived fields — the BlueZ snapshot
+            // doesn't know about them. Dropping `case_lid_open` here made
+            // every battery frame after a poll re-announce the lid edge.
             {
                 let mut s = daemon.state.write().await;
                 let cached_battery = s.battery;
                 let cached_aap = s.aap_linked;
                 let cached_in_ear = s.in_ear;
+                let cached_lid = s.case_lid_open;
+                let cached_presses = s.press_counts.clone();
                 let cached_settings = s.settings.clone();
                 let cached_caps = s.capabilities;
                 let had_model = cached_caps.model != Model::Unknown;
@@ -70,6 +73,8 @@ pub async fn run(daemon: Arc<Daemon>) {
                 s.battery = cached_battery;
                 s.aap_linked = cached_aap;
                 s.in_ear = cached_in_ear;
+                s.case_lid_open = cached_lid;
+                s.press_counts = cached_presses;
                 s.settings = cached_settings;
                 // Capabilities are sticky: one bad `bluetoothctl` poll
                 // returns no device → Unknown caps, which would make the
@@ -235,6 +240,7 @@ impl AapSupervisor {
         // drops. `case_lid_open` goes with them: leaving it at `Some(true)`
         // would swallow the lid edge on the next connect, and with it the
         // popup that edge triggers.
+        daemon.media.reset().await;
         let mut s = daemon.state.write().await;
         s.battery = podctl::Battery::default();
         s.in_ear = podctl::InEar::default();

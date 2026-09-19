@@ -137,8 +137,8 @@ async fn apply_event(state: &SharedState, event: Event) {
             s.conv_awareness = None;
         }
         Event::Battery(b) => s.battery = b,
-        Event::Mode(m) => s.mode = Some(m),
-        Event::ConvAwareness(c) => s.conv_awareness = Some(c),
+        Event::Mode { mode } => s.mode = Some(mode),
+        Event::ConvAwareness { conv } => s.conv_awareness = Some(conv),
         Event::InEar(_)
         | Event::CaseLid { .. }
         | Event::Press { .. }

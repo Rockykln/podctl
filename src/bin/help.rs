@@ -170,8 +170,9 @@ Aliases: nc/noise/noise-cancellation → anc, tr/trans/pass → transparency.
 const CONV: &str = "\
 podctl conv — conversation awareness
 
-Lowers media volume + weakens ANC when your own voice is detected.
-Only AirPods Pro 2 and AirPods 4 ANC.
+When your own voice is detected the buds switch towards transparency
+and podctld fades the AirPods volume down to 75% (about -7.5 dB), fading
+it back when you stop talking. Only AirPods Pro 2 and AirPods 4 ANC.
 
     podctl conv on
     podctl c off
@@ -193,8 +194,10 @@ sets the bud's stored preference.
 const EAR: &str = "\
 podctl ear — in-ear auto-pause
 
-When on, the bud reports being worn / removed; audio pauses on removal.
-Off freezes the bud's behaviour: audio plays even when both buds are out.
+When on, taking a bud out pauses every playing media player (MPRIS)
+and putting it back resumes the ones podctld paused, as on an iPhone.
+Buds that return after 15 minutes don't restart playback. Needs the
+daemon; only acts while the AirPods are the default output.
 
     podctl ear on
     podctl ear off
@@ -375,17 +378,18 @@ podctl watch — live event stream
 Long-lived subscription. Prints one event per line until you Ctrl-C:
     - connected / disconnected
     - battery changes
-    - in-ear / out-of-ear
+    - in-ear / out-of-ear / in-case
     - case lid open / close
     - mode / conversation-awareness changes
-    - stem press events (single / double / triple / long)
+
+With --json every line is one event object, e.g.
+    {\"kind\":\"event\",\"data\":{\"event\":\"mode\",\"mode\":\"transparency\"}}
 
 Good for shell automation:
 
-    podctl watch | while read -r line; do
+    podctl watch --json | while read -r line; do
       case \"$line\" in
-        *in_ear*false*) podctl mute on  ;;
-        *in_ear*true*)  podctl mute off ;;
+        *'\"event\":\"mode\"'*) notify-send AirPods \"$line\" ;;
       esac
     done
 

@@ -242,9 +242,12 @@ pub fn print_event(e: &Event) {
         Event::CaseLid { open } => {
             println!("case lid      {}", if *open { "open" } else { "closed" });
         }
-        Event::Mode(m) => println!("mode          {m}"),
-        Event::ConvAwareness(c) => {
-            println!("conv          {}", on_off(*c == podctl::ConvAwareness::On))
+        Event::Mode { mode } => println!("mode          {mode}"),
+        Event::ConvAwareness { conv } => {
+            println!(
+                "conv          {}",
+                on_off(*conv == podctl::ConvAwareness::On)
+            )
         }
         Event::Press { side, kind } => {
             let s = match side {

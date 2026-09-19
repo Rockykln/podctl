@@ -156,7 +156,7 @@ fn run(
                     .map(|b| format!("{b:02x}"))
                     .collect::<Vec<_>>()
                     .join(" ");
-                info!(frame_count, n, opcode = format!("{opcode:02x}"), %preview, "AAP rx");
+                debug!(frame_count, n, opcode = format!("{opcode:02x}"), %preview, "AAP rx");
                 if let Some(frame) = Frame::parse(&buf[..n]) {
                     rt.block_on(handle_frame(&daemon, &frame));
                 }
@@ -219,10 +219,11 @@ unsafe extern "C" {
     fn libc_read(fd: i32, buf: *mut u8, count: usize) -> isize;
 }
 
-async fn handle_frame(daemon: &Daemon, frame: &Frame) {
+async fn handle_frame(daemon: &Arc<Daemon>, frame: &Frame) {
     match frame.opcode {
         op::BATTERY => apply_battery(daemon, &frame.payload).await,
         op::EAR_DETECTION => apply_ear(daemon, &frame.payload).await,
+        op::CONV_AWARENESS_LVL => apply_conv_level(daemon, &frame.payload).await,
         op::SETTINGS => apply_settings(daemon, &frame.payload).await,
         _ => debug!(
             opcode = format!("{:02x}", frame.opcode),
@@ -258,7 +259,7 @@ async fn apply_settings(daemon: &Daemon, payload: &[u8]) {
                     })
                     .await;
                 if changed {
-                    daemon.broadcast_event(podctl::Event::Mode(m));
+                    daemon.broadcast_event(podctl::Event::Mode { mode: m });
                 }
             }
         }
@@ -277,7 +278,7 @@ async fn apply_settings(daemon: &Daemon, payload: &[u8]) {
                     })
                     .await;
                 if changed {
-                    daemon.broadcast_event(podctl::Event::ConvAwareness(c));
+                    daemon.broadcast_event(podctl::Event::ConvAwareness { conv: c });
                 }
             }
         }
@@ -363,14 +364,33 @@ async fn apply_battery(daemon: &Daemon, payload: &[u8]) {
     }
 }
 
-async fn apply_ear(daemon: &Daemon, payload: &[u8]) {
+async fn apply_ear(daemon: &Arc<Daemon>, payload: &[u8]) {
     let Some(in_ear) = aap::parse_in_ear(payload) else {
         debug!(bytes = ?payload, "ear-detection frame too short");
         return;
     };
     debug!(primary = %in_ear.primary, secondary = %in_ear.secondary, "ear-detection update");
-    daemon.set_in_ear(in_ear).await;
+    let Some(prev) = daemon.set_in_ear(in_ear).await else {
+        return;
+    };
     daemon.broadcast_event(Event::InEar(in_ear));
+    // The device-side ear-detection switch doubles as the auto-pause
+    // switch, as on iOS. Media calls can wait on PipeWire for seconds,
+    // so they must not hold up the frame reader.
+    let enabled = daemon.state.read().await.settings.ear_detection != Some(false);
+    let d = Arc::clone(daemon);
+    tokio::spawn(async move { d.media.on_in_ear(prev, in_ear, enabled).await });
+}
+
+async fn apply_conv_level(daemon: &Arc<Daemon>, payload: &[u8]) {
+    let Some(&level) = payload.last() else {
+        return;
+    };
+    debug!(level, "conversation-awareness level");
+    let enabled =
+        daemon.state.read().await.settings.conv_awareness != Some(podctl::ConvAwareness::Off);
+    let d = Arc::clone(daemon);
+    tokio::spawn(async move { d.media.on_conv_level(level, enabled).await });
 }
 
 fn short_mac(mac: &str) -> String {

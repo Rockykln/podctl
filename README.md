@@ -25,6 +25,11 @@ PulseAudio. BlueZ basics (list, connect, disconnect, pair, unpair,
 trust) shell out to `bluetoothctl`; rename writes the BlueZ Alias
 property via `dbus-send`.
 
+`podctld` also does the host-side part an iPhone would: taking a bud out
+pauses whatever MPRIS player is playing and putting it back resumes it
+(tied to `podctl ear`), and while you talk the AirPods volume fades down
+a little and back (tied to `podctl conv`).
+
 Spatial audio, loud-sound reduction and the per-bud press-action /
 tone-on-press configs are currently no-ops — their AAP setting IDs
 aren't pinned down yet. Press *events* (which bud, how many taps) are
@@ -150,14 +155,14 @@ podctl --json <cmd>           machine-readable response (every command)
 | Command | What it does |
 | --- | --- |
 | `podctl mode <off\|anc\|transparency\|adaptive>` | switch noise-control |
-| `podctl conv <on\|off>` | conversation awareness |
+| `podctl conv <on\|off>` | conversation awareness (daemon lowers the volume while you talk) |
 | `podctl spatial <off\|fixed\|head-tracked>` | spatial-audio mode |
 
 ### Bud settings
 
 | Command | What it does |
 | --- | --- |
-| `podctl ear <on\|off>` | in-ear auto-pause detection |
+| `podctl ear <on\|off>` | in-ear detection: pause on removal, resume on return |
 | `podctl mic <auto\|left\|right>` | microphone selection |
 | `podctl loud-reduction <on\|off>` | cap loud sound spikes (Pro / Pro 2) — *AAP id TBD* |
 | `podctl press <left\|right> <mode-cycle\|siri\|none>` | stem long-press — *AAP id TBD* |

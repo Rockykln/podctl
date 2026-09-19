@@ -29,6 +29,7 @@ const REST_MARGIN: i32 = 24;
 const DEMO_ANIM_MS: u32 = 200;
 const DEMO_HOLD_MS: u64 = 5_000;
 const DEBOUNCE_MS: u64 = 500;
+const AUTO_MODE_WINDOW: Duration = Duration::from_secs(3);
 const BACKOFF_INITIAL_MS: u64 = 500;
 const BACKOFF_MAX_MS: u64 = 30_000;
 
@@ -309,6 +310,7 @@ async fn serve(
 
     let mut lines = BufReader::new(rx).lines();
     let mut pending_open: Option<Instant> = None;
+    let mut ear_changed: Option<Instant> = None;
     loop {
         let tick = pending_open.map(tokio::time::Instant::from_std);
         tokio::select! {
@@ -323,6 +325,20 @@ async fn serve(
                     continue;
                 }
                 if let Ok(Response::Event(ev)) = serde_json::from_str::<Response>(&l) {
+                    // Inserting or removing a bud makes the AirPods switch
+                    // mode on their own; that is no reason to pop up.
+                    if matches!(ev, Event::InEar(_)) {
+                        ear_changed = Some(Instant::now());
+                    }
+                    if let Event::Mode { mode } = ev
+                        && ear_changed.is_some_and(|t| t.elapsed() < AUTO_MODE_WINDOW)
+                    {
+                        snap.mode = Some(mode);
+                        if is_shown(shown_until) {
+                            let _ = tx.send(Cmd::Refresh(snap.clone()));
+                        }
+                        continue;
+                    }
                     // Connect carries no caps/model — re-pull a full
                     // Status so the bubble shows the right model & mode.
                     if matches!(ev, Event::Connected { .. })
@@ -381,8 +397,8 @@ fn handle_event(
                 }
             }
         }
-        Event::Mode(m) => {
-            snap.mode = Some(m);
+        Event::Mode { mode } => {
+            snap.mode = Some(mode);
             show_now(tx, snap, pending_open, shown_until, visible);
         }
         Event::Connected { .. } => {

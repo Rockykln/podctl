@@ -571,7 +571,10 @@ fn stream_events(json: bool) -> Result<i32, CliError> {
     for line in reader.lines() {
         let line = line.map_err(|e| CliError::oserr(format!("read: {e}")))?;
         if json {
-            println!("{line}");
+            // The subscription ack is protocol, not an event.
+            if !matches!(serde_json::from_str::<Response>(&line), Ok(Response::Done)) {
+                println!("{line}");
+            }
             continue;
         }
         match serde_json::from_str::<Response>(&line) {

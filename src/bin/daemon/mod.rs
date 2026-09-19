@@ -4,6 +4,7 @@
 
 pub mod aap;
 mod link;
+mod media;
 mod server;
 
 use std::sync::Arc;
@@ -53,6 +54,7 @@ pub struct Daemon {
     /// Watch connections that declared `WatchRole::Popup`, i.e. processes
     /// that will actually draw a bubble for `Event::ShowPopup`.
     popup_listeners: AtomicUsize,
+    media: media::Media,
 }
 
 impl Daemon {
@@ -64,6 +66,7 @@ impl Daemon {
             aap_stream: RwLock::new(None),
             last_resubscribe: Mutex::new(None),
             popup_listeners: AtomicUsize::new(0),
+            media: media::Media::default(),
         }
     }
 
@@ -222,10 +225,16 @@ impl Daemon {
         s.battery
     }
 
-    pub async fn set_in_ear(&self, in_ear: podctl::InEar) {
+    /// Returns the previous state, or `None` when the device only
+    /// repeated what we already hold.
+    pub async fn set_in_ear(&self, in_ear: podctl::InEar) -> Option<podctl::InEar> {
         let mut s = self.state.write().await;
-        s.in_ear = in_ear;
+        if s.in_ear == in_ear {
+            return None;
+        }
+        let prev = std::mem::replace(&mut s.in_ear, in_ear);
         Self::touch(&mut s);
+        Some(prev)
     }
 
     /// Record lid state. Returns `Some(open)` only on an edge so callers
@@ -260,9 +269,7 @@ impl Daemon {
         let _ = self.events.send(ev);
     }
 
-    /// Run the BT-link loop. Today: a mock heartbeat so the rest of the
-    /// stack has something to look at. Real implementation will scan
-    /// BlueZ for paired AirPods, open the AAP channel and pump frames.
+    /// Run the BT-link loop: poll BlueZ + PipeWire and supervise the AAP channel.
     pub async fn link_loop(self: Arc<Self>) {
         link::run(self).await;
     }
@@ -402,7 +409,7 @@ impl Daemon {
             })
             .await;
         if changed {
-            self.broadcast_event(Event::ConvAwareness(conv));
+            self.broadcast_event(Event::ConvAwareness { conv });
         }
         Response::ok_done()
     }

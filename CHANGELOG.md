@@ -5,6 +5,42 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **Auto-pause on ear removal.** Taking a bud out pauses the MPRIS
+  player that is playing; putting it back resumes it, as on an iPhone.
+  Only players `podctld` paused are resumed, only within 15 minutes, and
+  only once the AirPods are the default output again — so buds coming
+  back out of the case resume the music instead of starting it on the
+  speakers. Players that mirror another one (browser integration,
+  scrobblers) are left alone, since some of them turn Pause into a
+  toggle and would undo it. Follows the `podctl ear` setting.
+- **Volume ducking for conversation awareness.** The buds only report
+  that you are talking; the volume change was left to the host and
+  never happened. `podctld` now fades the AirPods volume to 75 % while
+  you talk and back afterwards. Follows the `podctl conv` setting.
+
+### Changed
+- **`podctl watch --json`: mode and conversation events carry a named
+  value.** They were serialised as `{"event":"mode","transparency":null}`;
+  now `{"event":"mode","mode":"transparency"}` and
+  `{"event":"conv_awareness","conv":"on"}`. Scripts matching the old
+  shape need updating. The `{"kind":"done"}` subscription ack is no
+  longer printed.
+- Raw AAP frames are logged at debug level instead of info; the journal
+  no longer fills with a line per frame.
+
+### Fixed
+- **The lid-closed and in-case events repeated.** The BlueZ poll every
+  3 s replaced the cached state and dropped the lid flag, so the next
+  battery frame announced the same lid edge again. The in-ear event
+  fired on every frame, changed or not.
+- **The bubble popped up when a bud went back in.** The AirPods switch
+  mode by themselves on insertion and removal; the popup treated that
+  like a mode change you made. Mode changes within 3 s of an in-ear
+  change no longer show it.
+- `podctl help watch` listed stem-press events that are never sent, and
+  its shell example matched output `watch` does not produce.
+
 ## [0.1.3] - 2026-08-29
 
 ### Fixed

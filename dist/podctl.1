@@ -40,14 +40,19 @@ Battery levels for left bud, right bud and case.
 Switch listening mode. Adaptive requires AirPods Pro 2 or AirPods 4 ANC.
 .TP
 .BI "conv " "on|off"
-Conversation awareness (Pro 2 / AirPods 4 ANC only).
+Conversation awareness (Pro 2 / AirPods 4 ANC only). While you talk,
+.B podctld
+lowers the AirPods volume to 75% (about \-7.5\~dB) and restores it afterwards.
 .TP
 .BI "spatial " "off|fixed|head-tracked"
 Spatial audio mode.
 .SS Bud settings
 .TP
 .BI "ear " "on|off"
-In-ear auto-pause detection.
+In-ear detection. When on,
+.B podctld
+pauses playing MPRIS players when a bud comes out and resumes them when
+it goes back in (within 15 minutes).
 .TP
 .BI "mic " "auto|left|right"
 Microphone selection.
@@ -113,8 +118,10 @@ Output latency offset; negative values delay audio.
 .SS Streaming
 .TP
 .B watch, w
-Live event stream until interrupt: connection, battery, in-ear, mode,
-button presses.
+Live event stream until interrupt: connection, battery, in-ear, case lid,
+mode, conversation awareness. With
+.B --json
+one event object per line.
 .TP
 .BR "meter" " [" "--plain" "|" "--json" "] [" "--once" "] [" "--interval " N "] [" "--device " name ]
 Live RMS and peak dBFS of the audio currently routed to the AirPods.
