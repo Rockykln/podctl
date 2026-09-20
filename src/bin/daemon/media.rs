@@ -76,7 +76,10 @@ impl Media {
     pub async fn on_in_ear(&self, prev: InEar, now: InEar, enabled: bool) {
         let before = prev.count_in_ear();
         let after = now.count_in_ear();
-        if !enabled || before == after {
+        // One bud parked in the case to charge while the other stays in:
+        // that is listening on one bud, not a break.
+        let parked = parked_to_charge(now);
+        if !enabled || (before == after && !parked) {
             return;
         }
         let mut inner = self.inner.lock().await;
@@ -97,7 +100,7 @@ impl Media {
             }
             return;
         }
-        if inner.paused.is_empty() || after < inner.resume_at_count {
+        if inner.paused.is_empty() || (after < inner.resume_at_count && !parked) {
             return;
         }
         drop(inner);
@@ -118,7 +121,12 @@ impl Media {
             return;
         }
         let resumed = inner.play(&players).await;
-        info!(players = ?resumed, "resumed after buds went back in");
+        if parked {
+            inner.resume_at_count = 1;
+            info!(players = ?resumed, "resumed — one bud charging, one in ear");
+        } else {
+            info!(players = ?resumed, "resumed after buds went back in");
+        }
     }
 
     /// `level` is the last byte of an AAP 0x4B frame: 1–3 while speech
@@ -332,6 +340,12 @@ async fn call(conn: &Connection, name: &str, method: &str) -> zbus::Result<()> {
     proxy.call_method(method, &()).await.map(|_| ())
 }
 
+/// Exactly one bud in the case and the other in an ear.
+fn parked_to_charge(now: InEar) -> bool {
+    use podctl::model::EarStatus::{InCase, InEar as In};
+    matches!((now.primary, now.secondary), (InCase, In) | (In, InCase))
+}
+
 async fn airpods_are_output() -> bool {
     tokio::task::spawn_blocking(|| audio::primary_sink().is_some_and(|s| s.is_default))
         .await
@@ -445,7 +459,20 @@ async fn fade(from: u8, to: u8, tick: Duration) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{BLOCK_SAMPLES, duck_target, loud_db};
+    use super::{BLOCK_SAMPLES, duck_target, loud_db, parked_to_charge};
+    use podctl::InEar;
+    use podctl::model::EarStatus::{InCase, InEar as In, OutOfEar, Unknown};
+
+    #[test]
+    fn only_one_bud_charging_while_the_other_plays_counts_as_parked() {
+        let ear = |primary, secondary| InEar { primary, secondary };
+        assert!(parked_to_charge(ear(InCase, In)));
+        assert!(parked_to_charge(ear(In, InCase)));
+        assert!(!parked_to_charge(ear(InCase, InCase)));
+        assert!(!parked_to_charge(ear(InCase, OutOfEar)));
+        assert!(!parked_to_charge(ear(In, In)));
+        assert!(!parked_to_charge(ear(InCase, Unknown)));
+    }
 
     #[test]
     fn a_quiet_moment_does_not_lower_the_measurement() {

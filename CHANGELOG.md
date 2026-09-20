@@ -5,6 +5,12 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- **Parking one bud in the case stopped the music.** Putting a bud away
+  to charge while the other stays in an ear is listening on one bud, not
+  a break: playback now resumes once the bud is in the case. Taking the
+  remaining one out still pauses.
+
 ## [0.2.0] - 2026-09-19
 
 ### Added
