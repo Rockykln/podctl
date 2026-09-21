@@ -44,6 +44,9 @@ pub struct Config {
     pub theme: String,
     pub duration_ms: u64,
     pub anim_ms: u32,
+    /// RandR output (e.g. `eDP-1`) to centre the X11 bubble on. `None`
+    /// falls back to the RandR primary, then the monitor under the pointer.
+    pub output: Option<String>,
 }
 
 impl Default for Config {
@@ -57,6 +60,7 @@ impl Default for Config {
             // a lid open you weren't looking at.
             duration_ms: 6500,
             anim_ms: 200,
+            output: None,
         }
     }
 }
@@ -93,6 +97,11 @@ fn from_text(text: &str) -> Config {
     }
     if let Some(v) = kv.get("anim_ms").and_then(|s| s.parse::<u32>().ok()) {
         cfg.anim_ms = v.min(ANIM_MAX_MS);
+    }
+    if let Some(v) = kv.get("output")
+        && !v.is_empty()
+    {
+        cfg.output = Some(v.clone());
     }
     cfg
 }
@@ -172,6 +181,16 @@ anim_ms = 150
     fn visible_covers_both_slides() {
         let c = Config::default();
         assert_eq!(visible_ms(&c), c.duration_ms + 2 * c.anim_ms as u64);
+    }
+
+    #[test]
+    fn parses_output() {
+        assert_eq!(
+            from_text("output = \"eDP-1\"\n").output.as_deref(),
+            Some("eDP-1")
+        );
+        assert_eq!(from_text("output = \"\"\n").output, None);
+        assert_eq!(Config::default().output, None);
     }
 
     #[test]

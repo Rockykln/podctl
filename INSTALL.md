@@ -120,10 +120,15 @@ backend     = "auto"    # auto | wl | x11 | notify
 theme       = "dark"    # dark | light
 duration_ms = 6500      # time on screen, 500 … 60000
 anim_ms     = 200       # slide in/out, 0 … 2000
+output      = ""        # X11: monitor to centre on, e.g. "eDP-1"
 ```
 
 `duration_ms` counts the hold only; the two slides add `2 × anim_ms` on
 top. Out-of-range values are clamped rather than rejected.
+
+On X11 the bubble is centred on a single monitor: `output` if set (names
+as in `xrandr --listmonitors`), else the RandR primary, else the monitor
+under the pointer.
 
 ## Compositors without systemd session integration
 
