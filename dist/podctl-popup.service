@@ -14,7 +14,8 @@ Environment=RUST_LOG=info
 SyslogIdentifier=podctl-popup
 
 NoNewPrivileges=true
-PrivateTmp=true
+# The X11 backend connects through /tmp/.X11-unix; a private /tmp hides it.
+PrivateTmp=false
 ProtectSystem=strict
 ProtectKernelTunables=true
 ProtectKernelModules=true

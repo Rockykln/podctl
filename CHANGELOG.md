@@ -10,6 +10,11 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
   to charge while the other stays in an ear is listening on one bud, not
   a break: playback now resumes once the bud is in the case. Taking the
   remaining one out still pauses.
+- **The X11 popup fell back to a plain notification when run as a
+  service.** `PrivateTmp=true` in `podctl-popup.service` hid the X
+  server's socket in `/tmp/.X11-unix`, so the override-redirect window
+  never opened and the notification fallback took over silently. The
+  unit no longer uses a private `/tmp`.
 
 ## [0.2.0] - 2026-09-19
 
