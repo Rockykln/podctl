@@ -5,11 +5,22 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **`output` in `popup.toml` pins the X11 popup to one monitor.** The
+  bubble used to be centred on the whole X screen, which on two side-by-side
+  monitors put it across the seam. It now centres on the configured output,
+  else the RandR primary, else the monitor under the pointer.
+
 ### Fixed
 - **Parking one bud in the case stopped the music.** Putting a bud away
   to charge while the other stays in an ear is listening on one bud, not
   a break: playback now resumes once the bud is in the case. Taking the
   remaining one out still pauses.
+- **The X11 popup fell back to a plain notification when run as a
+  service.** `PrivateTmp=true` in `podctl-popup.service` hid the X
+  server's socket in `/tmp/.X11-unix`, so the override-redirect window
+  never opened and the notification fallback took over silently. The
+  unit no longer uses a private `/tmp`.
 
 ## [0.2.0] - 2026-09-19
 

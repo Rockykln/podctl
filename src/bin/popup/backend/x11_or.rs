@@ -1,5 +1,6 @@
 use anyhow::{Context, Result, anyhow, bail};
 use x11rb::connection::Connection;
+use x11rb::protocol::randr::ConnectionExt as _;
 use x11rb::protocol::xproto::{
     ColormapAlloc, ConnectionExt, CreateGCAux, CreateWindowAux, EventMask, Gcontext, ImageFormat,
     Pixmap, PropMode, StackMode, Window, WindowClass,
@@ -20,8 +21,7 @@ struct Win {
     gc: Gcontext,
     w: u16,
     h: u16,
-    screen_w: u16,
-    screen_h: u16,
+    mon: Rect,
     mapped: bool,
 }
 
@@ -40,8 +40,13 @@ impl Backend for X11Or {
         let (conn, screen_num) = x11rb::connect(None).context("connect to X server")?;
         let screen = &conn.setup().roots[screen_num];
         let root = screen.root;
-        let screen_w = screen.width_in_pixels;
-        let screen_h = screen.height_in_pixels;
+        let want = super::super::config::load().output;
+        let mon = pick_monitor(&conn, root, want.as_deref()).unwrap_or(Rect {
+            x: 0,
+            y: 0,
+            w: screen.width_in_pixels as i32,
+            h: screen.height_in_pixels as i32,
+        });
 
         let (depth, visual) =
             argb_visual(screen).ok_or_else(|| anyhow!("no 32-bit ARGB visual on this screen"))?;
@@ -85,8 +90,7 @@ impl Backend for X11Or {
             gc,
             w: w as u16,
             h: h as u16,
-            screen_w,
-            screen_h,
+            mon,
             mapped: false,
         });
         Ok(())
@@ -97,9 +101,9 @@ impl Backend for X11Or {
 
         upload(win, f.bgra)?;
 
-        let x = ((win.screen_w as i32 - win.w as i32) / 2).max(0) as i16;
-        let y = (win.screen_h as i32 - win.h as i32 - f.margin_bottom)
-            .clamp(-(win.h as i32), win.screen_h as i32) as i16;
+        let m = win.mon;
+        let x = (m.x + ((m.w - win.w as i32) / 2).max(0)) as i16;
+        let y = (m.y + (m.h - win.h as i32 - f.margin_bottom).clamp(-(win.h as i32), m.h)) as i16;
 
         if !win.mapped {
             win.conn.map_window(win.window)?;
@@ -199,4 +203,53 @@ fn set_utility_type(conn: &RustConnection, window: Window) -> Result<()> {
 
 fn intern(conn: &RustConnection, name: &[u8]) -> Result<u32> {
     Ok(conn.intern_atom(false, name)?.reply()?.atom)
+}
+
+#[derive(Clone, Copy)]
+struct Rect {
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+}
+
+/// Centring on the root window straddles the seam on a multi-head X
+/// screen, so pick one RandR monitor: the configured output, else the
+/// primary, else the one under the pointer, else the first.
+fn pick_monitor(conn: &RustConnection, root: Window, want: Option<&str>) -> Option<Rect> {
+    let mons = conn
+        .randr_get_monitors(root, true)
+        .ok()?
+        .reply()
+        .ok()?
+        .monitors;
+    let rect = |m: &x11rb::protocol::randr::MonitorInfo| Rect {
+        x: m.x as i32,
+        y: m.y as i32,
+        w: m.width as i32,
+        h: m.height as i32,
+    };
+
+    if let Some(want) = want {
+        for m in &mons {
+            let name = conn.get_atom_name(m.name).ok().and_then(|c| c.reply().ok());
+            if name.is_some_and(|n| n.name == want.as_bytes()) {
+                return Some(rect(m));
+            }
+        }
+    }
+    if let Some(m) = mons.iter().find(|m| m.primary) {
+        return Some(rect(m));
+    }
+    if let Some(p) = conn.query_pointer(root).ok().and_then(|c| c.reply().ok()) {
+        let (px, py) = (p.root_x as i32, p.root_y as i32);
+        if let Some(m) = mons
+            .iter()
+            .map(rect)
+            .find(|r| px >= r.x && px < r.x + r.w && py >= r.y && py < r.y + r.h)
+        {
+            return Some(m);
+        }
+    }
+    mons.first().map(rect)
 }
