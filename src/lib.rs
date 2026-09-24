@@ -1,5 +1,7 @@
 pub mod aap;
+pub mod aes;
 pub mod audio;
+pub mod ble;
 pub mod bluez;
 pub mod caps;
 pub mod exitcode;
