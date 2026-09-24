@@ -130,7 +130,7 @@ fn run(
 
     // The buds only answer this while the link is fresh, and the answer
     // is the same every time, so ask once and keep it.
-    if super::config::load().ble && podctl::keys::load(&mac).is_none() {
+    if podctl::config::load().ble && podctl::keys::load(&mac).is_none() {
         std::thread::sleep(std::time::Duration::from_millis(200));
         match stream.send(&aap::request_keys().encode()) {
             Ok(()) => info!(mac = %short_mac(&mac), "asked for the proximity keys"),

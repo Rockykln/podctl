@@ -36,6 +36,7 @@ pub fn print_verb(verb: &str) {
         "latency" => LATENCY,
         "watch" | "w" => WATCH,
         "meter" => METER,
+        "ble" => BLE,
         "one-bud-anc" | "obanc" => ONE_BUD_ANC,
         "chime" | "chime-volume" => CHIME,
         "auto-anc" | "anc-strength" => AUTO_ANC,
@@ -106,6 +107,8 @@ STREAMING
     meter       [--plain|--json] [--interval N] [--device <sink>]
                                 live RMS / peak dBFS of what you're sending
                                 to the AirPods (software meter, not SPL)
+
+    ble         [on|off]         listen for the case over Bluetooth LE
 
 UI
     tray        <start|stop|status|restart>   status-bar icon
@@ -539,6 +542,27 @@ EXAMPLES
     podctl debug | pbcopy          # macOS clipboard
     podctl debug | wl-copy         # Wayland clipboard
     podctl debug > report.txt
+";
+
+const BLE: &str = "\
+podctl ble — listening for the case over Bluetooth LE
+
+While the buds are disconnected the daemon can listen for the case's own
+Bluetooth LE announcement. That is what makes the bubble appear as the
+lid opens, three to five seconds before the classic link is back, and it
+carries the battery levels shown in it.
+
+Only announcements that resolve against the key the buds handed out over
+the connected link are read; everything else another Apple device nearby
+sends is dropped. The key stays in ~/.local/state/podctl/, mode 0600.
+
+    podctl ble                    # show the current setting
+    podctl ble off                # stop listening
+    podctl ble on                 # listen again
+
+The setting lives in ~/.config/podctl/daemon.toml and can be edited
+there too. A running daemon picks up a change within a few seconds; no
+restart needed.
 ";
 
 const PING: &str = "\

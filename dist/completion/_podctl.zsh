@@ -31,6 +31,7 @@ _pods() {
         'chime:system tone volume'
         'watch:live event stream'
         'meter:live dB meter on playback sink'
+        'ble:listen for the case over Bluetooth LE'
         'tray:status-bar icon'
         'popup:show the case-open bubble now'
         'reboot:restart podctld + tray + popup'
@@ -61,6 +62,7 @@ _pods() {
             fi
             ;;
         meter)      _values 'flag' --plain --json --once --interval --device ;;
+        ble)        _values 'switch' on off ;;
         tray)       _values 'action' start stop status restart ;;
         completion) _values 'shell' bash zsh fish ;;
         debug)      _values 'arg' emit-case-lid --no-redact ;;

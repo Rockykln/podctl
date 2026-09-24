@@ -127,6 +127,13 @@ fn run(mut args: Vec<String>) -> Result<i32, CliError> {
         Some("meter") => {
             return Ok(meter::run(&args[1..]));
         }
+        Some("ble") => {
+            if args.iter().any(|a| a == "--help" || a == "-h") {
+                help::print_verb("ble");
+                return Ok(exitcode::OK);
+            }
+            return ble_switch(args.get(1).map(String::as_str), json);
+        }
         Some("install") => {
             if args.iter().any(|a| a == "--help" || a == "-h") {
                 help::print_verb("install");
@@ -179,6 +186,37 @@ fn run(mut args: Vec<String>) -> Result<i32, CliError> {
         None => standalone::dispatch(&request),
     };
     handle_response(&verb, response, json)
+}
+
+/// `podctl ble [on|off]` — the daemon reads the file itself, so this
+/// works without it running.
+fn ble_switch(arg: Option<&str>, json: bool) -> Result<i32, CliError> {
+    let on = match arg {
+        None => {
+            let cfg = podctl::config::load();
+            if json {
+                println!("{{\"ble\":{}}}", cfg.ble);
+            } else {
+                println!("ble  {}", if cfg.ble { "on" } else { "off" });
+            }
+            return Ok(exitcode::OK);
+        }
+        Some("on" | "true" | "yes" | "1") => true,
+        Some("off" | "false" | "no" | "0") => false,
+        Some(other) => {
+            return Err(CliError::usage(format!(
+                "ble: expected `on` or `off`, got `{other}`"
+            )));
+        }
+    };
+    podctl::config::set_ble(on)
+        .map_err(|e| CliError::unavailable(format!("could not write the settings file: {e}")))?;
+    if json {
+        println!("{{\"ble\":{on}}}");
+    } else {
+        println!("ble  {}", if on { "on" } else { "off" });
+    }
+    Ok(exitcode::OK)
 }
 
 fn reboot() -> i32 {

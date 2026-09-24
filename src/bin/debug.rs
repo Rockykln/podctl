@@ -73,16 +73,31 @@ pub fn run(no_redact: bool) -> String {
     );
     let _ = writeln!(out, "  socket exists {}", yesno(sock_present));
     let _ = writeln!(out, "  reachable     {}", yesno(daemon_pong()));
+    let mut key_stored = None;
     match daemon_status() {
         Some(st) => {
             let _ = writeln!(out, "  bluez link    {}", yesno(st.connected));
             let _ = writeln!(out, "  aap link      {}", yesno(st.aap_linked));
             let _ = writeln!(out, "  battery data  {}", yesno(st.battery.any_known()));
+            key_stored = st
+                .address
+                .as_deref()
+                .map(|mac| podctl::keys::path(mac).exists());
         }
         None => {
             let _ = writeln!(out, "  bluez link    ?  (no answer from daemon)");
         }
     }
+    let _ = writeln!(out, "  ble listening {}", yesno(podctl::config::load().ble));
+    let _ = writeln!(
+        out,
+        "  proximity key {}",
+        match key_stored {
+            Some(true) => "stored",
+            Some(false) => "not yet asked for",
+            None => "?",
+        }
+    );
 
     section(&mut out, "airpods");
     match bluez::primary_airpods() {
