@@ -3,7 +3,7 @@
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.0] - 2026-09-24
 
 ### Added
 - **The bubble appears as the case opens.** It used to wait for the
@@ -15,8 +15,26 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
   that resolves against the buds' own identity resolving key is read.
   The key is asked for once over the connected link and kept in
   `~/.local/state/podctl/keys-<address>` with mode `0600`.
-- **`~/.config/podctl/daemon.toml`**, so far with one setting:
-  `ble = false` stops the daemon listening for the case.
+- **`podctl ble [on|off]`** turns that listening on or off, and without
+  an argument says which it is. It writes `~/.config/podctl/daemon.toml`,
+  the daemon's new settings file, which can be edited by hand as well; a
+  running daemon picks a change up within a few seconds.
+- **`podctl debug` reports the listener**, whether it is on and whether
+  the proximity key has been stored.
+- **The tray menu leads with the battery** — `L 92% · R 84% · Case 88%`
+  as its first line, where it used to take a hover over the icon to see
+  it at all.
+- **The four listening modes sit in the menu itself**, not behind a
+  `Mode` submenu that cost a second click for the one thing the icon
+  gets opened for.
+- **`Connect` when the buds are away.** The menu only ever offered
+  `Disconnect`, greyed out while they were gone.
+- **Middle click or double click on the icon** switches between noise
+  cancellation and transparency, and **the wheel over the icon** changes
+  the volume in steps of five.
+- **The tray tooltip names the mode** (`AirPods Pro — Transparency`) and,
+  while the buds are away, shows the levels the case announces instead of
+  a flat "Not connected".
 - **No bubble while the session is locked.** A lid opened behind a lock
   screen used to pop the bubble anyway — either hidden under the lock,
   or, on X11, on top of it. `podctl popup` still shows one when you ask
@@ -26,7 +44,22 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
   monitors put it across the seam. It now centres on the configured output,
   else the RandR primary, else the monitor under the pointer.
 
+### Changed
+- **The bubble goes away a second sooner**, 5.5 s instead of 6.5 s. It
+  now opens as the lid does rather than seconds later, and at that point
+  it was outstaying its welcome. `duration_ms` in `popup.toml` still
+  overrides it.
+
 ### Fixed
+- **The bubble could show a state a quarter of an hour old.** It asked
+  the daemon for one snapshot when it started and then followed events —
+  so a bubble whose process attached while the daemon was still coming
+  up stayed on "not connected" for its whole life, and said "In case"
+  with the buds in your ears. It now takes a fresh snapshot whenever
+  something puts it on screen.
+- **A low battery had no icon of its own.** The tray has been reporting
+  the "needs attention" state for a while, but never named the icon that
+  goes with it, so nothing changed on screen.
 - **Auto-pause could arrive up to fifteen seconds late.** Putting a bud
   back in makes the daemon wait for the AirPods sink to come back, and
   it held the lock on the player list while it waited — so taking a bud
