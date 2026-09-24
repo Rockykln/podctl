@@ -116,8 +116,17 @@ impl Media {
             debug!("buds back after the resume window — leaving playback paused");
             return;
         }
+        // The sink can take seconds to appear. Everything else that
+        // touches the player list — a bud coming back out, the ducking
+        // on speech — waits behind this lock, so let go of it first.
+        drop(inner);
         if !wait_for_airpods_output().await {
             warn!("AirPods sink never became the default — not resuming");
+            return;
+        }
+        let mut inner = self.inner.lock().await;
+        if inner.ear_gen != my_gen {
+            debug!("ears changed while waiting for the sink — not resuming");
             return;
         }
         let resumed = inner.play(&players).await;
