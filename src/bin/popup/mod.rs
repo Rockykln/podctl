@@ -430,10 +430,15 @@ async fn serve(
                         }
                         continue;
                     }
-                    // Connect carries no caps/model — re-pull a full
-                    // Status so the bubble shows the right model & mode.
-                    if matches!(ev, Event::Connected { .. })
-                        && let Ok(Response::State(ds)) = oneshot(&Request::Status).await
+                    // Anything that puts the bubble on screen gets a
+                    // fresh Status first: Connect carries no caps or
+                    // model, and a process that attached while the
+                    // daemon was still starting would otherwise keep
+                    // showing that startup moment for its whole life.
+                    if matches!(
+                        ev,
+                        Event::Connected { .. } | Event::ShowPopup | Event::CaseLid { open: true }
+                    ) && let Ok(Response::State(ds)) = oneshot(&Request::Status).await
                     {
                         apply_status(snap, ds);
                     }
