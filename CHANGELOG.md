@@ -27,6 +27,12 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
   else the RandR primary, else the monitor under the pointer.
 
 ### Fixed
+- **Auto-pause could arrive up to fifteen seconds late.** Putting a bud
+  back in makes the daemon wait for the AirPods sink to come back, and
+  it held the lock on the player list while it waited — so taking a bud
+  out again, and the ducking on speech, queued up behind that wait. It
+  also resumed playback afterwards even when a bud had come back out in
+  the meantime.
 - **The X11 bubble swallowed clicks.** It reacted to none of them, so a
   click anywhere in its rectangle — including the transparent margin —
   simply went nowhere. It now carries an empty input region and clicks

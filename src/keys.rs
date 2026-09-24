@@ -61,7 +61,9 @@ fn hex(bytes: &[u8; 16]) -> String {
 
 fn parse_hex(s: &str) -> Option<[u8; 16]> {
     let s = s.trim();
-    if s.len() != 32 {
+    // Length is in bytes: without the ASCII check a damaged file could
+    // put a slice boundary inside a character.
+    if s.len() != 32 || !s.is_ascii() {
         return None;
     }
     let mut out = [0u8; 16];
@@ -96,6 +98,8 @@ mod tests {
     fn rejects_half_written_files() {
         assert!(parse_hex("00112233").is_none());
         assert!(parse_hex("zz112233445566778899aabbccddeeff").is_none());
+        // 32 bytes, but not 32 characters.
+        assert!(parse_hex("aä11111111111111111111111111111").is_none());
         assert!(parse_hex("00112233445566778899aabbccddeeff").is_some());
     }
 }
