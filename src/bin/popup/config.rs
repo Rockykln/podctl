@@ -56,9 +56,9 @@ impl Default for Config {
             backend: Pick::Auto,
             theme: "dark".into(),
             // Five seconds was too tight to read the rings and register
-            // the mode line, especially when the bubble is triggered by
-            // a lid open you weren't looking at.
-            duration_ms: 6500,
+            // the mode line; six and a half then outstayed its welcome
+            // on a bubble that now opens with the lid.
+            duration_ms: 5500,
             anim_ms: 200,
             output: None,
         }
@@ -144,7 +144,7 @@ mod tests {
         let c = Config::default();
         assert!(c.enabled);
         assert_eq!(c.backend, Pick::Auto);
-        assert_eq!(c.duration_ms, 6500);
+        assert_eq!(c.duration_ms, 5500);
         assert_eq!(c.anim_ms, 200);
     }
 
@@ -173,7 +173,7 @@ anim_ms = 150
         );
         assert_eq!(from_text("anim_ms = 99999").anim_ms, ANIM_MAX_MS);
         // A negative value isn't a u64 — the field keeps its default.
-        assert_eq!(from_text("duration_ms = -1").duration_ms, 6500);
+        assert_eq!(from_text("duration_ms = -1").duration_ms, 5500);
         assert_eq!(from_text("duration_ms = 3000").duration_ms, 3000);
     }
 
