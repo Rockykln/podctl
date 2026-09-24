@@ -131,7 +131,14 @@ top. Out-of-range values are clamped rather than rejected.
 
 On X11 the bubble is centred on a single monitor: `output` if set (names
 as in `xrandr --listmonitors`), else the RandR primary, else the monitor
-under the pointer.
+under the pointer. It is click-through, and without a compositing manager
+(no picom/xcompmgr) the window is clipped to the card, since an X server
+on its own ignores the alpha channel and would paint a black rectangle.
+
+While the session is locked no bubble appears; `podctl popup` still shows
+one on demand. Lock state comes from logind's `LockedHint`, with
+`org.freedesktop.ScreenSaver` as the fallback — a desktop that reports
+neither will keep popping bubbles behind its lock screen.
 
 ## Compositors without systemd session integration
 
@@ -144,8 +151,10 @@ that not every compositor provides:
   them with `--now`, so the gap only shows up after a reboot.
 - **The systemd user manager has to know `WAYLAND_DISPLAY` / `DISPLAY`.**
   Units inherit nothing from your shell. Without those variables the
-  popup can't find the compositor and quietly falls back to plain
-  desktop notifications instead of the layer-shell bubble.
+  popup can't find the compositor and falls back to plain desktop
+  notifications instead of the layer-shell bubble. With `backend = "auto"`
+  the journal names the backend it fell back to; a backend you name
+  yourself fails instead of falling back.
 
 Plasma and GNOME do both for you. Hyprland, sway, river, Wayfire and
 bare X11 sessions generally do not — add this once, early in the

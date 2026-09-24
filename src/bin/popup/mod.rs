@@ -53,10 +53,14 @@ async fn main() -> ExitCode {
     }
 
     if args.iter().any(|a| a == "--demo") {
-        let want = flag(&args, "--backend").unwrap_or("wl");
-        return match demo(&theme, want) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(e) => fail(&format!("demo: {e:#}"), exitcode::UNAVAILABLE),
+        let want = flag(&args, "--backend").map(str::to_string);
+        // The notification backend drives zbus on a runtime of its own,
+        // which panics if this thread is already running one.
+        let out = thread::spawn(move || demo(&theme, want)).join();
+        return match out {
+            Ok(Ok(())) => ExitCode::SUCCESS,
+            Ok(Err(e)) => fail(&format!("demo: {e:#}"), exitcode::UNAVAILABLE),
+            Err(_) => fail("demo: render thread panicked", exitcode::SOFTWARE),
         };
     }
 
@@ -80,18 +84,21 @@ async fn run() -> ExitCode {
         }
     };
 
-    let pick = match cfg.backend {
-        Pick::Auto => backend::detect::detect(),
-        other => other.as_str(),
-    }
-    .to_string();
+    let pick = BackendPick {
+        name: match cfg.backend {
+            Pick::Auto => backend::detect::detect(),
+            other => other.as_str(),
+        }
+        .to_string(),
+        explicit: cfg.backend != Pick::Auto,
+    };
     let theme = Theme::by_name(&cfg.theme);
     let hold = Duration::from_millis(cfg.duration_ms);
     let anim_ms = cfg.anim_ms;
     let visible = Duration::from_millis(config::visible_ms(&cfg));
 
     info!(
-        backend = %pick,
+        backend = %pick.name,
         theme = %cfg.theme,
         visible_ms = visible.as_millis() as u64,
         "podctl-popup ready"
@@ -117,7 +124,87 @@ enum Cmd {
     Quit,
 }
 
-fn render_loop(rx: Receiver<Cmd>, pick: &str, theme: Theme, anim_ms: u32, hold: Duration) {
+/// How a single event may present itself. `allow` is false while the
+/// session is locked: a bubble the screen lock covers is noise, and one
+/// that ends up above the lock is worse.
+#[derive(Clone, Copy)]
+struct ShowOpts {
+    visible: Duration,
+    allow: bool,
+}
+
+/// Session lock state, asked at most once a second. A bubble triggers a
+/// handful of events, and logind answers over D-Bus.
+#[derive(Default)]
+struct LockState {
+    last: Option<(Instant, bool)>,
+}
+
+impl LockState {
+    async fn get(&mut self) -> bool {
+        if let Some((at, v)) = self.last
+            && at.elapsed() < Duration::from_secs(1)
+        {
+            return v;
+        }
+        let v = session_locked().await;
+        self.last = Some((Instant::now(), v));
+        v
+    }
+}
+
+/// logind's LockedHint is the reliable answer where the desktop sets it
+/// (KDE, GNOME); the ScreenSaver service covers the rest.
+async fn session_locked() -> bool {
+    if let Ok(conn) = zbus::Connection::system().await
+        && let Ok(p) = zbus::Proxy::new(
+            &conn,
+            "org.freedesktop.login1",
+            "/org/freedesktop/login1/session/auto",
+            "org.freedesktop.login1.Session",
+        )
+        .await
+        && let Ok(true) = p.get_property::<bool>("LockedHint").await
+    {
+        return true;
+    }
+    let Ok(conn) = zbus::Connection::session().await else {
+        return false;
+    };
+    let Ok(p) = zbus::Proxy::new(
+        &conn,
+        "org.freedesktop.ScreenSaver",
+        "/org/freedesktop/ScreenSaver",
+        "org.freedesktop.ScreenSaver",
+    )
+    .await
+    else {
+        return false;
+    };
+    p.call_method("GetActive", &())
+        .await
+        .ok()
+        .and_then(|m| m.body().deserialize::<bool>().ok())
+        .unwrap_or(false)
+}
+
+/// Backend names as the config and `--backend` spell them.
+fn short(kind: &str) -> &str {
+    match kind {
+        "wl_layer" => "wl",
+        "x11_or" => "x11",
+        k => k,
+    }
+}
+
+/// Which backend to open, and whether the user named it. Kept together
+/// because the second answer decides whether a failure may fall back.
+struct BackendPick {
+    name: String,
+    explicit: bool,
+}
+
+fn render_loop(rx: Receiver<Cmd>, pick: &BackendPick, theme: Theme, anim_ms: u32, hold: Duration) {
     while let Ok(cmd) = rx.recv() {
         let snap = match cmd {
             Cmd::Show(s) => s,
@@ -178,7 +265,7 @@ fn drain(rx: &Receiver<Cmd>, bgra: &mut Vec<u8>, theme: &Theme) -> Drained {
 
 fn show_cycle(
     rx: &Receiver<Cmd>,
-    pick: &str,
+    pick: &BackendPick,
     theme: &Theme,
     anim_ms: u32,
     hold: Duration,
@@ -189,13 +276,16 @@ fn show_cycle(
     // as the expire timeout, and a bubble the server retires early is
     // exactly the "gone too soon" the hold is meant to prevent.
     let on_screen = hold + 2 * Duration::from_millis(anim_ms as u64);
-    let mut be = match open_backend(pick, on_screen) {
+    let mut be = match open_backend(&pick.name, pick.explicit, on_screen) {
         Ok(b) => b,
         Err(e) => {
             eprintln!("podctl-popup: backend: {e:#}");
             return Outcome::Done;
         }
     };
+    if short(be.kind()) != pick.name {
+        info!(wanted = %pick.name, using = short(be.kind()), "backend fell back");
+    }
 
     let hidden = -(CARD_H as f32);
     let rest = REST_MARGIN as f32;
@@ -311,6 +401,7 @@ async fn serve(
     let mut lines = BufReader::new(rx).lines();
     let mut pending_open: Option<Instant> = None;
     let mut ear_changed: Option<Instant> = None;
+    let mut locked = LockState::default();
     loop {
         let tick = pending_open.map(tokio::time::Instant::from_std);
         tokio::select! {
@@ -346,7 +437,14 @@ async fn serve(
                     {
                         apply_status(snap, ds);
                     }
-                    handle_event(tx, snap, ev, &mut pending_open, shown_until, low_armed, visible);
+                    let opts = ShowOpts {
+                        visible,
+                        allow: matches!(ev, Event::ShowPopup) || !locked.get().await,
+                    };
+                    if !opts.allow {
+                        debug!(?ev, "session locked — not showing");
+                    }
+                    handle_event(tx, snap, ev, &mut pending_open, shown_until, low_armed, opts);
                 }
             }
         }
@@ -360,10 +458,11 @@ fn handle_event(
     pending_open: &mut Option<Instant>,
     shown_until: &mut Option<Instant>,
     low_armed: &mut bool,
-    visible: Duration,
+    opts: ShowOpts,
 ) {
+    let visible = opts.visible;
     match ev {
-        Event::CaseLid { open: true } if !is_shown(shown_until) => {
+        Event::CaseLid { open: true } if !is_shown(shown_until) && opts.allow => {
             *pending_open = Some(Instant::now() + Duration::from_millis(DEBOUNCE_MS));
         }
         Event::CaseLid { open: false } => {
@@ -378,7 +477,9 @@ fn handle_event(
             if snap.low() && !*low_armed {
                 // Crossed below the low-battery threshold — pop once.
                 *low_armed = true;
-                show_now(tx, snap, pending_open, shown_until, visible);
+                if opts.allow {
+                    show_now(tx, snap, pending_open, shown_until, visible);
+                }
             } else {
                 if battery_recovered(&b) {
                     *low_armed = false;
@@ -399,11 +500,15 @@ fn handle_event(
         }
         Event::Mode { mode } => {
             snap.mode = Some(mode);
-            show_now(tx, snap, pending_open, shown_until, visible);
+            if opts.allow {
+                show_now(tx, snap, pending_open, shown_until, visible);
+            }
         }
         Event::Connected { .. } => {
             snap.connected = true;
-            show_now(tx, snap, pending_open, shown_until, visible);
+            if opts.allow {
+                show_now(tx, snap, pending_open, shown_until, visible);
+            }
         }
         Event::ShowPopup => {
             debug!("show-popup requested");
@@ -544,22 +649,33 @@ fn dump(path: &str, theme: &Theme) -> std::io::Result<()> {
     std::fs::write(path, png)
 }
 
-fn demo(theme: &Theme, want: &str) -> anyhow::Result<()> {
+fn demo(theme: &Theme, want: Option<String>) -> anyhow::Result<()> {
     let pm = render::render(&Snapshot::sample(), theme);
     let bgra = render::to_bgra_premul(&pm);
-    let mut be = open_backend(want, Duration::from_millis(DEMO_HOLD_MS))?;
-    eprintln!("podctl-popup: backend {}", be.kind());
+    let pick = want.as_deref().unwrap_or("wl");
+    let mut be = open_backend(pick, want.is_some(), Duration::from_millis(DEMO_HOLD_MS))?;
+    eprintln!("podctl-popup: backend {}", short(be.kind()));
     present(be.as_mut(), &bgra)?;
     be.close()?;
     Ok(())
 }
 
-fn open_backend(pick: &str, on_screen: Duration) -> anyhow::Result<Box<dyn Backend>> {
-    let order: &[&str] = match pick {
-        "wl" | "wayland" | "wl_layer" => &["wl", "x11", "notify"],
-        "x11" | "x11_or" => &["x11", "notify"],
-        "notify" => &["notify"],
-        other => anyhow::bail!("unknown backend '{other}' (use wl|x11|notify)"),
+/// `explicit` means the backend was named by the user rather than
+/// detected. Falling back then hides the very failure they asked about:
+/// a popup service that quietly became a desktop notification still
+/// logged the backend it had picked, not the one it was using.
+fn open_backend(
+    pick: &str,
+    explicit: bool,
+    on_screen: Duration,
+) -> anyhow::Result<Box<dyn Backend>> {
+    let order: &[&str] = match (pick, explicit) {
+        ("wl" | "wayland" | "wl_layer", false) => &["wl", "x11", "notify"],
+        ("x11" | "x11_or", false) => &["x11", "notify"],
+        ("wl" | "wayland" | "wl_layer", true) => &["wl"],
+        ("x11" | "x11_or", true) => &["x11"],
+        ("notify", _) => &["notify"],
+        (other, _) => anyhow::bail!("unknown backend '{other}' (use wl|x11|notify)"),
     };
     let mut last = anyhow::anyhow!("no backend available");
     for kind in order {
