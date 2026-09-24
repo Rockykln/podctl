@@ -3,8 +3,10 @@
 //! actual BlueZ + L2CAP + PipeWire calls live in the sibling modules.
 
 pub mod aap;
+mod config;
 mod link;
 mod media;
+mod scan;
 mod server;
 
 use std::sync::Arc;

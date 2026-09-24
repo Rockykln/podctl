@@ -6,6 +6,17 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **The bubble appears as the case opens.** It used to wait for the
+  classic Bluetooth link, three to five seconds later, by which time a
+  bud was usually already in an ear. While the buds are disconnected the
+  daemon now listens for the case's own Bluetooth LE announcement and
+  shows the bubble, with the battery levels it carries, right away.
+  Announcements from other Apple devices are dropped: only an address
+  that resolves against the buds' own identity resolving key is read.
+  The key is asked for once over the connected link and kept in
+  `~/.local/state/podctl/keys-<address>` with mode `0600`.
+- **`~/.config/podctl/daemon.toml`**, so far with one setting:
+  `ble = false` stops the daemon listening for the case.
 - **No bubble while the session is locked.** A lid opened behind a lock
   screen used to pop the bubble anyway — either hidden under the lock,
   or, on X11, on top of it. `podctl popup` still shows one when you ask

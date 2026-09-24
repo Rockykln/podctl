@@ -140,6 +140,24 @@ one on demand. Lock state comes from logind's `LockedHint`, with
 `org.freedesktop.ScreenSaver` as the fallback — a desktop that reports
 neither will keep popping bubbles behind its lock screen.
 
+## The daemon's settings file
+
+`~/.config/podctl/daemon.toml` is optional; the only setting so far is
+the Bluetooth LE listener:
+
+```
+ble = true      # false stops the daemon listening for the case
+```
+
+While the buds are disconnected the daemon listens for the case's own
+Bluetooth LE announcement, which is what makes the bubble appear as the
+lid opens instead of three to five seconds later. It reads only
+announcements that resolve against the key the buds handed out over the
+connected link; that key stays in `~/.local/state/podctl/keys-<address>`
+(mode `0600`) and is never sent anywhere. Set `ble = false` to turn the
+listening off — it takes effect the next time the buds disconnect, no
+restart needed.
+
 ## Compositors without systemd session integration
 
 `podctl-tray` and `podctl-popup` install as systemd **user** units wanted

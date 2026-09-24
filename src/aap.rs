@@ -16,7 +16,9 @@ pub mod op {
     pub const SUBSCRIBE_NOTIF: u8 = 0x0F;
     pub const METADATA: u8 = 0x1d;
     pub const RENAME: u8 = 0x1A;
+    /// Also the request for the proximity keys (payload `05 00`).
     pub const REQUEST_INFO: u8 = 0x30;
+    pub const PROXIMITY_KEYS: u8 = 0x31;
     pub const FEATURE_FLAGS: u8 = 0x4D;
     pub const CONV_AWARENESS_LVL: u8 = 0x4B;
 }
@@ -130,6 +132,51 @@ impl<'a> SettingNotice<'a> {
             data: &frame.payload[1..],
         })
     }
+}
+
+/// Ask the buds for their proximity keys: the identity resolving key
+/// behind their rotating advertisement address, and the key over the
+/// encrypted tail of that advertisement.
+pub fn request_keys() -> Frame {
+    Frame::new(op::REQUEST_INFO, 0x00, vec![0x05, 0x00])
+}
+
+/// The two 16-byte keys from a `PROXIMITY_KEYS` (0x31) reply. They are
+/// TLVs after a leading byte: type, 16-bit length, one reserved byte,
+/// then the key. Type 1 is the IRK, type 4 the advertisement key.
+///
+/// The buds hand both out least significant byte first, the reverse of
+/// what the Core Specification's `ah` expects; they are turned around
+/// here so the rest of the code sees spec order. Verified against 16
+/// advertisement addresses captured from this pair.
+pub struct ProximityKeys {
+    pub irk: [u8; 16],
+    pub enc: [u8; 16],
+}
+
+pub fn parse_keys(payload: &[u8]) -> Option<ProximityKeys> {
+    let mut irk = None;
+    let mut enc = None;
+    let mut rest = payload.get(1..)?;
+    while rest.len() >= 4 {
+        let kind = rest[0];
+        let len = u16::from_be_bytes([rest[1], rest[2]]) as usize;
+        let body = rest.get(4..4 + len)?;
+        if len == 16 {
+            let mut key: [u8; 16] = body.try_into().ok()?;
+            key.reverse();
+            match kind {
+                1 => irk = Some(key),
+                4 => enc = Some(key),
+                _ => {}
+            }
+        }
+        rest = &rest[4 + len..];
+    }
+    Some(ProximityKeys {
+        irk: irk?,
+        enc: enc?,
+    })
 }
 
 /// Write to a setting. Format: `04 00 04 00 09 00 [id] [value] 00 00 00`.

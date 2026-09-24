@@ -241,6 +241,34 @@ opcode has been confirmed yet, so the counters stay at zero and
 `podctl watch` never emits a press event. See `src/aap.rs` for the
 opcode table.
 
+## The case lid over Bluetooth LE
+
+The classic Bluetooth link takes three to five seconds to come back after
+the case opens — long enough that the bubble shows up once you already
+have a bud in your ear. The case says it much earlier: while the lid
+moves it advertises over Bluetooth LE, battery levels included, the same
+announcement an iPhone listens for. The daemon listens for it too, but
+only while the buds are disconnected, and the bubble now appears as the
+lid opens.
+
+Those announcements go out under an address that changes with every lid
+open, so every Apple device nearby produces them. The buds hand out their
+identity resolving key over AAP once, on a link you already own; the key
+lands in `~/.local/state/podctl/keys-<address>` with mode `0600` and
+never leaves the machine. Only an address that resolves against it is
+read — everyone else's stays an anonymous packet that is counted and
+dropped. Nothing is sent anywhere, and the encrypted tail of the
+advertisement is not touched.
+
+To switch the listening off, put this in `~/.config/podctl/daemon.toml`:
+
+```
+ble = false
+```
+
+Without the key file there is no scanning either: delete it and the
+daemon asks for a new one on the next connect, unless `ble = false`.
+
 ## Limitations (not Linux-fixable)
 
 - **Find My** — Apple iCloud only
@@ -264,6 +292,9 @@ src/
   bluez.rs             BlueZ via bluetoothctl
   aap.rs               Apple Accessory Protocol
   l2cap.rs             raw AF_BLUETOOTH SEQPACKET socket
+  aes.rs               AES-128 single block (FIPS-197)
+  ble.rs               proximity advertisement + address resolving
+  keys.rs              the buds' proximity keys on disk
   exitcode.rs          BSD sysexits.h
   lib.rs               re-exports
   bin/
@@ -274,7 +305,7 @@ src/
     completion.rs      shell completion emitter
     debug.rs           diagnostic report (`podctl debug`)
     install.rs         podctl install / uninstall
-    meter.rs           podctl meter (parec wrapper)
+    meter.rs           podctl meter (sink capture)
     standalone.rs      no-daemon fallback dispatcher
     tray_cli.rs        podctl tray start/stop/status/restart wrapper
     daemon/
@@ -282,6 +313,9 @@ src/
       server.rs        Unix-socket accept loop
       link.rs          BlueZ + PipeWire poll loop
       aap.rs           L2CAP runtime + AAP frame pump
+      scan.rs          BLE listener for the case lid
+      media.rs         auto-pause + ducking on the host
+      config.rs        ~/.config/podctl/daemon.toml
     tray/              podctl-tray binary (SNI + DBusMenu)
     popup/             podctl-popup binary (wlr-layer-shell / X11 / notify)
 ```
