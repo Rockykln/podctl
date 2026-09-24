@@ -214,6 +214,10 @@ pub fn render(snap: &Snapshot, theme: &Theme) -> Pixmap {
             snap.mode.map(mode_label).unwrap_or("Connected"),
             theme.dot_on,
         )
+    } else if !snap.blank() {
+        // Levels without a link come from the case's own announcement,
+        // which is exactly what a freshly opened lid looks like.
+        ("In case", theme.dot_off)
     } else {
         ("Disconnected", theme.dot_off)
     };

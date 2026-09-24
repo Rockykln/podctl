@@ -6,6 +6,7 @@ pub mod bluez;
 pub mod caps;
 pub mod exitcode;
 pub mod ipc;
+pub mod keys;
 pub mod l2cap;
 pub mod model;
 

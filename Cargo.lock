@@ -529,6 +529,7 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "fontdue",
+ "futures-util",
  "serde",
  "serde_json",
  "thiserror",

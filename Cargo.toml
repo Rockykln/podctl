@@ -47,6 +47,9 @@ thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 zbus = { version = "5", default-features = false, features = ["tokio"] }
+# Already in the tree under zbus; taken directly for StreamExt on the
+# BlueZ signal streams.
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 
 # podctl-popup only: pure-Rust software rasteriser + TTF shaper. No GPU,
 # no GTK/Qt. The Apple-style case-open bubble is drawn into a CPU pixmap

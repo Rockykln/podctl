@@ -45,6 +45,10 @@ pub async fn run(daemon: Arc<Daemon>) {
         "link task: polling BlueZ + PipeWire every {:?}",
         POLL_INTERVAL
     );
+    // The BLE listener only runs while the classic link is down: that is
+    // when the case can open without us hearing about it.
+    let (scan_tx, scan_rx) = tokio::sync::watch::channel(false);
+    tokio::spawn(super::scan::run(Arc::clone(&daemon), scan_rx));
     let mut prev_addr: Option<String> = None;
     let mut prev_connected = false;
     let mut aap = AapSupervisor::default();
@@ -111,6 +115,7 @@ pub async fn run(daemon: Arc<Daemon>) {
                 }
             }
             first_poll = false;
+            let _ = scan_tx.send(snap_addr.is_some() && !snap_connected);
             // Spawn, restart or stop the AAP loop.
             aap.sync(&daemon, &snap_addr, snap_connected).await;
             aap.watchdog(&daemon).await;

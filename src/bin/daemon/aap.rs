@@ -128,6 +128,16 @@ fn run(
     }
     info!(mac = %short_mac(&mac), "AAP set-features + subscribe sent — listening");
 
+    // The buds only answer this while the link is fresh, and the answer
+    // is the same every time, so ask once and keep it.
+    if super::config::load().ble && podctl::keys::load(&mac).is_none() {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        match stream.send(&aap::request_keys().encode()) {
+            Ok(()) => info!(mac = %short_mac(&mac), "asked for the proximity keys"),
+            Err(e) => warn!(error = %e, "proximity key request failed"),
+        }
+    }
+
     // Hand the stream to the daemon so CLI-driven setters can write to it.
     rt.block_on(daemon.set_aap_stream(Some(stream.clone())));
 
@@ -225,6 +235,7 @@ async fn handle_frame(daemon: &Arc<Daemon>, frame: &Frame) {
         op::EAR_DETECTION => apply_ear(daemon, &frame.payload).await,
         op::CONV_AWARENESS_LVL => apply_conv_level(daemon, &frame.payload).await,
         op::SETTINGS => apply_settings(daemon, &frame.payload).await,
+        op::PROXIMITY_KEYS => store_keys(daemon, &frame.payload).await,
         _ => debug!(
             opcode = format!("{:02x}", frame.opcode),
             len = frame.payload.len(),
@@ -380,6 +391,26 @@ async fn apply_ear(daemon: &Arc<Daemon>, payload: &[u8]) {
     let enabled = daemon.state.read().await.settings.ear_detection != Some(false);
     let d = Arc::clone(daemon);
     tokio::spawn(async move { d.media.on_in_ear(prev, in_ear, enabled).await });
+}
+
+/// The reply carries the identity resolving key of the buds. Never log
+/// the bytes: they are what tells this pair of buds from anyone else's.
+async fn store_keys(daemon: &Arc<Daemon>, payload: &[u8]) {
+    let Some(parsed) = aap::parse_keys(payload) else {
+        debug!(len = payload.len(), "proximity key reply not understood");
+        return;
+    };
+    let Some(mac) = daemon.state.read().await.address.clone() else {
+        return;
+    };
+    let keys = podctl::keys::Keys {
+        irk: parsed.irk,
+        enc: parsed.enc,
+    };
+    match podctl::keys::save(&mac, &keys) {
+        Ok(()) => info!(path = %podctl::keys::path(&mac).display(), "proximity keys stored"),
+        Err(e) => warn!(error = %e, "could not store the proximity keys"),
+    }
 }
 
 async fn apply_conv_level(daemon: &Arc<Daemon>, payload: &[u8]) {
