@@ -381,14 +381,10 @@ fn duck_target(vol: u8, level_db: f64) -> u8 {
 }
 
 /// RMS level of what is playing to the AirPods, before the sink volume.
-/// Captured with `pw-record` on the sink itself: PipeWire's pulse
-/// `.monitor` source hands `parec` silence for Bluetooth sinks.
 async fn measure_db() -> Option<f64> {
     tokio::task::spawn_blocking(|| {
         let sink = audio::primary_sink()?;
-        let mut child = std::process::Command::new("pw-record")
-            .args(["--target", &sink.name, "-P", "{ stream.capture.sink=true }"])
-            .args(["--format", "s16", "--rate", "44100", "--channels", "2", "-"])
+        let mut child = audio::capture_cmd(&sink.name, 44_100, 2)?
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
             .spawn()

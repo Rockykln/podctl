@@ -12,6 +12,12 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
   else the RandR primary, else the monitor under the pointer.
 
 ### Fixed
+- **`podctl meter` only ever showed silence on PipeWire.** It read the
+  sink's pulse `.monitor` source with `parec`, which stays at -120 dBFS
+  for Bluetooth sinks there. It captures the sink with `pw-record` now,
+  the same way the conversation-awareness volume stage does, and falls
+  back to `parec` where `pw-record` is missing. `--device` takes the sink
+  name instead of the monitor source.
 - **Parking one bud in the case stopped the music.** Putting a bud away
   to charge while the other stays in an ear is listening on one bud, not
   a break: playback now resumes once the bud is in the case. Taking the

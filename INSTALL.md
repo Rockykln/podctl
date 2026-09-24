@@ -15,15 +15,17 @@ tools it shells out to need to be present.
 - For the audio verbs (`volume`, `mute`, `profile`, `codec`, …):
   PipeWire (with the PulseAudio shim) **or** PulseAudio — podctl talks to
   `pactl`.
-- For `podctl meter`: `parec` (ships with PulseAudio utils; present on
-  PipeWire systems via the pulseaudio-utils package).
+- For `podctl meter` and the conversation-awareness volume stage:
+  `pw-record` (pipewire-audio). Without it both fall back to `parec`
+  (pulseaudio-utils), which reads the sink monitor — silent for
+  Bluetooth sinks on PipeWire.
 - To build from source: Rust ≥ 1.89 (edition 2024) and a C linker
   (`cc`/`gcc`).
 
 Core control (battery, listening mode, conversation awareness,
 connect/pair) needs only BlueZ + the kernel. Audio features degrade
 cleanly with a clear message if `pactl` is absent; `podctl meter` says so
-if `parec` is missing.
+if neither `pw-record` nor `parec` is there.
 
 ## Runtime tools podctl invokes
 
@@ -32,7 +34,8 @@ if `parec` is missing.
 | `bluetoothctl` | bluez / bluez-utils | everything (device + AAP) |
 | `dbus-send` | dbus | `podctl rename` |
 | `pactl` | pipewire-pulse *or* pulseaudio-utils | audio verbs |
-| `parec` | pulseaudio-utils | `podctl meter` |
+| `pw-record` | pipewire-audio | `podctl meter`, conversation ducking |
+| `parec` | pulseaudio-utils | fallback for the above on PulseAudio |
 | `systemctl` | systemd | `podctl install`/`reboot` user services |
 
 ## Dependencies per distro
@@ -44,25 +47,25 @@ prebuilt binary needs just the runtime tools above.
 ```
 sudo pacman -S --needed rust bluez-utils dbus
 # Audio + meter:
-#   - PipeWire systems: sudo pacman -S --needed pipewire-pulse  (provides pactl + parec)
+#   - PipeWire systems: sudo pacman -S --needed pipewire-pulse pipewire-audio  (pactl + pw-record)
 #   - PulseAudio systems: sudo pacman -S --needed libpulse pulseaudio
 ```
 
 **Debian / Ubuntu / Mint**
 ```
-sudo apt install cargo bluez dbus pipewire-pulse pulseaudio-utils
-# (pulseaudio-utils provides pactl + parec; on a PulseAudio box it is
-#  the same package)
+sudo apt install cargo bluez dbus pipewire-pulse pipewire-audio pulseaudio-utils
+# (pw-record comes with pipewire-audio; pulseaudio-utils provides pactl
+#  and the parec fallback, same package on a PulseAudio box)
 ```
 
 **Fedora**
 ```
-sudo dnf install cargo bluez dbus pipewire-pulseaudio pulseaudio-utils
+sudo dnf install cargo bluez dbus pipewire-pulseaudio pipewire-utils pulseaudio-utils
 ```
 
 **openSUSE**
 ```
-sudo zypper install cargo bluez dbus-1 pipewire-pulseaudio pulseaudio-utils
+sudo zypper install cargo bluez dbus-1 pipewire-pulseaudio pipewire-tools pulseaudio-utils
 ```
 
 If your Rust is older than 1.89, install a current toolchain via

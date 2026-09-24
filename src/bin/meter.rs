@@ -1,12 +1,12 @@
 //! `podctl meter` — live RMS / peak meter on the AirPods playback sink.
 //!
-//! Spawns `parec` against the bluez_output monitor source, reads s16le
-//! samples, computes RMS + peak per window, and prints dBFS.
+//! Captures the sink (see `audio::capture_cmd`), reads s16le samples,
+//! computes RMS + peak per window, and prints dBFS.
 
 use std::io::{Read, Write};
 use std::process::{Command, Stdio};
 
-use podctl::exitcode;
+use podctl::{audio, exitcode};
 
 const SAMPLE_RATE: u32 = 44100;
 const CHANNELS: u32 = 2;
@@ -18,32 +18,27 @@ pub fn run(args: &[String]) -> i32 {
     let interval_ms: u64 = arg_value(args, "--interval")
         .and_then(|v| v.parse().ok())
         .unwrap_or(100);
-    let device = arg_value(args, "--device").or_else(find_airpods_monitor);
+    let device = arg_value(args, "--device").or_else(find_airpods_sink);
 
-    let Some(monitor) = device else {
-        eprintln!("podctl: no AirPods monitor source found — is the bud connected?");
+    let Some(sink) = device else {
+        eprintln!("podctl: no AirPods sink found — is the bud connected?");
         return exitcode::UNAVAILABLE;
     };
 
-    let mut child = match Command::new("parec")
-        .args([
-            &format!("--device={monitor}"),
-            &format!("--rate={SAMPLE_RATE}"),
-            &format!("--channels={CHANNELS}"),
-            "--format=s16le",
-            "--raw",
-        ])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-    {
+    let Some(mut cmd) = audio::capture_cmd(&sink, SAMPLE_RATE, CHANNELS) else {
+        eprintln!(
+            "podctl: no capture tool — install pipewire-audio (pw-record) or pulseaudio-utils (parec)."
+        );
+        return exitcode::UNAVAILABLE;
+    };
+    let mut child = match cmd.stdout(Stdio::piped()).stderr(Stdio::null()).spawn() {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("podctl: parec failed to start ({e}) — install pulseaudio-utils?");
+            eprintln!("podctl: capture failed to start ({e})");
             return exitcode::UNAVAILABLE;
         }
     };
-    let mut stdout = child.stdout.take().expect("parec stdout piped");
+    let mut stdout = child.stdout.take().expect("capture stdout piped");
 
     let samples_per_window = (SAMPLE_RATE as u64 * interval_ms / 1000) as usize * CHANNELS as usize;
     let bytes_per_window = samples_per_window * 2;
@@ -141,10 +136,10 @@ fn bar(db: f64, width: usize) -> String {
     s
 }
 
-fn find_airpods_monitor() -> Option<String> {
+fn find_airpods_sink() -> Option<String> {
     let out = Command::new("pactl")
         .env("LC_ALL", "C")
-        .args(["list", "short", "sources"])
+        .args(["list", "short", "sinks"])
         .output()
         .ok()?;
     let s = String::from_utf8_lossy(&out.stdout);
@@ -153,7 +148,7 @@ fn find_airpods_monitor() -> Option<String> {
         let mut parts = line.split('\t');
         let _id = parts.next()?;
         let name = parts.next()?;
-        if name.starts_with("bluez_output.") && name.ends_with(".monitor") {
+        if name.starts_with("bluez_output.") {
             return Some(name.to_string());
         }
     }

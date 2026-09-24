@@ -103,7 +103,7 @@ AUDIO  (PipeWire / PulseAudio)
 
 STREAMING
     watch       (w)             live event stream (mode, in-ear, presses…)
-    meter       [--plain|--json] [--interval N] [--device <sink-monitor>]
+    meter       [--plain|--json] [--interval N] [--device <sink>]
                                 live RMS / peak dBFS of what you're sending
                                 to the AirPods (software meter, not SPL)
 
@@ -401,19 +401,21 @@ Good for shell automation:
 const METER: &str = "\
 podctl meter — live software dB meter on the AirPods playback sink
 
-Reads the bluez_output.<MAC>.monitor PulseAudio / PipeWire source and
-prints RMS + peak in dBFS for whatever audio is currently being sent
-to the AirPods. This is NOT a real SPL/loudness meter — it measures
-the digital signal, not what your eardrum actually receives.
+Captures the bluez_output.<MAC> sink and prints RMS + peak in dBFS for
+whatever audio is currently being sent to the AirPods. This is NOT a
+real SPL/loudness meter — it measures the digital signal, not what your
+eardrum actually receives.
 
 OPTIONS
     --interval <ms>     update window length (default 100ms)
-    --device <name>     PulseAudio source name (default: auto-detect)
+    --device <name>     sink name (default: the AirPods sink)
     --plain             one line per update (no in-place TTY refresh)
     --json              JSON object per update for scripts
     --once              measure one window then exit
 
-Requires `parec` from pulseaudio-utils.
+Requires `pw-record` (pipewire-audio); falls back to `parec` from
+pulseaudio-utils, which reads the sink monitor and stays silent for
+Bluetooth sinks on PipeWire.
 ";
 
 const ONE_BUD_ANC: &str = "\

@@ -326,6 +326,42 @@ fn pactl(args: &[&str]) -> anyhow::Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+/// A command that writes raw s16le samples of everything playing to
+/// `sink` on stdout. `pw-record` captures the sink directly; PipeWire's
+/// pulse `.monitor` source hands `parec` silence for Bluetooth sinks, so
+/// that route is only the fallback on a plain PulseAudio box.
+pub fn capture_cmd(sink: &str, rate: u32, channels: u32) -> Option<Command> {
+    if have("pw-record") {
+        let mut c = Command::new("pw-record");
+        c.args(["--target", sink])
+            .args(["-P", "{ stream.capture.sink=true }"])
+            .args(["--format", "s16"])
+            .args(["--rate", &rate.to_string()])
+            .args(["--channels", &channels.to_string()])
+            .arg("-");
+        return Some(c);
+    }
+    if have("parec") {
+        let mut c = Command::new("parec");
+        c.arg(format!("--device={sink}.monitor"))
+            .arg(format!("--rate={rate}"))
+            .arg(format!("--channels={channels}"))
+            .args(["--format=s16le", "--raw"]);
+        return Some(c);
+    }
+    None
+}
+
+fn have(bin: &str) -> bool {
+    Command::new(bin)
+        .arg("--help")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
 pub fn have_pactl() -> bool {
     Command::new("pactl")
         .env("LC_ALL", "C")
