@@ -6,12 +6,35 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **No bubble while the session is locked.** A lid opened behind a lock
+  screen used to pop the bubble anyway — either hidden under the lock,
+  or, on X11, on top of it. `podctl popup` still shows one when you ask
+  for it by hand.
 - **`output` in `popup.toml` pins the X11 popup to one monitor.** The
   bubble used to be centred on the whole X screen, which on two side-by-side
   monitors put it across the seam. It now centres on the configured output,
   else the RandR primary, else the monitor under the pointer.
 
 ### Fixed
+- **The X11 bubble swallowed clicks.** It reacted to none of them, so a
+  click anywhere in its rectangle — including the transparent margin —
+  simply went nowhere. It now carries an empty input region and clicks
+  reach the window underneath.
+- **The X11 bubble was a black rectangle without a compositing manager.**
+  Alpha only means something while something composites; on a bare WM the
+  server paints the raw pixels. The window is clipped to the card's
+  opaque area when no compositor owns `_NET_WM_CM_S<n>`.
+- **`podctl-popup --demo --backend notify` crashed** with "Cannot start a
+  runtime from within a runtime" instead of showing the notification.
+- **A backend named by hand fell back silently.** `--backend x11` or
+  `backend = "x11"` answered with a desktop notification when X was
+  unreachable, while the log still named x11 — the reason the systemd
+  unit's private `/tmp` went unnoticed for so long. Named backends now
+  fail with the error; only `auto` walks the chain, and the log says
+  which backend actually opened.
+- The X11 window announces itself as a notification rather than a utility
+  window, picks a true-colour visual explicitly, and swaps pixel bytes on
+  servers that ask for the other order.
 - **`podctl meter` only ever showed silence on PipeWire.** It read the
   sink's pulse `.monitor` source with `parec`, which stays at -120 dBFS
   for Bluetooth sinks there. It captures the sink with `pw-record` now,
