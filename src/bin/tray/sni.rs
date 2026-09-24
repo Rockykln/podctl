@@ -1,4 +1,5 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use tokio::sync::RwLock;
 use tracing::warn;
@@ -12,6 +13,11 @@ use crate::config::LeftClick;
 use crate::ipc;
 use crate::state::TrayState;
 
+/// Percentage points per wheel tick.
+const VOLUME_STEP: i16 = 5;
+/// Two activations closer together than this are one double click.
+const DOUBLE_CLICK: Duration = Duration::from_millis(400);
+
 pub const ITEM_PATH: &str = "/StatusNotifierItem";
 pub const MENU_PATH: &str = "/MenuBar";
 
@@ -20,11 +26,40 @@ pub type SharedState = Arc<RwLock<TrayState>>;
 pub struct Item {
     state: SharedState,
     left_click: LeftClick,
+    last_activate: Mutex<Option<Instant>>,
 }
 
 impl Item {
     pub fn new(state: SharedState, left_click: LeftClick) -> Self {
-        Self { state, left_click }
+        Self {
+            state,
+            left_click,
+            last_activate: Mutex::new(None),
+        }
+    }
+
+    /// True when this activation follows one close enough to count as a
+    /// double click. Hosts have no such event; they activate twice.
+    fn double_click(&self) -> bool {
+        let now = Instant::now();
+        let mut last = match self.last_activate.lock() {
+            Ok(l) => l,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let double = last.is_some_and(|t| now.duration_since(t) < DOUBLE_CLICK);
+        // A third click starts over rather than toggling again.
+        *last = (!double).then_some(now);
+        double
+    }
+
+    async fn toggle_mode(&self) {
+        let cur = self.state.read().await.mode;
+        spawn_dispatch(Request::SetMode {
+            mode: match cur {
+                Some(Mode::Transparency) => Mode::NoiseCancellation,
+                _ => Mode::Transparency,
+            },
+        });
     }
 }
 
@@ -33,6 +68,10 @@ impl Item {
     async fn context_menu(&self, _x: i32, _y: i32) {}
 
     async fn activate(&self, _x: i32, _y: i32) {
+        if self.double_click() {
+            self.toggle_mode().await;
+            return;
+        }
         let req = match self.left_click {
             LeftClick::Menu => return,
             LeftClick::Popup => Request::ShowPopup,
@@ -54,9 +93,43 @@ impl Item {
         spawn_dispatch(req);
     }
 
-    async fn secondary_activate(&self, _x: i32, _y: i32) {}
+    /// Middle click, and a double click: straight between cancellation
+    /// and transparency, the two modes worth a shortcut.
+    async fn secondary_activate(&self, _x: i32, _y: i32) {
+        self.toggle_mode().await;
+    }
 
-    async fn scroll(&self, _delta: i32, _orientation: &str) {}
+    async fn scroll(&self, delta: i32, orientation: &str) {
+        if delta == 0 || orientation.eq_ignore_ascii_case("horizontal") {
+            return;
+        }
+        let up = delta > 0;
+        let state = Arc::clone(&self.state);
+        tokio::spawn(async move {
+            let cached = state.read().await.volume;
+            let cur = match cached {
+                Some(v) => v,
+                None => {
+                    crate::watch::pull_status(&state).await;
+                    let Some(v) = state.read().await.volume else {
+                        warn!("no volume known — not scrolling");
+                        return;
+                    };
+                    v
+                }
+            };
+            let step = if up { VOLUME_STEP } else { -VOLUME_STEP };
+            let next = (i16::from(cur) + step).clamp(0, 100) as u8;
+            if next == cur {
+                return;
+            }
+            // Written back right away: a wheel sends ticks faster than
+            // the daemon answers, and each one should move on from the
+            // last rather than from the same stale value.
+            state.write().await.volume = Some(next);
+            spawn_dispatch(Request::SetVolume { percent: next });
+        });
+    }
 
     #[zbus(property)]
     async fn category(&self) -> &'static str {
@@ -105,7 +178,7 @@ impl Item {
 
     #[zbus(property)]
     async fn attention_icon_name(&self) -> &'static str {
-        ""
+        self.state.read().await.attention_icon_name()
     }
 
     #[zbus(property)]
