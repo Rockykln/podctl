@@ -13,7 +13,8 @@ use crate::ipc;
 use crate::sni::SharedState;
 use crate::state::TrayState;
 
-const MODE: i32 = 1;
+const BATTERY: i32 = 6;
+const SEP_TOP: i32 = 7;
 const MODE_OFF: i32 = 10;
 const MODE_ANC: i32 = 11;
 const MODE_TRANS: i32 = 12;
@@ -77,7 +78,8 @@ pub fn properties_snapshot(state: &TrayState) -> Vec<(i32, Props)> {
             ),
         ),
         (CONV, conv_props(state)),
-        (DISCONNECT, leaf_props("Disconnect", state.connected)),
+        (BATTERY, battery_props(state)),
+        (DISCONNECT, link_props(state)),
     ]
 }
 
@@ -95,7 +97,6 @@ impl Menu {
         // separately, for the Mode submenu. Returning the full tree for
         // every parent makes the submenu mirror the whole menu.
         let node = match parent_id {
-            MODE => (MODE, mode_props(), mode_children(&state)),
             0 => build_layout(&state),
             other => (
                 other,
@@ -166,7 +167,14 @@ impl Menu {
                 };
                 spawn_dispatch(Request::SetConv { conv: next });
             }
-            DISCONNECT => spawn_dispatch(Request::Disconnect),
+            DISCONNECT => {
+                let connected = self.state.read().await.connected;
+                spawn_dispatch(if connected {
+                    Request::Disconnect
+                } else {
+                    Request::Connect
+                });
+            }
             QUIT => self.quit.notify_one(),
             _ => {}
         }
@@ -230,18 +238,35 @@ fn spawn_dispatch(req: Request) {
 }
 
 fn build_layout(state: &TrayState) -> LayoutNode {
-    let children = vec![
-        wrap(MODE, mode_props(), mode_children(state)),
+    let mut children = vec![
+        wrap(BATTERY, battery_props(state), Vec::new()),
+        wrap(SEP_TOP, separator_props(), Vec::new()),
+    ];
+    // The four modes sit at the top level: a submenu cost a second
+    // click for the one thing the icon is opened for.
+    children.extend(mode_children(state));
+    children.extend([
         wrap(CONV, conv_props(state), Vec::new()),
         wrap(SEP, separator_props(), Vec::new()),
-        wrap(
-            DISCONNECT,
-            leaf_props("Disconnect", state.connected),
-            Vec::new(),
-        ),
+        wrap(DISCONNECT, link_props(state), Vec::new()),
         wrap(QUIT, leaf_props("Quit tray", true), Vec::new()),
-    ];
+    ]);
     (0, Props::new(), children)
+}
+
+/// The battery line is the reason most people open the menu, so it sits
+/// at the top and is not clickable.
+fn battery_props(state: &TrayState) -> Props {
+    let (_, body) = state.tooltip();
+    leaf_props(&body, false)
+}
+
+fn link_props(state: &TrayState) -> Props {
+    if state.connected {
+        leaf_props("Disconnect", true)
+    } else {
+        leaf_props("Connect", true)
+    }
 }
 
 fn wrap(id: i32, props: Props, children: Vec<OwnedValue>) -> OwnedValue {
@@ -261,7 +286,8 @@ fn wrap(id: i32, props: Props, children: Vec<OwnedValue>) -> OwnedValue {
 fn item_props(id: i32, state: &TrayState) -> Option<Props> {
     match id {
         0 => Some(Props::new()),
-        MODE => Some(mode_props()),
+        BATTERY => Some(battery_props(state)),
+        SEP_TOP => Some(separator_props()),
         MODE_OFF => Some(radio(
             "Off",
             state.mode == Some(Mode::Off),
@@ -284,17 +310,10 @@ fn item_props(id: i32, state: &TrayState) -> Option<Props> {
         )),
         CONV => Some(conv_props(state)),
         SEP => Some(separator_props()),
-        DISCONNECT => Some(leaf_props("Disconnect", state.connected)),
+        DISCONNECT => Some(link_props(state)),
         QUIT => Some(leaf_props("Quit tray", true)),
         _ => None,
     }
-}
-
-fn mode_props() -> Props {
-    let mut p = Props::new();
-    p.insert("label".into(), str_v("Mode"));
-    p.insert("children-display".into(), str_v("submenu"));
-    p
 }
 
 fn mode_children(state: &TrayState) -> Vec<OwnedValue> {

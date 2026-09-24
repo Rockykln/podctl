@@ -120,6 +120,7 @@ async fn apply_status(state: &SharedState, ds: DeviceState) {
     }
     s.battery = ds.battery;
     s.mode = ds.settings.mode;
+    s.volume = ds.audio.volume_percent;
     s.conv_awareness = ds.settings.conv_awareness;
 }
 

@@ -105,6 +105,12 @@ tray host on the session bus:
 | Xfce / MATE / LXQt | yes |
 | GNOME | needs the *AppIndicator/KStatusNotifier* extension; `podctl tray status` says so |
 
+The icon's menu starts with the battery line, then the four listening
+modes, conversation awareness and connect / disconnect. Left click shows
+the bubble (configurable as `left_click` in `~/.config/podctl/tray.toml`),
+a double or middle click toggles noise cancellation against transparency,
+and the wheel over the icon changes the volume in steps of five.
+
 `--with-popup` installs `podctl-popup`, the case-open bubble. Backend is
 auto-detected:
 
@@ -121,7 +127,7 @@ Everything about the bubble is tunable in `~/.config/podctl/popup.toml`
 enabled     = true      # false disables the bubble entirely
 backend     = "auto"    # auto | wl | x11 | notify
 theme       = "dark"    # dark | light
-duration_ms = 6500      # time on screen, 500 … 60000
+duration_ms = 5500      # time on screen, 500 … 60000
 anim_ms     = 200       # slide in/out, 0 … 2000
 output      = ""        # X11: monitor to centre on, e.g. "eDP-1"
 ```

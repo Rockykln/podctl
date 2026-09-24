@@ -173,11 +173,14 @@ daemon.
 .BI "tray " "start|stop|status|restart"
 Manage the
 .B podctl-tray
-status-bar icon (systemd user service). Connection and battery show in
-the tooltip. Left-click shows the popup by default; right-click opens
-the menu. The left-click action is configurable in
+status-bar icon (systemd user service). Connection, mode and battery
+show in the tooltip; the menu leads with the battery line and carries
+the four listening modes, conversation awareness and connect/disconnect.
+Left-click shows the popup by default and is configurable in
 .IR ~/.config/podctl/tray.toml
 .RB ( "left_click = popup|mode-cycle|toggle-anc-tr|menu" ).
+A double or middle click toggles noise cancellation against
+transparency, and the wheel over the icon changes the volume.
 .TP
 .B popup
 Ask the running

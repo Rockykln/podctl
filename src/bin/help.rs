@@ -577,8 +577,15 @@ const TRAY: &str = "\
 podctl tray — status-bar icon (podctl-tray)
 
 Wraps the podctl-tray systemd user service. The icon shows connection
-and battery (via its tooltip). Left-click shows the popup by default;
-right-click opens the menu (mode, conversation awareness, disconnect).
+and battery (via its tooltip). Right-click opens the menu: battery,
+the four listening modes, conversation awareness, connect/disconnect.
+
+Mouse on the icon:
+
+    left click      show the bubble (configurable, see below)
+    double click    toggle ANC <-> Transparency
+    middle click    toggle ANC <-> Transparency
+    wheel           volume, in steps of five
 
 Left-click action is configurable in ~/.config/podctl/tray.toml:
 
