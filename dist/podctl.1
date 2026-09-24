@@ -135,6 +135,17 @@ falling back to
 .BR parec (1)
 from
 .IR pulseaudio-utils .
+.TP
+.BR "ble" " [" on | off ]
+Whether the daemon listens for the case's Bluetooth LE announcement while
+the buds are disconnected. That announcement is what opens the bubble as
+the lid does, seconds before the classic link is back. Without an
+argument the current setting is printed. Only announcements that resolve
+against the buds' own identity resolving key are read; the key lives in
+.I $XDG_STATE_HOME/podctl/keys-<address>
+and never leaves the machine. Stored in
+.IR $XDG_CONFIG_HOME/podctl/daemon.toml ;
+a running daemon notices a change within a few seconds.
 .SS Misc
 .TP
 .B ping

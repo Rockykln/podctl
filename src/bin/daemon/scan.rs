@@ -7,6 +7,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use futures_util::StreamExt;
 use tokio::sync::watch;
@@ -22,6 +23,8 @@ const APPLE: u16 = 0x004c;
 /// A busy adapter sends a signal per advertisement; too short a queue
 /// would stall the connection rather than drop anything.
 const QUEUE: usize = 256;
+/// How long `podctl ble off` may take to end a running scan.
+const SWITCH_POLL: Duration = Duration::from_secs(3);
 
 /// Runs while `active` says the classic link is down. Returns when the
 /// channel closes, i.e. when the daemon shuts down.
@@ -49,7 +52,7 @@ async fn scan_until_inactive(
     daemon: &Arc<Daemon>,
     active: &mut watch::Receiver<bool>,
 ) -> zbus::Result<()> {
-    if !super::config::load().ble {
+    if !podctl::config::load().ble {
         debug!("BLE listening switched off in daemon.toml");
         return Ok(());
     }
@@ -91,10 +94,20 @@ async fn scan_until_inactive(
     let mut added_stream = MessageStream::for_match_rule(added, &conn, Some(QUEUE)).await?;
 
     let mut state = LidState::default();
+    // Outside the loop: a tick created inside it would be reset by every
+    // advertisement, and in a busy room those never stop.
+    let mut switch = tokio::time::interval(SWITCH_POLL);
+    switch.tick().await;
     let out = loop {
         tokio::select! {
             changed = active.changed() => {
                 if changed.is_err() || !*active.borrow() {
+                    break Ok(());
+                }
+            }
+            _ = switch.tick() => {
+                if !podctl::config::load().ble {
+                    info!("BLE listening switched off");
                     break Ok(());
                 }
             }

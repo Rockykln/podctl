@@ -40,6 +40,7 @@ const VERBS: &[&str] = &[
     "latency",
     "watch",
     "meter",
+    "ble",
     "tray",
     "popup",
     "reboot",

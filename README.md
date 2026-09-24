@@ -200,6 +200,7 @@ podctl --json <cmd>           machine-readable response (every command)
 | --- | --- |
 | `podctl watch` (`w`) | live event stream — Ctrl-C to stop |
 | `podctl meter [--plain\|--json] [--interval N]` | live RMS / peak dBFS of audio going to the buds (software meter, not SPL) |
+| `podctl ble [on\|off]` | listen for the case over Bluetooth LE (see below) |
 | `podctl completion <bash\|zsh\|fish>` | emit completion script |
 | `podctl debug [--no-redact]` | diagnostic report (DSGVO-redacted by default) |
 | `podctl tray <start\|stop\|status\|restart>` | status-bar icon (podctl-tray) |
@@ -260,11 +261,15 @@ read — everyone else's stays an anonymous packet that is counted and
 dropped. Nothing is sent anywhere, and the encrypted tail of the
 advertisement is not touched.
 
-To switch the listening off, put this in `~/.config/podctl/daemon.toml`:
+To switch the listening off:
 
 ```
-ble = false
+podctl ble off      # podctl ble on to listen again, podctl ble to ask
 ```
+
+That writes `ble = false` to `~/.config/podctl/daemon.toml`, which can be
+edited by hand just as well. A running daemon notices within a few
+seconds; nothing needs restarting.
 
 Without the key file there is no scanning either: delete it and the
 daemon asks for a new one on the next connect, unless `ble = false`.

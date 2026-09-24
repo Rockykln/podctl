@@ -1,5 +1,6 @@
 //! The daemon's settings file, `~/.config/podctl/daemon.toml`.
 
+use std::io::Write;
 use std::path::PathBuf;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -45,6 +46,41 @@ fn from_text(text: &str) -> Config {
         }
     }
     cfg
+}
+
+/// Write the `ble` line, keeping whatever else the file holds.
+pub fn set_ble(on: bool) -> std::io::Result<()> {
+    let p = path();
+    if let Some(dir) = p.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let old = std::fs::read_to_string(&p).unwrap_or_default();
+    let mut lines: Vec<String> = Vec::new();
+    let mut replaced = false;
+    for line in old.lines() {
+        let key = line
+            .split('#')
+            .next()
+            .unwrap_or("")
+            .split('=')
+            .next()
+            .unwrap_or("")
+            .trim();
+        if key == "ble" {
+            lines.push(format!("ble = {on}"));
+            replaced = true;
+        } else {
+            lines.push(line.to_string());
+        }
+    }
+    if !replaced {
+        lines.push(format!("ble = {on}"));
+    }
+    let mut f = std::fs::File::create(&p)?;
+    for line in lines {
+        writeln!(f, "{line}")?;
+    }
+    Ok(())
 }
 
 fn parse_bool(s: &str) -> Option<bool> {

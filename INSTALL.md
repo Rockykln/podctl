@@ -154,9 +154,8 @@ Bluetooth LE announcement, which is what makes the bubble appear as the
 lid opens instead of three to five seconds later. It reads only
 announcements that resolve against the key the buds handed out over the
 connected link; that key stays in `~/.local/state/podctl/keys-<address>`
-(mode `0600`) and is never sent anywhere. Set `ble = false` to turn the
-listening off — it takes effect the next time the buds disconnect, no
-restart needed.
+(mode `0600`) and is never sent anywhere. `podctl ble off` turns the listening off
+and writes that setting; a running daemon notices within a few seconds.
 
 ## Compositors without systemd session integration
 

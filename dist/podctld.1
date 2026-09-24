@@ -52,6 +52,16 @@ file, exit 0.
 .TP
 .I $XDG_RUNTIME_DIR/podctl.sock
 The control socket.
+.TP
+.I $XDG_CONFIG_HOME/podctl/daemon.toml
+Optional settings. Currently only
+.BR ble " = " true ,
+which lets the daemon listen for the case's Bluetooth LE announcement
+while the buds are disconnected.
+.TP
+.I $XDG_STATE_HOME/podctl/keys-<address>
+The proximity keys the buds hand out, mode 0600. Needed to tell their
+announcement from every other Apple device nearby.
 .SH SEE ALSO
 .BR podctl (1),
 .BR systemd.unit (5).
