@@ -291,6 +291,49 @@ async fn apply_settings(daemon: &Daemon, payload: &[u8]) {
                 }
             }
         }
+        setting::EAR_DETECTION => {
+            // The device-side switch doubles as the auto-pause switch.
+            // Until this frame was read, the daemon only knew the value
+            // if it had set it itself, and an unknown one counts as on:
+            // auto-pause worked against a switch turned off on a phone.
+            let on = match v0 {
+                1 => Some(true),
+                2 => Some(false),
+                _ => None,
+            };
+            if let Some(b) = on {
+                let changed = daemon
+                    .update_settings_if_changed(|s| {
+                        let prev = s.ear_detection;
+                        s.ear_detection = Some(b);
+                        prev != Some(b)
+                    })
+                    .await;
+                if changed {
+                    daemon.broadcast_event(podctl::Event::SettingsChanged);
+                }
+            }
+        }
+        setting::MIC_MODE => {
+            let mic = match v0 {
+                0 => Some(podctl::MicSelection::Auto),
+                1 => Some(podctl::MicSelection::AlwaysRight),
+                2 => Some(podctl::MicSelection::AlwaysLeft),
+                _ => None,
+            };
+            if let Some(m) = mic {
+                let changed = daemon
+                    .update_settings_if_changed(|s| {
+                        let prev = s.mic_selection;
+                        s.mic_selection = Some(m);
+                        prev != Some(m)
+                    })
+                    .await;
+                if changed {
+                    daemon.broadcast_event(podctl::Event::SettingsChanged);
+                }
+            }
+        }
         setting::ONE_BUD_ANC => {
             let on = match v0 {
                 1 => Some(true),

@@ -255,6 +255,9 @@ impl AapSupervisor {
         s.battery = podctl::Battery::default();
         s.in_ear = podctl::InEar::default();
         s.case_lid_open = None;
+        // Settings too: they come from the device's own dump, and the
+        // next pair may answer differently.
+        s.settings = podctl::PodSettings::default();
         Daemon::touch(&mut s);
     }
 
