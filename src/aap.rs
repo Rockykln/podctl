@@ -185,21 +185,145 @@ pub fn write_setting(id: u8, value: u8) -> Frame {
     Frame::new(op::SETTINGS, 0x00, vec![id, value, 0, 0, 0])
 }
 
-pub fn set_noise_control(mode: u8) -> Frame {
-    write_setting(setting::NOISE_CONTROL, mode)
+pub fn set_noise_control(mode: crate::model::Mode) -> Frame {
+    write_setting(setting::NOISE_CONTROL, wire::mode_byte(mode))
 }
 
 pub fn set_conv_awareness(on: bool) -> Frame {
-    write_setting(setting::CONV_AWARE, if on { 0x01 } else { 0x02 })
+    write_setting(setting::CONV_AWARE, wire::switch_byte(on))
 }
 
 pub fn set_ear_detection(on: bool) -> Frame {
-    write_setting(setting::EAR_DETECTION, if on { 0x01 } else { 0x02 })
+    write_setting(setting::EAR_DETECTION, wire::switch_byte(on))
 }
 
-pub fn set_mic_mode(mode: u8) -> Frame {
-    // 0=auto, 1=always-right, 2=always-left
-    write_setting(setting::MIC_MODE, mode)
+pub fn set_mic_mode(mic: crate::model::MicSelection) -> Frame {
+    write_setting(setting::MIC_MODE, wire::mic_byte(mic))
+}
+
+/// Which byte the device uses for each value of a setting, both ways.
+/// Reading a dump and writing a setting share this one table.
+pub mod wire {
+    use crate::model::{ConvAwareness, MicSelection, Mode};
+
+    pub fn mode_byte(mode: Mode) -> u8 {
+        match mode {
+            Mode::Off => 1,
+            Mode::NoiseCancellation => 2,
+            Mode::Transparency => 3,
+            Mode::Adaptive => 4,
+        }
+    }
+
+    pub fn mode_from_byte(b: u8) -> Option<Mode> {
+        Some(match b {
+            1 => Mode::Off,
+            2 => Mode::NoiseCancellation,
+            3 => Mode::Transparency,
+            4 => Mode::Adaptive,
+            _ => return None,
+        })
+    }
+
+    /// Every on/off setting: 1 is on, 2 is off, 0 is neither — unlike
+    /// the mic selection, where 0 is a value.
+    pub fn switch_byte(on: bool) -> u8 {
+        if on { 1 } else { 2 }
+    }
+
+    pub fn switch_from_byte(b: u8) -> Option<bool> {
+        match b {
+            1 => Some(true),
+            2 => Some(false),
+            _ => None,
+        }
+    }
+
+    pub fn conv_byte(conv: ConvAwareness) -> u8 {
+        switch_byte(conv == ConvAwareness::On)
+    }
+
+    pub fn conv_from_byte(b: u8) -> Option<ConvAwareness> {
+        switch_from_byte(b).map(|on| {
+            if on {
+                ConvAwareness::On
+            } else {
+                ConvAwareness::Off
+            }
+        })
+    }
+
+    pub fn mic_byte(mic: MicSelection) -> u8 {
+        match mic {
+            MicSelection::Auto => 0,
+            MicSelection::AlwaysRight => 1,
+            MicSelection::AlwaysLeft => 2,
+        }
+    }
+
+    pub fn mic_from_byte(b: u8) -> Option<MicSelection> {
+        Some(match b {
+            0 => MicSelection::Auto,
+            1 => MicSelection::AlwaysRight,
+            2 => MicSelection::AlwaysLeft,
+            _ => return None,
+        })
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// A wrong byte here is a setting that quietly does something
+        /// else on the device.
+        #[test]
+        fn every_value_goes_there_and_back() {
+            for mode in [
+                Mode::Off,
+                Mode::NoiseCancellation,
+                Mode::Transparency,
+                Mode::Adaptive,
+            ] {
+                assert_eq!(mode_from_byte(mode_byte(mode)), Some(mode), "{mode:?}");
+            }
+            for conv in [ConvAwareness::On, ConvAwareness::Off] {
+                assert_eq!(conv_from_byte(conv_byte(conv)), Some(conv), "{conv:?}");
+            }
+            for mic in [
+                MicSelection::Auto,
+                MicSelection::AlwaysRight,
+                MicSelection::AlwaysLeft,
+            ] {
+                assert_eq!(mic_from_byte(mic_byte(mic)), Some(mic), "{mic:?}");
+            }
+            for on in [true, false] {
+                assert_eq!(switch_from_byte(switch_byte(on)), Some(on));
+            }
+        }
+
+        /// 0 is the trap: the mic selection reads it as "auto", every
+        /// other setting as nothing at all.
+        #[test]
+        fn an_unknown_byte_is_not_a_value() {
+            assert_eq!(mode_from_byte(0), None);
+            assert_eq!(mode_from_byte(5), None);
+            assert_eq!(conv_from_byte(0), None);
+            assert_eq!(switch_from_byte(0), None);
+            assert_eq!(mic_from_byte(3), None);
+            assert_eq!(mic_from_byte(0), Some(MicSelection::Auto));
+        }
+
+        /// The bytes themselves: a round trip stays green even if the
+        /// whole table is renumbered.
+        #[test]
+        fn the_bytes_are_the_ones_the_device_uses() {
+            assert_eq!(mode_byte(Mode::NoiseCancellation), 2);
+            assert_eq!(mode_byte(Mode::Adaptive), 4);
+            assert_eq!(mic_byte(MicSelection::Auto), 0);
+            assert_eq!(switch_byte(true), 1);
+            assert_eq!(switch_byte(false), 2);
+        }
+    }
 }
 
 /// One component of the BATTERY (0x04) notification.
@@ -423,5 +547,47 @@ mod tests {
         let notice = SettingNotice::parse(&frame).unwrap();
         assert_eq!(notice.id, setting::NOISE_CONTROL);
         assert_eq!(notice.data, &[0x03, 0x00, 0x00, 0x00]);
+    }
+
+    /// A setter's bytes are the bytes a dump carries back, so both
+    /// directions have to agree on the table.
+    #[test]
+    fn a_setter_frame_reads_back_as_the_same_value() {
+        use crate::model::{MicSelection, Mode};
+        for mode in [
+            Mode::Off,
+            Mode::NoiseCancellation,
+            Mode::Transparency,
+            Mode::Adaptive,
+        ] {
+            let bytes = set_noise_control(mode).encode();
+            let frame = Frame::parse(&bytes).expect("parses");
+            let notice = SettingNotice::parse(&frame).expect("a setting");
+            assert_eq!(notice.id, setting::NOISE_CONTROL);
+            assert_eq!(wire::mode_from_byte(notice.data[0]), Some(mode));
+        }
+        for mic in [
+            MicSelection::Auto,
+            MicSelection::AlwaysRight,
+            MicSelection::AlwaysLeft,
+        ] {
+            let bytes = set_mic_mode(mic).encode();
+            let notice = Frame::parse(&bytes)
+                .and_then(|f| SettingNotice::parse(&f).map(|n| (n.id, n.data[0])))
+                .expect("a setting");
+            assert_eq!(notice.0, setting::MIC_MODE);
+            assert_eq!(wire::mic_from_byte(notice.1), Some(mic));
+        }
+        for (frame, on) in [
+            (set_conv_awareness(true), true),
+            (set_conv_awareness(false), false),
+            (set_ear_detection(true), true),
+            (set_ear_detection(false), false),
+        ] {
+            let bytes = frame.encode();
+            let frame = Frame::parse(&bytes).expect("parses");
+            let notice = SettingNotice::parse(&frame).expect("a setting");
+            assert_eq!(wire::switch_from_byte(notice.data[0]), Some(on));
+        }
     }
 }

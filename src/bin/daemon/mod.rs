@@ -206,7 +206,7 @@ impl Daemon {
     async fn set_one_bud_anc(&self, on: bool) -> Response {
         self.aap_setting(
             podctl::aap::setting::ONE_BUD_ANC,
-            if on { 1 } else { 2 },
+            podctl::aap::wire::switch_byte(on),
             |s| {
                 s.one_bud_anc = Some(on);
             },
@@ -394,11 +394,11 @@ impl Daemon {
 
     async fn set_mode(&self, mode: Mode) -> Response {
         let caps = self.state.read().await.capabilities;
-        let (supported, code) = match mode {
-            Mode::Off => (caps.has_anc || caps.has_transparency, 1u8),
-            Mode::NoiseCancellation => (caps.has_anc, 2),
-            Mode::Transparency => (caps.has_transparency, 3),
-            Mode::Adaptive => (caps.has_adaptive, 4),
+        let supported = match mode {
+            Mode::Off => caps.has_anc || caps.has_transparency,
+            Mode::NoiseCancellation => caps.has_anc,
+            Mode::Transparency => caps.has_transparency,
+            Mode::Adaptive => caps.has_adaptive,
         };
         if !supported {
             return Response::err_code(
@@ -406,7 +406,7 @@ impl Daemon {
                 format!("{mode} is not supported on {}", caps.model.label()),
             );
         }
-        let frame = podctl::aap::set_noise_control(code).encode();
+        let frame = podctl::aap::set_noise_control(mode).encode();
         if let Err(e) = self.aap_send(&frame).await {
             return Response::err(e);
         }
@@ -491,12 +491,7 @@ impl Daemon {
         ) {
             return r;
         }
-        let code = match mic {
-            podctl::MicSelection::Auto => 0u8,
-            podctl::MicSelection::AlwaysRight => 1,
-            podctl::MicSelection::AlwaysLeft => 2,
-        };
-        let frame = podctl::aap::set_mic_mode(code).encode();
+        let frame = podctl::aap::set_mic_mode(mic).encode();
         if let Err(e) = self.aap_send(&frame).await {
             return Response::err(e);
         }

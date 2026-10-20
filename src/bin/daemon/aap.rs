@@ -265,22 +265,20 @@ async fn handle_frame(daemon: &Arc<Daemon>, frame: &Frame) {
 }
 
 async fn apply_settings(daemon: &Daemon, payload: &[u8]) {
-    use podctl::aap::setting;
+    use podctl::aap::{setting, wire};
     let Some((&id, value)) = payload.split_first() else {
         debug!(bytes = ?payload, "settings frame too short");
         return;
     };
-    let v0 = value.first().copied().unwrap_or(0);
+    // A missing value is not a zero: zero is "auto" for the mic
+    // selection and silence for the chime.
+    let Some(&v0) = value.first() else {
+        debug!(id = format!("{id:02x}"), "settings frame without a value");
+        return;
+    };
     match id {
         setting::NOISE_CONTROL => {
-            // 1=Off, 2=NoiseCancellation, 3=Transparency, 4=Adaptive
-            let mode = match v0 {
-                1 => Some(podctl::Mode::Off),
-                2 => Some(podctl::Mode::NoiseCancellation),
-                3 => Some(podctl::Mode::Transparency),
-                4 => Some(podctl::Mode::Adaptive),
-                _ => None,
-            };
+            let mode = wire::mode_from_byte(v0);
             if let Some(m) = mode {
                 let changed = daemon
                     .update_settings_if_changed(|s| {
@@ -295,11 +293,7 @@ async fn apply_settings(daemon: &Daemon, payload: &[u8]) {
             }
         }
         setting::CONV_AWARE => {
-            let conv = match v0 {
-                1 => Some(podctl::ConvAwareness::On),
-                2 => Some(podctl::ConvAwareness::Off),
-                _ => None,
-            };
+            let conv = wire::conv_from_byte(v0);
             if let Some(c) = conv {
                 let changed = daemon
                     .update_settings_if_changed(|s| {
@@ -318,11 +312,7 @@ async fn apply_settings(daemon: &Daemon, payload: &[u8]) {
             // do), which is why podctl remembers the switch itself. A
             // model that does report it has the last word: the value may
             // have been changed on a phone since.
-            let on = match v0 {
-                1 => Some(true),
-                2 => Some(false),
-                _ => None,
-            };
+            let on = wire::switch_from_byte(v0);
             if let Some(b) = on {
                 let changed = daemon
                     .update_settings_if_changed(|s| {
@@ -338,12 +328,7 @@ async fn apply_settings(daemon: &Daemon, payload: &[u8]) {
             }
         }
         setting::MIC_MODE => {
-            let mic = match v0 {
-                0 => Some(podctl::MicSelection::Auto),
-                1 => Some(podctl::MicSelection::AlwaysRight),
-                2 => Some(podctl::MicSelection::AlwaysLeft),
-                _ => None,
-            };
+            let mic = wire::mic_from_byte(v0);
             if let Some(m) = mic {
                 let changed = daemon
                     .update_settings_if_changed(|s| {
@@ -359,11 +344,7 @@ async fn apply_settings(daemon: &Daemon, payload: &[u8]) {
             }
         }
         setting::ONE_BUD_ANC => {
-            let on = match v0 {
-                1 => Some(true),
-                2 => Some(false),
-                _ => None,
-            };
+            let on = wire::switch_from_byte(v0);
             if let Some(b) = on {
                 daemon
                     .update_settings_if_changed(|s| {

@@ -35,6 +35,13 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
   cannot keep up, it sends the state again instead of leaving a gap.
 
 ### Fixed
+- **A settings frame without a value switched the microphone over.** A
+  missing byte was read as zero, and zero is exactly what the mic
+  selection calls "auto"; the same frame also set the chime volume to
+  silent and the adaptive-ANC strength to 0. Such a frame is ignored
+  now. Which byte stands for which value is one table for both
+  directions (`aap::wire`), with round-trip tests — reading a dump and
+  writing a setting used to spell it out in two different files.
 - **Every log line under systemd carried two timestamps**, ours and
   journald's, and escape codes journald does not need. The three
   services had a subscriber each with its own idea of the format; they
