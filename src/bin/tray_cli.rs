@@ -17,8 +17,10 @@ pub fn run(args: &[String]) -> i32 {
             exitcode::OK
         }
         other => {
-            eprintln!("podctl: tray: unknown subcommand '{other}'");
-            eprintln!("       try: podctl tray help");
+            eprintln!(
+                "podctl: tray: unknown value '{other}' (expected start, stop, status, restart)"
+            );
+            eprintln!("hint: see 'podctl help tray'");
             exitcode::USAGE
         }
     }

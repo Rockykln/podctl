@@ -1,45 +1,101 @@
-//! User-facing help text. All wording lives here so it stays consistent
-//! and adding/renaming a verb is a single edit.
+//! User-facing help text. The overview is built from the command table
+//! (`podctl::commands`); the per-verb pages live here.
 
-pub fn print_top(focus: Option<&str>) {
+use podctl::commands::{self, Cmd, State};
+use podctl::exitcode;
+
+pub fn print_top(focus: Option<&str>) -> i32 {
     if let Some(v) = focus {
-        print_verb(v);
-        return;
+        return print_verb(v);
     }
-    println!("{TOP_HELP}");
+    println!("{}", top_help());
+    exitcode::OK
 }
 
-pub fn print_verb(verb: &str) {
-    let text = match verb {
-        "status" | "s" => STATUS,
-        "battery" | "bat" | "b" => BATTERY,
-        "mode" | "m" => MODE,
-        "conv" | "c" => CONV,
+/// The overview: one line per command, grouped, in fixed columns. Only
+/// the short aliases are listed; the longer alternate spellings
+/// (`ear-detection`, `anc-strength`, …) work the same and are in the
+/// man page.
+fn top_help() -> String {
+    let mut out = String::from(HEAD);
+    for group in commands::GROUPS {
+        out.push('\n');
+        out.push_str(group);
+        out.push('\n');
+        for c in commands::COMMANDS.iter().filter(|c| &c.group == group) {
+            let args = c.args_label();
+            // One long argument list (`press`) must not push into its
+            // own description.
+            let gap = if args.len() >= ARGS_COL { " " } else { "" };
+            // The four whose AAP ids are unknown say so instead of
+            // describing what they would do; `podctl help <verb>` has
+            // the detail.
+            let summary = if c.state == State::NotImplemented {
+                "(not implemented yet)"
+            } else {
+                c.summary
+            };
+            let line = format!(
+                "  {:<16}{:<8}{:<width$}{gap}{summary}",
+                c.name,
+                short_aliases(c),
+                args,
+                width = ARGS_COL,
+            );
+            out.push_str(line.trim_end());
+            out.push('\n');
+        }
+    }
+    out.push('\n');
+    out.push_str(TAIL);
+    out
+}
+
+const ARGS_COL: usize = 32;
+
+fn short_aliases(c: &Cmd) -> String {
+    c.aliases
+        .iter()
+        .filter(|a| a.len() <= 6)
+        .copied()
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Help for one verb, by any of its names. Returns the exit code: an
+/// unknown topic is a usage error, not a success.
+pub fn print_verb(verb: &str) -> i32 {
+    let canonical = commands::find(verb).map(|c| c.name).unwrap_or(verb);
+    let text = match canonical {
+        "status" => STATUS,
+        "battery" => BATTERY,
+        "mode" => MODE,
+        "conv" => CONV,
         "spatial" => SPATIAL,
-        "ear" | "ear-detection" => EAR,
+        "ear" => EAR,
         "mic" => MIC,
-        "loud-reduction" | "loud" => LOUD,
+        "loud-reduction" => LOUD,
         "press" => PRESS,
-        "tone-on-press" | "tone" => TONE,
+        "tone-on-press" => TONE,
         "rename" => RENAME,
         "connect" => CONNECT,
-        "disconnect" | "dc" => DISCONNECT,
+        "disconnect" => DISCONNECT,
         "pair" => PAIR,
-        "unpair" | "forget" => UNPAIR,
-        "list" | "ls" => LIST,
-        "auto-connect" | "auto" => AUTO,
-        "volume" | "vol" | "v" => VOLUME,
+        "unpair" => UNPAIR,
+        "list" => LIST,
+        "auto-connect" => AUTO,
+        "volume" => VOLUME,
         "mute" => MUTE,
-        "profile" | "p" => PROFILE,
+        "profile" => PROFILE,
         "codec" => CODEC,
-        "default" | "default-sink" => DEFAULT_SINK,
+        "default" => DEFAULT_SINK,
         "latency" => LATENCY,
-        "watch" | "w" => WATCH,
+        "watch" => WATCH,
         "meter" => METER,
         "ble" => BLE,
-        "one-bud-anc" | "obanc" => ONE_BUD_ANC,
-        "chime" | "chime-volume" => CHIME,
-        "auto-anc" | "anc-strength" => AUTO_ANC,
+        "one-bud-anc" => ONE_BUD_ANC,
+        "chime" => CHIME,
+        "auto-anc" => AUTO_ANC,
         "completion" => COMPLETION,
         "ping" => PING,
         "debug" => DEBUG,
@@ -49,90 +105,44 @@ pub fn print_verb(verb: &str) {
         "install" => INSTALL,
         "uninstall" => UNINSTALL,
         "version" | "--version" | "-V" => VERSION,
-        "help" | "-h" | "--help" => TOP_HELP,
+        "help" | "-h" | "--help" => {
+            println!("{}", top_help());
+            return exitcode::OK;
+        }
         other => {
-            eprintln!("no help for '{other}' — try 'podctl help' for the command list.");
-            return;
+            eprintln!("podctl: no help for '{other}'");
+            if let Some(hint) = commands::suggest(other) {
+                eprintln!("hint: did you mean '{hint}'? see 'podctl help'");
+            } else {
+                eprintln!("hint: 'podctl help' lists every command");
+            }
+            return exitcode::USAGE;
         }
     };
     println!("{text}");
+    exitcode::OK
 }
 
-const TOP_HELP: &str = "\
+const HEAD: &str = "\
 podctl — control AirPods from the Linux terminal
 
 USAGE
     podctl <command> [args]
     podctl help [command]
+";
 
-CORE
-    status      (s)             full snapshot — everything we know
-    battery     (b|bat)         battery for left, right and case
-    ping                        daemon health check
-
-LISTENING
-    mode        (m)   <off|anc|transparency|adaptive>
-    conv        (c)   <on|off>      conversation awareness
-    spatial           <off|fixed|head-tracked>
-
-BUD SETTINGS
-    ear               <on|off>      in-ear auto-pause detection
-    mic               <auto|left|right>
-    loud-reduction    <on|off>      cap loud spikes
-    press             <left|right> <mode-cycle|siri|none>
-    tone              <on|off>      acoustic feedback on press
-    rename            \"name\"        change the bluetooth name
-    one-bud-anc       <on|off>      keep ANC active with only one bud in
-    auto-anc          <0..100>      AutoANC strength on Pro 2
-    chime             <0..100>      system tone / chime volume
-
-BLUETOOTH  (BlueZ)
-    connect                     bring the BT link up
-    disconnect  (dc)            drop the BT link
-    pair                        pair the AirPods near the dongle
-    unpair      (forget)        remove the pairing
-    list        (ls)            all paired AirPods on the system
-    auto        <on|off>        BlueZ Trusted flag
-
-AUDIO  (PipeWire / PulseAudio)
-    volume      (v|vol)   <0..100>
-    mute        <on|off>
-    profile     (p)   <high|headset|off>
-    codec             <sbc|aac|aptx|ldac|…>
-    default                     set AirPods as default audio sink
-    latency           <ms>      output latency offset (can be negative)
-
-STREAMING
-    watch       (w)             live event stream (mode, in-ear, presses…)
-    meter       [--plain|--json] [--interval N] [--device <sink>]
-                                live RMS / peak dBFS of what you're sending
-                                to the AirPods (software meter, not SPL)
-
-    ble         [on|off]         listen for the case over Bluetooth LE
-
-UI
-    tray        <start|stop|status|restart>   status-bar icon
-    popup                       show the case-open bubble now
-    reboot                      restart podctld + tray + popup
-
-MISC
-    completion  <bash|zsh|fish> shell completion script to stdout
-    debug       [--no-redact]   paste-friendly diagnostic report
-    install     [--yes]         install to ~/.local (binaries + completion + man + service)
-    uninstall   [--yes]         remove everything 'install' put in place
-    help        [cmd]
-    version                     CLI + daemon version
-
+const TAIL: &str = "\
 EXAMPLES
-    podctl status                 # full snapshot, AAP-live
+    podctl status                 # everything we know, live from the buds
     podctl m anc                  # noise cancellation
     podctl auto-anc 60            # adaptive ANC at 60 %
     podctl watch                  # streams events while you wear them
     podctl meter                  # live dB meter on the playback sink
     podctl v 60                   # volume 60 %
 
-The daemon `podctld` must be running:
-    systemctl --user start podctld
+Settings on the buds themselves (mode, conv, ear, …) need podctld:
+    systemctl --user enable --now podctld
+Audio, bluetooth and 'ble' also work without it.
 ";
 
 const STATUS: &str = "\
@@ -192,6 +202,9 @@ podctl spatial — spatial audio mode
 Linux doesn't render personalised spatial audio (Apple-only); this only
 sets the bud's stored preference.
 
+Not implemented yet: the AAP setting id for this is not known, so
+the daemon answers with an error instead of pretending.
+
     podctl spatial fixed
 ";
 
@@ -230,6 +243,9 @@ podctl loud-reduction — cap loud sound spikes
 
 Apple's hearing-safety filter. Pro 2 / AirPods 4 ANC / Max.
 
+Not implemented yet: the AAP setting id for this is not known, so
+the daemon answers with an error instead of pretending.
+
     podctl loud-reduction on
     podctl loud off
 ";
@@ -240,19 +256,25 @@ podctl press — set stem press-and-hold action
     podctl press <left|right> <mode-cycle|siri|none>
 
 actions:
-    mode-cycle   cycle through ANC → Transparency → Off (recommended on Linux)
+    mode-cycle   cycle through ANC → Transparency → Off
     siri         trigger Siri (no-op on Linux — bud sends event into the void)
     none         do nothing on long-press
+
+Not implemented yet: the AAP setting id for this is not known, so
+the daemon answers with an error instead of pretending.
 
     podctl press left  mode-cycle
     podctl press right siri
 ";
 
 const TONE: &str = "\
-podctl tone — acoustic feedback on press
+podctl tone-on-press — acoustic feedback on press
 
 Plays a small 'click' through the bud when a stem press registers.
 Off makes presses silent.
+
+Not implemented yet: the AAP setting id for this is not known, so
+the daemon answers with an error instead of pretending.
 
     podctl tone on
     podctl tone off
@@ -322,7 +344,7 @@ connected/trusted flags. Useful when you have multiple pairs.
 ";
 
 const AUTO: &str = "\
-podctl auto — auto-connect on adapter power-up
+podctl auto-connect — connect on adapter power-up
 
 Maps to BlueZ's 'Trusted' flag. When on, BlueZ tries to reconnect the
 AirPods automatically when the adapter is enabled or they come back in
@@ -533,6 +555,11 @@ Only ever touches what it lists. If podctl is *also* installed as a
 distro package and you run this from ~/.local/bin, the package and its
 services are left running — the listing names it and the pacman command
 to remove it yourself.
+
+Run from a system install, the listing instead includes the package
+itself, and confirming it (or passing --yes) runs
+'sudo pacman -R --noconfirm <package>'. Read the listing before you
+agree to it.
 
     podctl uninstall
     podctl uninstall --yes

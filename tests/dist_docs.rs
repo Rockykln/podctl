@@ -8,49 +8,10 @@ const BASH: &str = include_str!("../dist/completion/podctl.bash");
 const ZSH: &str = include_str!("../dist/completion/_podctl.zsh");
 const FISH: &str = include_str!("../dist/completion/podctl.fish");
 
-/// Every command `podctl` accepts as a first argument, canonical spelling
-/// only — aliases are deliberately left out of the completions.
-const VERBS: &[&str] = &[
-    "status",
-    "battery",
-    "ping",
-    "mode",
-    "conv",
-    "spatial",
-    "ear",
-    "mic",
-    "loud-reduction",
-    "press",
-    "tone-on-press",
-    "rename",
-    "one-bud-anc",
-    "auto-anc",
-    "chime",
-    "connect",
-    "disconnect",
-    "pair",
-    "unpair",
-    "list",
-    "auto-connect",
-    "volume",
-    "mute",
-    "profile",
-    "codec",
-    "default",
-    "latency",
-    "watch",
-    "meter",
-    "ble",
-    "tray",
-    "popup",
-    "reboot",
-    "completion",
-    "debug",
-    "install",
-    "uninstall",
-    "version",
-    "help",
-];
+/// Canonical names, from the one table the parser uses.
+fn verbs() -> Vec<&'static str> {
+    podctl::commands::COMMANDS.iter().map(|c| c.name).collect()
+}
 
 /// The `.TH` line carries the version users see in `man podctl`. It was
 /// was left at 0.1.0 through the whole 0.1.1 release; this keeps it
@@ -78,12 +39,26 @@ fn completions_offer_every_command() {
         ("_podctl.zsh", ZSH),
         ("podctl.fish", FISH),
     ] {
-        let missing: Vec<&str> = VERBS
-            .iter()
-            .copied()
-            .filter(|v| !mentions(text, v))
-            .collect();
+        let missing: Vec<&str> = verbs().into_iter().filter(|v| !mentions(text, v)).collect();
         assert!(missing.is_empty(), "{name} does not offer: {missing:?}");
+    }
+}
+
+/// The files under `dist/` are what packagers install, and they are
+/// written out by `podctl completion`. If the table changes, they have
+/// to be regenerated — that is this test.
+#[test]
+fn the_shipped_completions_are_the_generated_ones() {
+    for (name, text, shell) in [
+        ("podctl.bash", BASH, "bash"),
+        ("_podctl.zsh", ZSH, "zsh"),
+        ("podctl.fish", FISH, "fish"),
+    ] {
+        let generated = podctl::completions::script(shell).expect("known shell");
+        assert_eq!(
+            text, generated,
+            "dist/completion/{name} is out of date — run 'podctl completion {shell}'"
+        );
     }
 }
 
@@ -91,15 +66,26 @@ fn completions_offer_every_command() {
 fn man_page_documents_every_command() {
     // `help` and `version` appear as `.B version, --version, -V` style
     // entries, so a plain substring check is what fits here.
-    let missing: Vec<&str> = VERBS
-        .iter()
-        .copied()
+    let missing: Vec<&str> = verbs()
+        .into_iter()
         .filter(|v| !mentions(MAN_PODCTL, v))
         .collect();
     assert!(
         missing.is_empty(),
         "podctl.1 does not document: {missing:?}"
     );
+}
+
+/// Aliases belong in the man page too: `podctl dc` and `podctl obanc`
+/// worked for releases without being written down anywhere.
+#[test]
+fn man_page_lists_every_alias() {
+    let missing: Vec<&str> = podctl::commands::COMMANDS
+        .iter()
+        .flat_map(|c| c.aliases.iter().copied())
+        .filter(|a| !mentions(MAN_PODCTL, a))
+        .collect();
+    assert!(missing.is_empty(), "podctl.1 does not mention: {missing:?}");
 }
 
 /// Whole-word match, so `default` isn't satisfied by `default-sink` and

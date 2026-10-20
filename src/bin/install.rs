@@ -181,12 +181,7 @@ pub fn install(args: &[String]) -> i32 {
         if let Some(parent) = completion_target.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let script = match shell.as_str() {
-            "bash" => BASH_COMPLETION,
-            "zsh" => ZSH_COMPLETION,
-            "fish" => FISH_COMPLETION,
-            _ => "",
-        };
+        let script = podctl::completions::script(&shell).unwrap_or_default();
         if !script.is_empty() {
             if let Err(e) = std::fs::write(&completion_target, script) {
                 eprintln!("podctl: write completion: {e}");
@@ -605,7 +600,7 @@ fn completion_path(shell: &str, home: &Path) -> PathBuf {
             .join("share")
             .join("zsh")
             .join("site-functions")
-            .join("_pods"),
+            .join("_podctl"),
         _ => home
             .join(".local")
             .join("share")
@@ -685,10 +680,6 @@ pub fn have_systemctl() -> bool {
         .map(|s| s.success())
         .unwrap_or(false)
 }
-
-const BASH_COMPLETION: &str = include_str!("../../dist/completion/podctl.bash");
-const ZSH_COMPLETION: &str = include_str!("../../dist/completion/_podctl.zsh");
-const FISH_COMPLETION: &str = include_str!("../../dist/completion/podctl.fish");
 
 #[cfg(test)]
 mod tests {

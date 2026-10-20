@@ -29,27 +29,28 @@ a clear error.
 .SH COMMANDS
 .SS Device state
 .TP
-.B status
+.B status, s
 Full snapshot: model, battery, mode, settings, audio, bluetooth.
 .TP
 .B battery, b, bat
 Battery levels for left bud, right bud and case.
 .SS Listening modes
 .TP
-.BI "mode " "off|anc|transparency|adaptive"
+.BI "mode, m " "off|anc|transparency|adaptive"
 Switch listening mode. Adaptive requires AirPods Pro 2 or AirPods 4 ANC.
 .TP
-.BI "conv " "on|off"
+.BI "conv, c " "on|off"
 Conversation awareness (Pro 2 / AirPods 4 ANC only). While you talk,
 .B podctld
 measures the music level and fades it down to a level you can talk over
 (6 to 30\~dB lower), restoring it afterwards.
 .TP
 .BI "spatial " "off|fixed|head-tracked"
-Spatial audio mode.
+Spatial audio mode. Not implemented: the AAP setting id is unknown, so
+the daemon answers with an error.
 .SS Bud settings
 .TP
-.BI "ear " "on|off"
+.BI "ear, ear-detection " "on|off"
 In-ear detection. When on,
 .B podctld
 pauses playing MPRIS players when a bud comes out and resumes them when
@@ -62,7 +63,7 @@ and defaults to on.
 Microphone selection. Also kept in
 .IR daemon.toml " (" mic ")."
 .TP
-.BI "loud-reduction " "on|off"
+.BI "loud-reduction, loud " "on|off"
 Cap loud sound spikes (Apple's hearing-safety feature). The AAP setting
 ID for this is not yet pinned down; the verb currently returns
 "not implemented" on every device.
@@ -80,17 +81,17 @@ above.
 .BI "rename " """name"""
 Change the Bluetooth name.
 .TP
-.BI "one-bud-anc " "on|off"
+.BI "one-bud-anc, obanc " "on|off"
 Keep ANC active when only one bud is being worn (Pro 2).
 .TP
-.BI "auto-anc " "0..100"
+.BI "auto-anc, anc-strength " "0..100"
 AutoANC / Adaptive Audio strength (Pro 2).
 .TP
-.BI "chime " "0..100"
+.BI "chime, chime-volume " "0..100"
 System tone / chime volume.
 .SS Bluetooth
 .TP
-.B connect, disconnect
+.B connect, disconnect, dc
 Bring the link up or down.
 .TP
 .BR "pair " [ address ] " [" --yes ]
@@ -101,29 +102,29 @@ which takes the one candidate when there is exactly one — anything in
 pairing mode within a few metres turns up here, including somebody
 else's.
 .TP
-.B unpair
+.B unpair, forget
 Forget the pairing; the AirPods have to be paired fresh afterwards.
 .TP
 .B list, ls
 List paired AirPods on this adapter.
 .TP
-.BI "auto-connect " "on|off"
+.BI "auto-connect, auto " "on|off"
 BlueZ trusted/auto-connect flag.
 .SS Audio
 .TP
-.BI "volume " "0..100"
+.BI "volume, v, vol " "0..100"
 Set output volume on the AirPods sink.
 .TP
 .BI "mute " "on|off"
 Mute or unmute the AirPods sink.
 .TP
-.BI "profile " "high|headset|off"
+.BI "profile, p " "high|headset|off"
 Bluetooth audio profile: high-fidelity A2DP, HSP/HFP headset, or off.
 .TP
 .BI "codec " "sbc|aac|aptx|ldac|..."
 Switch A2DP codec (availability depends on PipeWire build).
 .TP
-.B default
+.B default, default-sink
 Make the AirPods the system's default audio sink.
 .TP
 .BI "latency " "<ms>"
@@ -264,6 +265,12 @@ opt-out marker lives at
 .TP
 .B NO_BANNER
 When set, suppress the "running without daemon" banner.
+.TP
+.B PODS_NO_LR
+When set,
+.B status
+labels the buds "primary/secondary" instead of "L/R": which bud leads
+is not the same as which ear it sits in.
 .TP
 .B RUST_LOG
 Sets daemon log level (default

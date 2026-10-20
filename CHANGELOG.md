@@ -5,6 +5,32 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+- **The command line comes from one table now** (`src/commands.rs`).
+  Help, the completion scripts and the argument checks were six
+  hand-kept copies of the same list, and they had drifted: `podctl m
+  <TAB>`, `podctl tone <TAB>` and `podctl --json mode <TAB>` completed
+  nothing, the internal `debug emit-case-lid` was offered to everyone,
+  and the zsh file installed itself as `_pods`. The overview has fixed
+  columns and an alias column, `podctl completion <shell>` writes the
+  script out from the table, and a test holds the files under `dist/`,
+  the man page and the parser to it.
+- **Surplus arguments are a usage error**, so `podctl rename Test
+  AirPods` says to quote the name instead of renaming to "Test". An
+  option a verb does not take is refused as well.
+- **A mistyped command names the one you meant** ("did you mean
+  'status'?"), and `podctl help nope` exits 64 instead of 0.
+- **One shape for value errors**: `podctl: mode: unknown value 'foo'
+  (expected off, anc, transparency, adaptive)`, with `hint:` on the
+  next line. There were three hint styles and two quoting styles.
+- `podctl meter --interval abc` fell back to 100 ms without a word and
+  `--interval 0` was a busy loop; both are usage errors now.
+- The four settings whose AAP ids are unknown (`spatial`,
+  `loud-reduction`, `press`, `tone-on-press`) are marked as not
+  implemented in the overview, their own help pages and the man page.
+- The man page lists the aliases, documents `PODS_NO_LR`, and says that
+  `uninstall` on a system install can run `sudo pacman -R`.
+
 ### Fixed
 - **The daemon could cut its own connections.** It kept the number of
   the socket to the buds rather than the socket, and the kernel hands a

@@ -5,7 +5,7 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use podctl::{
-    PressSide, Response, WatchRole, exitcode,
+    PressSide, Response, WatchRole, commands, exitcode,
     ipc::Request,
     model::{ConvAwareness, MicSelection, Mode, PressAction, Profile, SpatialAudio},
 };
@@ -34,6 +34,9 @@ fn main() -> ExitCode {
             println!("{payload}");
         } else {
             eprintln!("{PROG}: {e}");
+            if let Some(hint) = &e.hint {
+                eprintln!("hint: {hint}");
+            }
         }
         e.exit_code()
     });
@@ -43,6 +46,9 @@ fn main() -> ExitCode {
 #[derive(Debug)]
 struct CliError {
     msg: String,
+    /// Printed as `hint: …` on the next line. One form for all of them;
+    /// there used to be three.
+    hint: Option<String>,
     code: i32,
 }
 
@@ -50,24 +56,33 @@ impl CliError {
     fn usage(msg: impl Into<String>) -> Self {
         Self {
             msg: msg.into(),
+            hint: None,
             code: exitcode::USAGE,
         }
+    }
+
+    fn with_hint(mut self, hint: impl Into<String>) -> Self {
+        self.hint = Some(hint.into());
+        self
     }
     fn unavailable(msg: impl Into<String>) -> Self {
         Self {
             msg: msg.into(),
+            hint: None,
             code: exitcode::UNAVAILABLE,
         }
     }
     fn oserr(msg: impl Into<String>) -> Self {
         Self {
             msg: msg.into(),
+            hint: None,
             code: exitcode::OSERR,
         }
     }
     fn dataerr(msg: impl Into<String>) -> Self {
         Self {
             msg: msg.into(),
+            hint: None,
             code: exitcode::DATAERR,
         }
     }
@@ -94,14 +109,12 @@ fn run(mut args: Vec<String>) -> Result<i32, CliError> {
         && !matches!(verb, "help" | "-h" | "--help")
         && args[1..].iter().any(|a| a == "--help" || a == "-h")
     {
-        help::print_verb(verb);
-        return Ok(exitcode::OK);
+        return Ok(help::print_verb(verb));
     }
 
     let verb = match args.first().map(String::as_str) {
         None | Some("help") | Some("-h") | Some("--help") => {
-            help::print_top(args.get(1).map(String::as_str));
-            return Ok(exitcode::OK);
+            return Ok(help::print_top(args.get(1).map(String::as_str)));
         }
         Some("version") | Some("--version") | Some("-V") => {
             print_version(json);
@@ -192,13 +205,7 @@ fn ble_switch(arg: Option<&str>, json: bool) -> Result<i32, CliError> {
             }
             return Ok(exitcode::OK);
         }
-        Some("on" | "true" | "yes" | "1") => true,
-        Some("off" | "false" | "no" | "0") => false,
-        Some(other) => {
-            return Err(CliError::usage(format!(
-                "ble: expected `on` or `off`, got `{other}`"
-            )));
-        }
+        Some(raw) => on_off("ble", raw)?,
     };
     podctl::config::set_ble(on)
         .map_err(|e| CliError::unavailable(format!("could not write the settings file: {e}")))?;
@@ -270,41 +277,80 @@ fn pop_flag(args: &mut Vec<String>, flag: &str) -> bool {
     found
 }
 
+/// Catch a typo, too many arguments and an option the verb does not
+/// take before the request goes anywhere. Every one of these used to
+/// pass silently: `podctl rename Test AirPods` renamed to "Test".
+fn check_args(verb: &str, rest: &[String]) -> Result<(), CliError> {
+    let Some(cmd) = commands::find(verb) else {
+        let mut err = CliError::usage(format!("unknown command '{verb}'"));
+        err = match commands::suggest(verb) {
+            Some(near) => err.with_hint(format!("did you mean '{near}'? see 'podctl help'")),
+            None => err.with_hint("'podctl help' lists every command"),
+        };
+        return Err(err);
+    };
+    for arg in rest.iter().filter(|a| a.starts_with('-')) {
+        let known = cmd.flags.contains(&arg.as_str())
+            || commands::GLOBAL_FLAGS.contains(&arg.as_str())
+            // A negative latency offset is a value, not an option.
+            || arg[1..].chars().all(|c| c.is_ascii_digit());
+        if !known {
+            return Err(CliError::usage(format!("{verb}: unknown option '{arg}'"))
+                .with_hint(format!("see 'podctl help {}'", cmd.name)));
+        }
+    }
+    let positional = rest.iter().filter(|a| !a.starts_with('-')).count();
+    if positional > cmd.max_args() {
+        let what = match cmd.max_args() {
+            0 => format!("{verb} takes no arguments, got {positional}"),
+            1 => format!("{verb} takes one argument, got {positional}"),
+            n => format!("{verb} takes {n} arguments, got {positional}"),
+        };
+        let mut err = CliError::usage(what);
+        if cmd.name == "rename" {
+            err = err.with_hint("quote names with spaces: podctl rename \"Test AirPods\"");
+        }
+        return Err(err);
+    }
+    Ok(())
+}
+
 fn parse_verb(verb: &str, rest: &[String]) -> Result<Request, CliError> {
+    check_args(verb, rest)?;
     Ok(match verb {
         "status" | "s" => Request::Status,
         "battery" | "bat" | "b" => Request::Battery,
         "ping" => Request::Ping,
 
         "mode" | "m" => Request::SetMode {
-            mode: parse_arg::<Mode>(rest, verb, "off|anc|transparency|adaptive")?,
+            mode: parse_arg::<Mode>(rest, verb)?,
         },
         "conv" | "c" => Request::SetConv {
-            conv: parse_arg::<ConvAwareness>(rest, verb, "on|off")?,
+            conv: parse_arg::<ConvAwareness>(rest, verb)?,
         },
         "spatial" => Request::SetSpatial {
-            mode: parse_arg::<SpatialAudio>(rest, verb, "off|fixed|head-tracked")?,
+            mode: parse_arg::<SpatialAudio>(rest, verb)?,
         },
 
         "ear" | "ear-detection" => Request::SetEarDetection {
             on: parse_on_off(rest, verb)?,
         },
         "mic" => Request::SetMic {
-            mic: parse_arg::<MicSelection>(rest, verb, "auto|left|right")?,
+            mic: parse_arg::<MicSelection>(rest, verb)?,
         },
         "loud-reduction" | "loud" => Request::SetLoudReduction {
             on: parse_on_off(rest, verb)?,
         },
         "press" => {
             let side = parse_press_side(rest.first().map(String::as_str))?;
-            let action = parse_arg_at::<PressAction>(rest, 1, verb, "mode-cycle|siri|none")?;
+            let action = parse_arg_at::<PressAction>(rest, 1, verb)?;
             Request::SetPressAction { side, action }
         }
         "tone-on-press" | "tone" => Request::SetToneOnPress {
             on: parse_on_off(rest, verb)?,
         },
         "rename" => Request::Rename {
-            name: require_arg(rest, verb, "\"new name\"")?.to_string(),
+            name: require_arg(rest, verb)?.to_string(),
         },
 
         "connect" => Request::Connect,
@@ -322,126 +368,129 @@ fn parse_verb(verb: &str, rest: &[String]) -> Result<Request, CliError> {
             on: parse_on_off(rest, verb)?,
         },
 
-        "volume" | "vol" | "v" => {
-            let arg = require_arg(rest, verb, "0..100")?;
-            let pct: u8 = arg
-                .parse()
-                .map_err(|_| CliError::usage(format!("'volume': expected 0..100, got '{arg}'")))?;
-            if pct > 100 {
-                return Err(CliError::usage(format!(
-                    "'volume': expected 0..100, got {pct}"
-                )));
-            }
-            Request::SetVolume { percent: pct }
-        }
+        "volume" | "vol" | "v" => Request::SetVolume {
+            percent: parse_percent(rest, verb)?,
+        },
         "mute" => Request::SetMuted {
             muted: parse_on_off(rest, verb)?,
         },
         "profile" | "p" => Request::SetProfile {
-            profile: parse_arg::<Profile>(rest, verb, "high|headset|off")?,
+            profile: parse_arg::<Profile>(rest, verb)?,
         },
         "codec" => Request::SetCodec {
-            codec: require_arg(rest, verb, "sbc|aac|aptx|ldac|…")?.to_string(),
+            codec: require_arg(rest, verb)?.to_string(),
         },
         "default" | "default-sink" => Request::MakeDefaultSink,
         "latency" => {
-            let arg = require_arg(rest, verb, "<ms> (negative ok)")?;
-            let ms: i32 = arg.parse().map_err(|_| {
-                CliError::usage(format!("'latency': expected integer ms, got '{arg}'"))
-            })?;
+            let arg = require_arg(rest, verb)?;
+            let ms: i32 = arg.parse().map_err(|_| bad_value(verb, 0, arg))?;
             Request::SetLatencyOffset { ms }
         }
 
         "one-bud-anc" | "obanc" => Request::SetOneBudAnc {
             on: parse_on_off(rest, verb)?,
         },
-        "chime" | "chime-volume" => {
-            let arg = require_arg(rest, verb, "0..100")?;
-            let level: u8 = arg
-                .parse()
-                .map_err(|_| CliError::usage(format!("'chime': expected 0..100, got '{arg}'")))?;
-            if level > 100 {
-                return Err(CliError::usage(format!(
-                    "'chime': expected 0..100, got {level}"
-                )));
-            }
-            Request::SetChimeVolume { level }
-        }
-        "auto-anc" | "anc-strength" => {
-            let arg = require_arg(rest, verb, "0..100")?;
-            let level: u8 = arg.parse().map_err(|_| {
-                CliError::usage(format!("'auto-anc': expected 0..100, got '{arg}'"))
-            })?;
-            if level > 100 {
-                return Err(CliError::usage(format!(
-                    "'auto-anc': expected 0..100, got {level}"
-                )));
-            }
-            Request::SetAutoAncLevel { level }
-        }
+        "chime" | "chime-volume" => Request::SetChimeVolume {
+            level: parse_percent(rest, verb)?,
+        },
+        "auto-anc" | "anc-strength" => Request::SetAutoAncLevel {
+            level: parse_percent(rest, verb)?,
+        },
 
         "watch" | "w" => Request::Watch {
             role: WatchRole::Observer,
         },
 
-        other => {
-            return Err(CliError::usage(format!(
-                "unknown command '{other}'. run 'podctl help' for the full list."
-            )));
-        }
+        // check_args has already rejected anything not in the table.
+        other => return Err(CliError::usage(format!("unknown command '{other}'"))),
     })
 }
 
-fn parse_arg<T: FromStr<Err = String>>(
-    rest: &[String],
-    verb: &str,
-    hint: &str,
-) -> Result<T, CliError> {
-    let raw = require_arg(rest, verb, hint)?;
-    T::from_str(raw).map_err(|e| CliError::usage(format!("'{verb}': {e}")))
+/// One shape for every value error: `podctl: <verb>: <problem>`, the
+/// accepted values named, and the help page as the hint. There used to
+/// be three hint styles and two quoting styles.
+fn bad_value(verb: &str, index: usize, raw: &str) -> CliError {
+    let cmd = commands::find(verb);
+    let name = cmd.map(|c| c.name).unwrap_or(verb);
+    let expected = expected_label(verb, index)
+        .map(|e| format!(" (expected {e})"))
+        .unwrap_or_default();
+    CliError::usage(format!("{name}: unknown value '{raw}'{expected}"))
+        .with_hint(format!("see 'podctl help {name}'"))
+}
+
+fn missing_value(verb: &str, index: usize) -> CliError {
+    let cmd = commands::find(verb);
+    let name = cmd.map(|c| c.name).unwrap_or(verb);
+    let what = expected_label(verb, index).unwrap_or_else(|| "a value".into());
+    CliError::usage(format!("{name}: needs an argument ({what})"))
+        .with_hint(format!("see 'podctl help {name}'"))
+}
+
+/// The accepted values of an argument, or its label when it is free
+/// text (`0..100`, `ms`).
+fn expected_label(verb: &str, index: usize) -> Option<String> {
+    let cmd = commands::find(verb)?;
+    let values = cmd.values_at(index);
+    if !values.is_empty() {
+        return Some(values.join(", "));
+    }
+    cmd.args.get(index).map(|a| a.label.to_string())
+}
+
+fn parse_arg<T: FromStr<Err = String>>(rest: &[String], verb: &str) -> Result<T, CliError> {
+    parse_arg_at(rest, 0, verb)
 }
 
 fn parse_arg_at<T: FromStr<Err = String>>(
     rest: &[String],
     idx: usize,
     verb: &str,
-    hint: &str,
 ) -> Result<T, CliError> {
     let raw = rest
         .get(idx)
         .map(String::as_str)
-        .ok_or_else(|| CliError::usage(format!("'{verb}' needs an argument: {hint}")))?;
-    T::from_str(raw).map_err(|e| CliError::usage(format!("'{verb}': {e}")))
+        .ok_or_else(|| missing_value(verb, idx))?;
+    T::from_str(raw).map_err(|_| bad_value(verb, idx, raw))
 }
 
 fn parse_on_off(rest: &[String], verb: &str) -> Result<bool, CliError> {
-    let raw = require_arg(rest, verb, "on|off")?;
+    let raw = require_arg(rest, verb)?;
+    on_off(verb, raw)
+}
+
+fn on_off(verb: &str, raw: &str) -> Result<bool, CliError> {
     match raw.trim().to_ascii_lowercase().as_str() {
         "on" | "1" | "true" | "yes" => Ok(true),
         "off" | "0" | "false" | "no" => Ok(false),
-        _ => Err(CliError::usage(format!(
-            "'{verb}': expected on|off, got '{raw}'"
-        ))),
+        _ => Err(bad_value(verb, 0, raw)),
     }
 }
 
 fn parse_press_side(raw: Option<&str>) -> Result<PressSide, CliError> {
-    match raw.map(|s| s.to_ascii_lowercase()).as_deref() {
-        Some("left") | Some("l") => Ok(PressSide::Left),
-        Some("right") | Some("r") => Ok(PressSide::Right),
-        Some(other) => Err(CliError::usage(format!(
-            "'press': side must be 'left' or 'right', got '{other}'"
-        ))),
-        None => Err(CliError::usage(
-            "'press' needs <side> <action>, e.g. 'podctl press left mode-cycle'",
-        )),
+    let Some(raw) = raw else {
+        return Err(missing_value("press", 0));
+    };
+    match raw.to_ascii_lowercase().as_str() {
+        "left" | "l" => Ok(PressSide::Left),
+        "right" | "r" => Ok(PressSide::Right),
+        other => Err(bad_value("press", 0, other)),
     }
 }
 
-fn require_arg<'a>(rest: &'a [String], verb: &str, hint: &str) -> Result<&'a str, CliError> {
+/// A number in `0..=100`, the only numeric range the CLI takes.
+fn parse_percent(rest: &[String], verb: &str) -> Result<u8, CliError> {
+    let raw = require_arg(rest, verb)?;
+    match raw.parse::<u8>() {
+        Ok(v) if v <= 100 => Ok(v),
+        _ => Err(bad_value(verb, 0, raw)),
+    }
+}
+
+fn require_arg<'a>(rest: &'a [String], verb: &str) -> Result<&'a str, CliError> {
     rest.first()
         .map(String::as_str)
-        .ok_or_else(|| CliError::usage(format!("'{verb}' needs an argument: {hint}")))
+        .ok_or_else(|| missing_value(verb, 0))
 }
 
 /// How long to wait for the daemon's answer. Ten seconds is plenty for

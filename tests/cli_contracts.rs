@@ -61,3 +61,85 @@ fn ping_without_a_daemon_reports_it() {
         "answered pong without a daemon"
     );
 }
+
+/// Surplus arguments used to be dropped without a word, so
+/// `podctl rename Test AirPods` renamed the buds to "Test".
+#[test]
+fn surplus_arguments_are_a_usage_error() {
+    for args in [
+        &["status", "foo"][..],
+        &["mode", "anc", "extra"][..],
+        &["volume", "50", "60"][..],
+        &["rename", "Test", "AirPods"][..],
+    ] {
+        let out = podctl(args);
+        assert_eq!(out.status.code(), Some(64), "{args:?} exit status");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(err.contains("takes"), "{args:?}: {err}");
+    }
+}
+
+#[test]
+fn an_option_the_verb_does_not_take_is_refused() {
+    let out = podctl(&["mode", "--bogus"]);
+    assert_eq!(out.status.code(), Some(64));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("unknown option '--bogus'"), "{err}");
+}
+
+/// A typo should point at the command that was meant.
+#[test]
+fn a_typo_gets_a_suggestion() {
+    let out = podctl(&["stauts"]);
+    assert_eq!(out.status.code(), Some(64));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("unknown command 'stauts'"), "{err}");
+    assert!(err.contains("did you mean 'status'"), "{err}");
+}
+
+/// `podctl help nope` wrote to stderr and still exited 0.
+#[test]
+fn help_for_an_unknown_topic_is_a_usage_error() {
+    let out = podctl(&["help", "nope"]);
+    assert_eq!(out.status.code(), Some(64));
+}
+
+/// Every verb in the table has a help page of its own; a missing one
+/// would fall through to the "no help for" branch and exit 64.
+#[test]
+fn every_command_has_a_help_page() {
+    for c in podctl::commands::COMMANDS {
+        let out = podctl(&["help", c.name]);
+        assert_eq!(out.status.code(), Some(0), "help {}", c.name);
+        let first = String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .to_string();
+        assert!(
+            first.starts_with(&format!("podctl {}", c.name)) || c.name == "help",
+            "help {} starts with {first:?}",
+            c.name
+        );
+    }
+}
+
+/// The overview must name every command, including the ones whose
+/// settings are not implemented yet — marked as such.
+#[test]
+fn the_overview_lists_every_command() {
+    let out = podctl(&["help"]);
+    let text = String::from_utf8_lossy(&out.stdout);
+    for c in podctl::commands::COMMANDS {
+        assert!(
+            text.contains(c.name),
+            "'{}' missing from the overview",
+            c.name
+        );
+    }
+    assert_eq!(
+        text.matches("(not implemented yet)").count(),
+        4,
+        "four commands are not implemented; the overview should say so four times"
+    );
+}

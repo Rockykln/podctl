@@ -4,6 +4,8 @@ pub mod audio;
 pub mod ble;
 pub mod bluez;
 pub mod caps;
+pub mod commands;
+pub mod completions;
 pub mod config;
 pub mod exitcode;
 pub mod ipc;

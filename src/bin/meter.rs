@@ -23,10 +23,21 @@ pub fn run(args: &[String], json: bool) -> i32 {
     let json = json || args.iter().any(|a| a == "--json");
     let plain = args.iter().any(|a| a == "--plain");
     let one_shot = args.iter().any(|a| a == "--once");
-    let interval_ms: u64 = arg_value(args, "--interval")
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(100)
-        .max(MIN_INTERVAL_MS);
+    // A value that is not a number used to fall back to 100 ms without
+    // a word, and 0 spun a core.
+    let interval_ms: u64 = match arg_value(args, "--interval") {
+        None => 100,
+        Some(raw) => match raw.parse::<u64>() {
+            Ok(ms) if ms >= MIN_INTERVAL_MS => ms,
+            _ => {
+                eprintln!(
+                    "podctl: meter: unknown value '{raw}' (expected milliseconds, at least {MIN_INTERVAL_MS})"
+                );
+                eprintln!("hint: see 'podctl help meter'");
+                return exitcode::USAGE;
+            }
+        },
+    };
     let device = arg_value(args, "--device").or_else(find_airpods_sink);
 
     let Some(sink) = device else {
