@@ -11,7 +11,7 @@ use x11rb::wrapper::ConnectionExt as _;
 
 use tracing::debug;
 
-use super::{Backend, Frame};
+use super::{Backend, Frame, fingerprint};
 
 pub struct X11Or {
     win: Option<Win>,
@@ -32,6 +32,8 @@ struct Win {
     /// card's transparent surroundings would paint as a black rectangle.
     /// The window is then clipped to the opaque part instead.
     shape_to_card: bool,
+    /// Fingerprint of the picture currently in the pixmap.
+    painted: Option<u64>,
 }
 
 impl X11Or {
@@ -112,6 +114,7 @@ impl Backend for X11Or {
             mapped: false,
             swap_bytes,
             shape_to_card,
+            painted: None,
         });
         Ok(())
     }
@@ -119,9 +122,16 @@ impl Backend for X11Or {
     fn push_frame(&mut self, f: &Frame) -> Result<()> {
         let win = self.win.as_mut().context("push_frame before open")?;
 
-        upload(win, f.bgra)?;
-        if win.shape_to_card {
-            clip_to_opaque(win, f.bgra);
+        // While the bubble slides only its position changes. Sending
+        // the whole 260 kB image and a fresh shape with every frame
+        // cost megabytes a second for a picture that stayed the same.
+        let fp = fingerprint(f.bgra);
+        if win.painted != Some(fp) {
+            upload(win, f.bgra)?;
+            if win.shape_to_card {
+                clip_to_opaque(win, f.bgra);
+            }
+            win.painted = Some(fp);
         }
 
         let m = win.mon;

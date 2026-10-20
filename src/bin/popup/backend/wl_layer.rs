@@ -1,5 +1,6 @@
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
 use std::ptr;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use wayland_client::globals::{GlobalListContents, registry_queue_init};
@@ -91,15 +92,19 @@ impl Backend for WlLayer {
         layer.set_keyboard_interactivity(zwlr_layer_surface_v1::KeyboardInteractivity::None);
         surface.commit();
 
+        // Waiting for one dispatch was waiting for *an* event: any
+        // other event the compositor sent first ended the wait and the
+        // surface was declared unconfigured.
         let mut state = State::default();
-        queue
-            .blocking_dispatch(&mut state)
-            .context("await layer configure")?;
+        let deadline = Instant::now() + CONFIGURE_WAIT;
+        while !state.configured && !state.closed {
+            if Instant::now() >= deadline {
+                bail!("no layer configure within {CONFIGURE_WAIT:?}");
+            }
+            read_into(&conn, &mut queue, &mut state, READ_SLICE)?;
+        }
         if state.closed {
             bail!("compositor closed the layer surface");
-        }
-        if !state.configured {
-            bail!("no layer configure received");
         }
 
         let stride = w as usize * 4;
@@ -153,31 +158,25 @@ impl Backend for WlLayer {
             bail!("layer surface was closed by the compositor");
         }
 
-        for released in win.state.released.drain(..) {
-            for b in &mut win.bufs {
-                if b.offset as u32 == released {
-                    b.busy = false;
-                }
-            }
-        }
+        collect_releases(win);
 
         let slot = if !win.bufs[win.cur].busy {
             win.cur
         } else {
             1 - win.cur
         };
-        if win.bufs[slot].busy {
-            // Both in flight; let the compositor catch up.
-            win.queue
-                .blocking_dispatch(&mut win.state)
-                .context("dispatch waiting for buffer")?;
-            for released in win.state.released.drain(..) {
-                for b in &mut win.bufs {
-                    if b.offset as u32 == released {
-                        b.busy = false;
-                    }
-                }
+        // Both in flight. Waiting for *an* event was not enough: any
+        // event ended the wait, and the frame was then written into a
+        // buffer the compositor was still reading from.
+        let deadline = Instant::now() + RELEASE_WAIT;
+        while win.bufs[slot].busy {
+            if Instant::now() >= deadline {
+                // Rather drop this frame than paint into a buffer that
+                // is not ours. The next one carries the same picture.
+                return Ok(());
             }
+            read_events(win, READ_SLICE)?;
+            collect_releases(win);
         }
 
         let off = win.bufs[slot].offset;
@@ -223,12 +222,32 @@ impl Drop for WlLayer {
     }
 }
 
+/// How long a frame waits for the compositor to hand a buffer back. A
+/// surface nobody is reading — screen off, bubble covered — never
+/// releases one, and waiting for good would also keep `Hide` and
+/// `Quit` from being read.
+const RELEASE_WAIT: Duration = Duration::from_millis(250);
+/// Slice of that wait, so the loop keeps looking at what arrived.
+const READ_SLICE: Duration = Duration::from_millis(25);
+/// How long the surface may take to be configured before the bubble
+/// gives up and the next backend gets a turn.
+const CONFIGURE_WAIT: Duration = Duration::from_secs(2);
+const POLLIN: i16 = 0x001;
+
+#[repr(C)]
+struct Pollfd {
+    fd: i32,
+    events: i16,
+    revents: i16,
+}
+
 const MFD_CLOEXEC: u32 = 0x0001;
 const PROT_READ: i32 = 0x1;
 const PROT_WRITE: i32 = 0x2;
 const MAP_SHARED: i32 = 0x01;
 
 unsafe extern "C" {
+    fn poll(fds: *mut Pollfd, nfds: u64, timeout: i32) -> i32;
     fn memfd_create(name: *const i8, flags: u32) -> i32;
     fn ftruncate(fd: i32, length: i64) -> i32;
     fn mmap(addr: *mut u8, len: usize, prot: i32, flags: i32, fd: i32, off: i64) -> *mut u8;
@@ -238,6 +257,46 @@ unsafe extern "C" {
 
 fn last_err() -> std::io::Error {
     std::io::Error::from_raw_os_error(unsafe { *__errno_location() })
+}
+
+/// Mark every buffer the compositor handed back as free again.
+fn collect_releases(win: &mut Win) {
+    for released in win.state.released.drain(..) {
+        for b in &mut win.bufs {
+            if b.offset as u32 == released {
+                b.busy = false;
+            }
+        }
+    }
+}
+
+/// Read what is on the socket, waiting at most `wait`. Unlike
+/// `blocking_dispatch` this comes back on its own if nothing arrives,
+/// which is what keeps a surface nobody reads from holding the thread.
+fn read_into(
+    conn: &Connection,
+    queue: &mut EventQueue<State>,
+    state: &mut State,
+    wait: Duration,
+) -> Result<()> {
+    conn.flush().context("flush wayland")?;
+    if let Some(guard) = conn.prepare_read() {
+        let mut pfd = Pollfd {
+            fd: conn.as_fd().as_raw_fd(),
+            events: POLLIN,
+            revents: 0,
+        };
+        let rc = unsafe { poll(&mut pfd, 1, wait.as_millis() as i32) };
+        if rc > 0 {
+            guard.read().context("read wayland events")?;
+        }
+    }
+    queue.dispatch_pending(state).context("dispatch pending")?;
+    Ok(())
+}
+
+fn read_events(win: &mut Win, wait: Duration) -> Result<()> {
+    read_into(&win.conn, &mut win.queue, &mut win.state, wait)
 }
 
 fn shm_alloc(len: usize) -> Result<(OwnedFd, *mut u8)> {

@@ -5,7 +5,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use zbus::zvariant::Value;
 
-use super::{Backend, Frame};
+use super::{Backend, Frame, fingerprint};
 use crate::render;
 
 const SVC: &str = "org.freedesktop.Notifications";
@@ -163,13 +163,4 @@ impl Drop for Notify {
     fn drop(&mut self) {
         let _ = self.close();
     }
-}
-
-fn fingerprint(b: &[u8]) -> u64 {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for &x in b {
-        h ^= x as u64;
-        h = h.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    h
 }

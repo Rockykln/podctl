@@ -15,6 +15,17 @@ pub struct Frame<'a> {
     pub margin_bottom: i32,
 }
 
+/// Cheap hash over a frame's pixels, so a backend can tell an unchanged
+/// picture from a new one.
+pub fn fingerprint(b: &[u8]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for &x in b {
+        h ^= x as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
+}
+
 pub trait Backend {
     /// How long the bubble is meant to stay up. Only the notification
     /// fallback needs it — the server, not us, retires that one, so it
