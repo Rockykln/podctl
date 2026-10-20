@@ -145,7 +145,7 @@ fn run(
     let mut frame_count: u64 = 0;
     loop {
         let n_res = unsafe {
-            let n = libc_read(stream.as_raw_fd(), buf.as_mut_ptr(), buf.len());
+            let n = libc_read(stream.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len());
             if n < 0 {
                 Err(std::io::Error::last_os_error())
             } else {
@@ -226,7 +226,7 @@ fn connect_with_retry(mac: &str, cancelled: &AtomicBool) -> Option<L2capStream> 
 
 unsafe extern "C" {
     #[link_name = "read"]
-    fn libc_read(fd: i32, buf: *mut u8, count: usize) -> isize;
+    fn libc_read(fd: i32, buf: *mut std::ffi::c_void, count: usize) -> isize;
 }
 
 async fn handle_frame(daemon: &Arc<Daemon>, frame: &Frame) {

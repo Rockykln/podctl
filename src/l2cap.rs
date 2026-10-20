@@ -1,6 +1,7 @@
 //! Raw L2CAP socket via libc. No external bluetooth crate; the kernel
 //! does the work, we just speak the right sockaddr.
 
+use std::ffi::c_void;
 use std::io::{self, Read, Write};
 use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
 
@@ -22,8 +23,13 @@ struct SockaddrL2 {
 unsafe extern "C" {
     fn socket(domain: i32, ty: i32, protocol: i32) -> i32;
     fn connect(fd: i32, addr: *const SockaddrL2, len: u32) -> i32;
-    fn read(fd: i32, buf: *mut u8, count: usize) -> isize;
-    fn write(fd: i32, buf: *const u8, count: usize) -> isize;
+    // `c_void` rather than `u8`: rustc checks these two against the
+    // signatures the standard library links against and warns on a
+    // mismatch.
+    #[link_name = "read"]
+    fn libc_read(fd: i32, buf: *mut c_void, count: usize) -> isize;
+    #[link_name = "write"]
+    fn libc_write(fd: i32, buf: *const c_void, count: usize) -> isize;
     fn shutdown(fd: i32, how: i32) -> i32;
     fn __errno_location() -> *mut i32;
 }
@@ -79,7 +85,7 @@ impl L2capStream {
     /// concurrently with `Read::read` on the same socket — the kernel
     /// serialises sendmsg/recvmsg per fd.
     pub fn send(&self, buf: &[u8]) -> io::Result<()> {
-        let n = unsafe { write(self.fd.as_raw_fd(), buf.as_ptr(), buf.len()) };
+        let n = unsafe { libc_write(self.fd.as_raw_fd(), buf.as_ptr().cast(), buf.len()) };
         if n < 0 {
             return Err(last_err());
         }
@@ -107,7 +113,7 @@ impl IntoRawFd for L2capStream {
 
 impl Read for L2capStream {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let n = unsafe { read(self.fd.as_raw_fd(), buf.as_mut_ptr(), buf.len()) };
+        let n = unsafe { libc_read(self.fd.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len()) };
         if n < 0 {
             Err(last_err())
         } else {
@@ -118,7 +124,7 @@ impl Read for L2capStream {
 
 impl Write for L2capStream {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let n = unsafe { write(self.fd.as_raw_fd(), buf.as_ptr(), buf.len()) };
+        let n = unsafe { libc_write(self.fd.as_raw_fd(), buf.as_ptr().cast(), buf.len()) };
         if n < 0 {
             Err(last_err())
         } else {
