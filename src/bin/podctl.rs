@@ -167,6 +167,11 @@ fn run(mut args: Vec<String>) -> Result<i32, CliError> {
     }
 
     let request = parse_verb(&verb, &args[1..])?;
+    // Twelve seconds of silence otherwise, with nothing to say whether
+    // anything is happening.
+    if let Request::Pair { address: None, .. } = &request {
+        eprintln!("{PROG}: looking for AirPods in pairing mode (about 12s)…");
+    }
     let response = match try_daemon(&request)? {
         Some(resp) => resp,
         None => standalone::dispatch(&request),
@@ -439,14 +444,28 @@ fn require_arg<'a>(rest: &'a [String], verb: &str, hint: &str) -> Result<&'a str
         .ok_or_else(|| CliError::usage(format!("'{verb}' needs an argument: {hint}")))
 }
 
+/// How long to wait for the daemon's answer. Ten seconds is plenty for
+/// everything that only reads cached state, but `pair` scans for twelve
+/// of them before it even answers, and BlueZ takes its time over a
+/// connect to buds that are still waking up.
+fn answer_timeout(req: &Request) -> Duration {
+    let secs = match req {
+        Request::Pair { .. } => 45,
+        Request::Connect | Request::Disconnect | Request::Unpair => 30,
+        _ => 10,
+    };
+    Duration::from_secs(secs)
+}
+
 fn try_daemon(req: &Request) -> Result<Option<Response>, CliError> {
     let path = podctl::socket_path();
     let stream = match UnixStream::connect(&path) {
         Ok(s) => s,
         Err(_) => return Ok(None),
     };
+    let wait = answer_timeout(req);
     stream
-        .set_read_timeout(Some(Duration::from_secs(10)))
+        .set_read_timeout(Some(wait))
         .map_err(|e| CliError::oserr(format!("socket read timeout: {e}")))?;
     stream
         .set_write_timeout(Some(Duration::from_secs(5)))
@@ -465,9 +484,22 @@ fn try_daemon(req: &Request) -> Result<Option<Response>, CliError> {
 
     let mut reader = BufReader::new(&stream);
     let mut line = String::new();
-    reader
-        .read_line(&mut line)
-        .map_err(|e| CliError::oserr(format!("read from daemon: {e}")))?;
+    // A timeout on this socket surfaces as EAGAIN, which printed as
+    // "Resource temporarily unavailable (os error 11)".
+    let read = reader.read_line(&mut line).map_err(|e| match e.kind() {
+        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut => {
+            CliError::unavailable(format!(
+                "no answer from the daemon within {}s — it may still be working on it.",
+                wait.as_secs()
+            ))
+        }
+        _ => CliError::oserr(format!("read from daemon: {e}")),
+    })?;
+    if read == 0 {
+        return Err(CliError::unavailable(
+            "the daemon closed the connection without answering.",
+        ));
+    }
     let resp: Response = serde_json::from_str(line.trim())
         .map_err(|e| CliError::dataerr(format!("malformed response: {e}")))?;
     Ok(Some(resp))
@@ -635,4 +667,22 @@ const SIG_DFL: usize = 0;
 unsafe extern "C" {
     #[link_name = "signal"]
     fn libc_signal(sig: i32, handler: usize) -> usize;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::answer_timeout;
+    use podctl::Request;
+
+    /// `pair` scans for twelve seconds before it answers at all, so the
+    /// ten-second wait every other verb gets ran out every single time.
+    #[test]
+    fn slow_verbs_wait_longer() {
+        let pair = answer_timeout(&Request::Pair {
+            address: None,
+            yes: false,
+        });
+        assert!(pair.as_secs() > 12, "{pair:?}");
+        assert!(answer_timeout(&Request::Connect) > answer_timeout(&Request::Status));
+    }
 }

@@ -53,6 +53,15 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
   `~/.config/podctl/daemon.toml` now, so the switch that decides whether
   a bud coming out pauses playback survives a restart. Buds that do
   report them still have the last word.
+- **`podctl pair` always failed with "Resource temporarily unavailable
+  (os error 11)".** It answers only after a twelve-second scan, and the
+  CLI gave up after ten — pairing through a running daemon could not
+  work at all. Scanning and connecting get the time they need now, the
+  CLI says it is scanning, and a wait that does run out says so instead
+  of printing the raw error.
+- **The notification fallback never appeared as a banner on GNOME.** It
+  was sent as low urgency, which GNOME delivers straight into the
+  message tray without showing it.
 - **`podctl status` named the wrong codec.** The plain `a2dp-sink`
   profile was read as AAC, and a PipeWire built without AAC runs SBC in
   it — the sink itself is asked now. `podctl codec` lists what is really

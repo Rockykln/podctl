@@ -109,7 +109,10 @@ impl Backend for Notify {
         let (rt, conn) = self.session()?;
         let id = rt.block_on(async {
             let mut hints: HashMap<&str, Value> = HashMap::new();
-            hints.insert("urgency", Value::U8(0));
+            // Normal, not low: GNOME delivers a low-urgency notification
+            // without ever showing it as a banner — it only appeared as a
+            // dot in the message tray, which is not a bubble.
+            hints.insert("urgency", Value::U8(1));
             hints.insert("image-path", Value::from(uri.as_str()));
             hints.insert("category", Value::from("device"));
             hints.insert("desktop-entry", Value::from("podctl"));
@@ -154,7 +157,8 @@ impl Backend for Notify {
             });
             self.id = 0;
         }
-        let _ = std::fs::remove_file(&self.img);
+        // The picture stays: the server may still be reading it while
+        // the notification fades out.
         Ok(())
     }
 }
