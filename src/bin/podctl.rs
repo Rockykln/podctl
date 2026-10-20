@@ -674,7 +674,7 @@ fn print_version(out: Output) {
                 "name":    env!("CARGO_PKG_NAME"),
                 "version": env!("CARGO_PKG_VERSION"),
                 "license": "MIT OR Apache-2.0",
-                "daemon":  if running { "running" } else { "not_running" },
+                "daemon":  if running { "running" } else { "not-running" },
             }),
         )
         .print(out.pretty);
