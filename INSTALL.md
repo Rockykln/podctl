@@ -209,9 +209,9 @@ based on which adapter holds the paired device, so `connect` /
 
 ## Optional: tell BlueZ the host is an Apple device
 
-A handful of AirPods features (most notably end-to-end Find My handoff
-and some Beats-specific toggles) only light up when the bud believes
-it's paired to a Mac. Linux can advertise itself as Apple's vendor ID
+A few AirPods features only light up when the bud believes it is paired
+to a Mac. Find My is not among them — that one runs through iCloud and
+stays out of reach on Linux. Linux can advertise itself as Apple's vendor ID
 by adding a single line to `/etc/bluetooth/main.conf`:
 
 ```ini

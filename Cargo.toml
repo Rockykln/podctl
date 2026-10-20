@@ -39,11 +39,10 @@ name = "podctl"
 path = "src/lib.rs"
 
 [dependencies]
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "signal", "process"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "signal"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"
-thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 zbus = { version = "5", default-features = false, features = ["tokio"] }
@@ -68,4 +67,6 @@ x11rb = { version = "0.14", features = ["randr", "shape"] }
 [profile.release]
 lto = "thin"
 codegen-units = 1
-debug = "line-tables-only"
+# Symbols are two thirds of the binary; a release tarball of four of
+# them is what users download.
+strip = true

@@ -1,8 +1,10 @@
 [Unit]
 Description=AirPods control daemon (podctl)
 Documentation=man:podctld(1) man:podctl(1)
-After=bluetooth.service pipewire.service
-Wants=bluetooth.service pipewire.service
+# bluetooth.service is a system unit: a user unit cannot order itself
+# against it, and naming it here does nothing.
+After=pipewire.service
+Wants=pipewire.service
 
 [Service]
 Type=simple

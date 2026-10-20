@@ -33,8 +33,9 @@ loud the music really plays and fades it to a level you can talk over,
 more for loud music, less for quiet (tied to `podctl conv`).
 
 Spatial audio, loud-sound reduction and the per-bud press-action /
-tone-on-press configs are currently no-ops — their AAP setting IDs
-aren't pinned down yet. Press *events* (which bud, how many taps) are
+tone-on-press configs are not implemented — their AAP setting IDs
+aren't pinned down yet, and asking for one answers with a clear error
+rather than pretending. Press *events* (which bud, how many taps) are
 likewise unimplemented: the parser exists, the opcode doesn't.
 
 Two optional desktop components ship alongside the CLI:
@@ -66,6 +67,10 @@ Tray screenshot pending — the icon and menu are live and tested on
 Plasma + Hyprland/waybar, but a clean capture isn't in the repo yet.
 
 ## Quick start
+
+Prebuilt, statically linked binaries for x86_64 are attached to every
+[release](https://github.com/Rockykln/podctl/releases) as a tarball with
+a `.sha256` next to it. From source:
 
 ```
 git clone https://github.com/Rockykln/podctl && cd podctl
@@ -130,9 +135,9 @@ later by re-running `podctl install` (idempotent).
 
 Source of truth for this matrix is `src/caps.rs::Model::capabilities`.
 AirPods Max (2nd gen, `0x202D`) shares the original Max capability row.
-AirPods 4 (non-ANC) currently has no publicly-known Bluetooth product
-code — the bud still shows up via the BlueZ headphones icon but resolves
-to `Unknown` until a capture lands.
+AirPods 4 (non-ANC) is not in the table yet: its product code `0x2019`
+is known, the capability row is not, so the bud shows up via the BlueZ
+headphones icon and resolves to `Unknown` until a capture lands.
 
 `podctl` refuses commands the connected device can't do with a clear
 `not supported on <model>` error rather than silently failing.
@@ -168,7 +173,7 @@ podctl --json <cmd>           machine-readable response (every command)
 | --- | --- |
 | `podctl ear <on\|off>` | in-ear detection: pause on removal, resume on return |
 | `podctl mic <auto\|left\|right>` | microphone selection |
-| `podctl loud-reduction <on\|off>` | cap loud sound spikes (Pro / Pro 2) — *AAP id TBD* |
+| `podctl loud-reduction <on\|off>` | cap loud sound spikes (4 ANC, Pro 2, Pro 3, Max) — *AAP id TBD* |
 | `podctl press <left\|right> <mode-cycle\|siri\|none>` | stem long-press — *AAP id TBD* |
 | `podctl tone <on\|off>` | acoustic feedback on press — *AAP id TBD* |
 | `podctl rename "name"` | bluetooth name |
@@ -302,6 +307,7 @@ src/
   aes.rs               AES-128 single block (FIPS-197)
   ble.rs               proximity advertisement + address resolving
   keys.rs              the buds' proximity keys on disk
+  config.rs            ~/.config/podctl/daemon.toml
   exitcode.rs          BSD sysexits.h
   lib.rs               re-exports
   bin/
@@ -322,7 +328,6 @@ src/
       aap.rs           L2CAP runtime + AAP frame pump
       scan.rs          BLE listener for the case lid
       media.rs         auto-pause + ducking on the host
-      config.rs        ~/.config/podctl/daemon.toml
     tray/              podctl-tray binary (SNI + DBusMenu)
     popup/             podctl-popup binary (wlr-layer-shell / X11 / notify)
 ```
@@ -334,8 +339,8 @@ that streams `Event`s.
 ## Roadmap
 
 - [ ] AAP captures for spatial audio, loud-sound reduction, and the
-      per-bud press-action / tone-on-press setting IDs (the three
-      no-ops listed under Status)
+      per-bud press-action / tone-on-press setting IDs (the four
+      unimplemented settings listed under Status)
 - [ ] AAP captures from AirPods 4 ANC and AirPods Max to confirm the
       capability matrix beyond Pro 2 USB-C
 - [x] AUR packages (`podctl-bin`, `podctl-git`)
