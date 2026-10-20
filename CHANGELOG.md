@@ -3,7 +3,7 @@
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased] — for 0.4
 
 ### Changed
 - **The command line comes from one table now** (`src/commands.rs`).
@@ -30,6 +30,8 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
   implemented in the overview, their own help pages and the man page.
 - The man page lists the aliases, documents `PODS_NO_LR`, and says that
   `uninstall` on a system install can run `sudo pacman -R`.
+
+## [Unreleased] — for 0.3.1
 
 ### Fixed
 - **The daemon could cut its own connections.** It kept the number of
