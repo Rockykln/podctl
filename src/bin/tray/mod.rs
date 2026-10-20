@@ -69,7 +69,7 @@ async fn run() -> anyhow::Result<()> {
         Ok(()) => info!(name = %well_known, "podctl-tray registered"),
         Err(e) => info!(
             error = %e,
-            "no StatusNotifierWatcher yet — waiting for one              (GNOME needs the AppIndicator extension, see 'podctl tray status')"
+            "no StatusNotifierWatcher yet — waiting for one (GNOME needs the AppIndicator extension, see 'podctl tray status')"
         ),
     }
     watch_for_watcher(conn.clone(), well_known.clone(), Arc::clone(&state));

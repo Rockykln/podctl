@@ -3,6 +3,68 @@
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **The daemon could cut its own connections.** It kept the number of
+  the socket to the buds rather than the socket, and the kernel hands a
+  closed number to whatever opens next — a `watch` stream or a BLE scan
+  then ended for no visible reason.
+- **Audio went to the first Bluetooth device, not to the AirPods.** With
+  a speaker or headset also paired, volume, mute, profile, codec,
+  default sink, latency, `podctl meter` and the ducking could all land
+  on that one, and a bud coming out paused whatever was playing there.
+- **`podctl profile off` was a dead end.** The card was looked up
+  through its sink, and that profile has none, so profile, codec and
+  latency answered "no AirPods card found" from then on.
+- **A volume lowered for speech could stay down** after a dropped link,
+  SIGTERM or a crash. It is noted on disk while it is lowered and
+  restored on start and on reconnect, a watchdog covers a missing
+  end-of-speech frame, and a volume you move yourself stays put.
+- **Nothing on the way to the buds had a timeout**: a connect to buds
+  out of range held the daemon's poll loop for the kernel's own, reads
+  blocked the same way, and a write went out holding the lock on the
+  socket.
+- **The socket to the buds was inherited** by every process the daemon
+  started.
+- **The identity resolving key of the buds was written to the debug
+  log.**
+- **Device names reached the terminal unfiltered**, escape sequences and
+  bidi overrides included.
+- **`podctl pair` paired and trusted the first unpaired device that
+  looked like AirPods.** It lists what it found and pairs what you name,
+  or the only candidate with `--yes`.
+- **`--help` ran the command** for `debug`, `meter`, `completion` and
+  `version`.
+- **`podctl ping` answered "pong" without a daemon**, and exited 0.
+- **`podctl meter --json` never printed JSON**, and `--interval 0` spun
+  a core.
+- **The tray icon did not come back after a panel restart**, and a
+  missing tray host made it exit into a restart loop.
+- **The bubble could paint into a buffer the compositor was still
+  reading**, and on a surface nobody reads from it could no longer be
+  hidden or quit.
+- **The notification fallback showed an empty notification.** It carries
+  the device name and the levels as text now.
+- A BLE battery reading above ten tenths was reported as up to 140 %.
+- Ear detection and the microphone mode were ignored in the settings the
+  buds report, so playback paused on a bud coming out even with ear
+  detection switched off at the phone.
+- `podctld.service` ordered itself against `bluetooth.service`, which a
+  user unit cannot do, and messages pointed at `podctl setup`, which has
+  never existed.
+
+### Changed
+- **Release binaries are stripped**: 79 MB down to 13.5 MB for all four
+  together. `thiserror` and tokio's `process` feature are gone; nothing
+  used them.
+- The bubble stands still instead of pushing sixty identical frames a
+  second, and on X11 it re-uploads the picture only when it changed.
+- Documentation: loud-sound reduction lists the models that have it, the
+  four unimplemented settings are named as errors rather than no-ops,
+  AirPods 4 non-ANC has a known product code, and the prebuilt tarball
+  is mentioned where people look for an install.
+
 ## [0.3.0] - 2026-09-24
 
 ### Added
