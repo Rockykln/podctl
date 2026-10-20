@@ -551,6 +551,16 @@ impl Daemon {
             Err(e) => Response::err(format!("rename task: {e}")),
         }
     }
+    /// Undo a volume this session lowered for speech — on the way out,
+    /// so a duck never outlives the daemon.
+    pub async fn undo_duck(&self) {
+        self.media.reset().await;
+    }
+
+    /// Undo one that an earlier session left behind.
+    pub async fn recover_duck(&self) {
+        self.media.recover_duck().await;
+    }
 }
 
 // Audio handlers wrap the sync `podctl::audio` helpers on a blocking task

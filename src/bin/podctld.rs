@@ -32,6 +32,13 @@ async fn main() -> anyhow::Result<()> {
         tokio::spawn(async move { d.serve().await })
     };
 
+    // A volume left ducked by a session that was killed, before
+    // anything else happens.
+    {
+        let d = Arc::clone(&daemon);
+        tokio::spawn(async move { d.recover_duck().await });
+    }
+
     let mut sigterm = signal(SignalKind::terminate())?;
     let mut sigint = signal(SignalKind::interrupt())?;
     tokio::select! {
@@ -40,6 +47,8 @@ async fn main() -> anyhow::Result<()> {
         r = serve => return r.unwrap_or_else(|e| Err(anyhow::anyhow!(e))),
     }
 
+    // Asked for politely, so the duck does not outlive us.
+    daemon.undo_duck().await;
     let _ = std::fs::remove_file(podctl::socket_path());
     info!("podctld stopped");
     Ok(())

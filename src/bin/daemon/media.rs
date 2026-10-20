@@ -50,6 +50,11 @@ const FADE_STEP_TENTHS: i32 = 25;
 /// Down quickly so the first words are heard, back up gently.
 const FADE_TICK: Duration = Duration::from_millis(25);
 const RESTORE_TICK: Duration = Duration::from_millis(80);
+/// The buds report the end of speech with a level of 4 or more. That
+/// frame can go missing — a bud comes out, conversation awareness is
+/// switched off at the phone, the link hangs — and the volume would
+/// stay down with nothing to bring it back.
+const DUCK_WATCHDOG: Duration = Duration::from_secs(10);
 
 #[derive(Default)]
 pub struct Media {
@@ -66,8 +71,11 @@ struct Inner {
     paused: Vec<String>,
     paused_at: Option<Instant>,
     resume_at_count: u8,
-    /// Volume to restore once speech ends.
+    /// Volume to restore once speech ends, and the level we set.
     ducked_from: Option<u8>,
+    ducked_to: Option<u8>,
+    /// When speech was last reported, for the watchdog.
+    spoke_at: Option<Instant>,
     /// Bumped on every in-ear change so a pending resume can tell it
     /// was overtaken.
     ear_gen: u64,
@@ -161,6 +169,7 @@ impl Media {
             1..=3 if enabled => {
                 // Cancels a restore still waiting out the pause between sentences.
                 inner.speech_gen += 1;
+                inner.spoke_at = Some(Instant::now());
                 let Some(addr) = inner.addr.clone() else {
                     return;
                 };
@@ -188,6 +197,13 @@ impl Media {
                         "speech detected — volume lowered"
                     );
                     inner.ducked_from = Some(vol);
+                    inner.ducked_to = Some(target);
+                    inner.spoke_at = Some(Instant::now());
+                    write_duck(&Ducked {
+                        addr,
+                        from: vol,
+                        to: target,
+                    });
                 }
             }
             1..=3 => {}
@@ -210,6 +226,52 @@ impl Media {
     pub async fn reset(&self) {
         self.inner.lock().await.restore_volume().await;
     }
+
+    /// Checked on every poll of the link task: speech that never ended
+    /// must not leave the volume down.
+    pub async fn watchdog(&self) {
+        let mut inner = self.inner.lock().await;
+        if inner.ducked_from.is_none() {
+            return;
+        }
+        if inner.spoke_at.is_some_and(|t| t.elapsed() > DUCK_WATCHDOG) {
+            warn!("no end of speech reported — restoring the volume");
+            inner.restore_volume().await;
+        }
+    }
+
+    /// A duck noted on disk belongs to a session that did not get to
+    /// undo it. Undone here once the sink is back — unless the volume
+    /// has moved since, in which case it is somebody's choice now.
+    pub async fn recover_duck(&self) {
+        let inner = self.inner.lock().await;
+        if inner.ducked_from.is_some() {
+            return;
+        }
+        let Some(note) = read_duck() else {
+            return;
+        };
+        drop(inner);
+        let Some(now) = current_volume(&note.addr).await else {
+            return;
+        };
+        if now.abs_diff(note.to) > 1 {
+            debug!(
+                now,
+                ducked_to = note.to,
+                "volume moved since — dropping the note"
+            );
+            clear_duck();
+            return;
+        }
+        if fade(&note.addr, now, note.from, RESTORE_TICK).await {
+            info!(
+                to = note.from,
+                "undid a duck left behind by an earlier session"
+            );
+            clear_duck();
+        }
+    }
 }
 
 impl Inner {
@@ -217,13 +279,32 @@ impl Inner {
         let Some(addr) = self.addr.clone() else {
             return;
         };
-        let Some(vol) = self.ducked_from.take() else {
+        let Some(vol) = self.ducked_from else {
             return;
         };
         let from = current_volume(&addr).await.unwrap_or(vol);
+        // Someone reached for the volume while we had it down: that is
+        // their level now, not ours to undo. iOS behaves the same way.
+        if let Some(to) = self.ducked_to
+            && from.abs_diff(to) > 1
+        {
+            debug!(from, to, "volume moved during the duck — leaving it alone");
+            self.forget_duck();
+            return;
+        }
         if fade(&addr, from, vol, RESTORE_TICK).await {
             info!(to = vol, "speech ended — volume restored");
+            self.forget_duck();
         }
+    }
+
+    /// Only after a fade that worked: a sink that went away mid-restore
+    /// must stay on the list, or the duck is lost for good.
+    fn forget_duck(&mut self) {
+        self.ducked_from = None;
+        self.ducked_to = None;
+        self.spoke_at = None;
+        clear_duck();
     }
 
     async fn connection(&mut self) -> Option<Connection> {
@@ -373,6 +454,49 @@ async fn call(conn: &Connection, name: &str, method: &str) -> zbus::Result<()> {
     proxy.call_method(method, &()).await.map(|_| ())
 }
 
+/// What a duck looks like on disk. A duck that outlives the daemon —
+/// a crash, a logout, a SIGTERM — would otherwise leave the sink quiet
+/// for good: PipeWire remembers the level per device, so the next
+/// session starts quiet and nothing knows why.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Ducked {
+    addr: String,
+    from: u8,
+    to: u8,
+}
+
+fn duck_path() -> std::path::PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+    let state = std::env::var("XDG_STATE_HOME").unwrap_or_else(|_| format!("{home}/.local/state"));
+    std::path::PathBuf::from(state)
+        .join("podctl")
+        .join("duck.json")
+}
+
+fn write_duck(d: &Ducked) {
+    let p = duck_path();
+    if let Some(dir) = p.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    match serde_json::to_vec(d) {
+        Ok(bytes) => {
+            if let Err(e) = std::fs::write(&p, bytes) {
+                warn!(error = %e, "could not note the ducked volume");
+            }
+        }
+        Err(e) => warn!(error = %e, "could not encode the ducked volume"),
+    }
+}
+
+fn read_duck() -> Option<Ducked> {
+    let bytes = std::fs::read(duck_path()).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+fn clear_duck() {
+    let _ = std::fs::remove_file(duck_path());
+}
+
 /// Exactly one bud in the case and the other in an ear.
 fn parked_to_charge(now: InEar) -> bool {
     use podctl::model::EarStatus::{InCase, InEar as In};
@@ -492,7 +616,10 @@ async fn fade(addr: &str, from: u8, to: u8, tick: Duration) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{BLOCK_SAMPLES, duck_target, loud_db, parked_to_charge};
+    use super::{
+        BLOCK_SAMPLES, Ducked, clear_duck, duck_path, duck_target, loud_db, parked_to_charge,
+        read_duck, write_duck,
+    };
     use podctl::InEar;
     use podctl::model::EarStatus::{InCase, InEar as In, OutOfEar, Unknown};
 
@@ -527,5 +654,30 @@ mod tests {
         assert_eq!(duck_target(100, -55.0), 79);
         // Never below the floor.
         assert_eq!(duck_target(100, 0.0), 32);
+    }
+
+    /// The note is what lets a killed daemon's duck be undone later, so
+    /// it has to survive the trip through the file.
+    #[test]
+    fn the_duck_note_round_trips() {
+        let dir = std::env::temp_dir().join(format!("podctl-duck-test-{}", std::process::id()));
+        unsafe { std::env::set_var("XDG_STATE_HOME", &dir) };
+        assert!(read_duck().is_none(), "nothing noted yet");
+
+        write_duck(&Ducked {
+            addr: "AA:BB:CC:DD:EE:01".into(),
+            from: 70,
+            to: 40,
+        });
+        assert!(duck_path().ends_with("podctl/duck.json"));
+        let back = read_duck().expect("the note");
+        assert_eq!(
+            (back.addr.as_str(), back.from, back.to),
+            ("AA:BB:CC:DD:EE:01", 70, 40)
+        );
+
+        clear_duck();
+        assert!(read_duck().is_none(), "note cleared");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

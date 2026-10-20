@@ -100,6 +100,10 @@ pub async fn run(daemon: Arc<Daemon>) {
                         prev_addr = Some(addr.clone());
                         prev_connected = s.connected;
                         if s.connected && !first_poll {
+                            // A duck from a session that was cut short
+                            // is undone as soon as the sink is back.
+                            let d = Arc::clone(&daemon);
+                            tokio::spawn(async move { d.media.recover_duck().await });
                             let _ = daemon.events.send(Event::Connected {
                                 name: s.name.clone().unwrap_or_default(),
                                 address: addr.clone(),
@@ -117,6 +121,7 @@ pub async fn run(daemon: Arc<Daemon>) {
             first_poll = false;
             let _ = scan_tx.send(snap_addr.is_some() && !snap_connected);
             daemon.media.set_address(snap_addr.clone()).await;
+            daemon.media.watchdog().await;
             // Spawn, restart or stop the AAP loop.
             aap.sync(&daemon, &snap_addr, snap_connected).await;
             aap.watchdog(&daemon).await;
