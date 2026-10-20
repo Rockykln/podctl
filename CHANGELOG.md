@@ -40,6 +40,17 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
   breaks a moment before BlueZ reports the disconnect, and the clean-up
   that follows only ran while the link task was still around. Now only
   what podctl stores itself (ear detection, microphone) is left.
+- **The duck for speech ended up at the wrong level.** Speaking again
+  while the volume came back up started a second duck from that halfway
+  level, so it never returned to where it was; the same happened during
+  the restore after a crash. New speech now stops the restore and goes
+  back down, and the level from before is kept. A link that dropped
+  while the music was down lost the duck as well: with the AirPods'
+  sink gone it looked like a volume change of your own. The note stays
+  on disk then, and the volume is restored once they are back.
+- The buds send nothing while someone keeps talking, so the watchdog
+  for a missing end of speech now waits 30 s instead of 10 — it brought
+  the music back up during a long sentence.
 - `podctl status` without a daemon ran `bluetoothctl` twice, once for
   the device and once more for the address the audio lookup needed.
 - **A settings frame without a value switched the microphone over.** A
@@ -113,6 +124,9 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
   nobody was there to draw the bubble. A hangup ends the stream now.
 
 ### Changed
+- The duck for speech starts as soon as the AirPods report it, by the
+  smallest step, while the music's level is measured; it used to wait
+  for the measurement first. About 0.7 s earlier, down after 1.3 s.
 - **`podctl status` was rewritten.** One label column, labels that are
   the command names (`ear`, `loud-reduction`, `auto-connect`), one line
   per bud with a bar on a terminal and nothing but columns in a pipe,

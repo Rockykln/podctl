@@ -1,6 +1,8 @@
 //! What an iPhone does on the host side: pause on ear removal, resume on
 //! return, lower the volume while the wearer is talking.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use tokio::sync::Mutex;
@@ -53,12 +55,17 @@ const RESTORE_TICK: Duration = Duration::from_millis(80);
 /// The buds report the end of speech with a level of 4 or more. That
 /// frame can go missing — a bud comes out, conversation awareness is
 /// switched off at the phone, the link hangs — and the volume would
-/// stay down with nothing to bring it back.
-const DUCK_WATCHDOG: Duration = Duration::from_secs(10);
+/// stay down with nothing to bring it back. The buds send nothing while
+/// someone keeps talking, so this has to outlast a long sentence (12 s
+/// without a frame seen on a Pro 2).
+const DUCK_WATCHDOG: Duration = Duration::from_secs(30);
 
 #[derive(Default)]
 pub struct Media {
     inner: Mutex<Inner>,
+    /// Bumped whenever speech is (still) detected. Kept outside the lock:
+    /// a restore holds it while fading up, and speech has to stop that.
+    speech: Arc<AtomicU64>,
 }
 
 #[derive(Default)]
@@ -74,13 +81,14 @@ struct Inner {
     /// Volume to restore once speech ends, and the level we set.
     ducked_from: Option<u8>,
     ducked_to: Option<u8>,
+    /// A restore that speech stopped halfway; the next duck goes back
+    /// down to `ducked_to` instead of starting over from there.
+    cut_short: bool,
     /// When speech was last reported, for the watchdog.
     spoke_at: Option<Instant>,
     /// Bumped on every in-ear change so a pending resume can tell it
     /// was overtaken.
     ear_gen: u64,
-    /// Bumped whenever speech is (still) detected.
-    speech_gen: u64,
 }
 
 impl Media {
@@ -161,32 +169,53 @@ impl Media {
     /// `level` is the last byte of an AAP 0x4B frame: 1–3 while speech
     /// starts and continues, 4 and up as it fades and ends.
     pub async fn on_conv_level(&self, level: u8, enabled: bool) {
+        if enabled && matches!(level, 1..=3) {
+            // Cancels a restore still waiting out the pause between
+            // sentences, or one already fading up.
+            self.speech.fetch_add(1, Ordering::SeqCst);
+        }
         let mut inner = self.inner.lock().await;
         match level {
             1..=3 if enabled => {
-                // Cancels a restore still waiting out the pause between sentences.
-                inner.speech_gen += 1;
                 inner.spoke_at = Some(Instant::now());
                 let Some(addr) = inner.addr.clone() else {
                     return;
                 };
+                if let Some(to) = inner.ducked_to
+                    && inner.cut_short
+                {
+                    inner.cut_short = false;
+                    if let Some(vol) = current_volume(&addr).await
+                        && vol > to
+                    {
+                        fade(&addr, vol, to, FADE_TICK, None).await;
+                        debug!(from = vol, to, "speech again — back down");
+                    }
+                    return;
+                }
                 if inner.ducked_from.is_some() || !inner.music_playing().await {
                     return;
                 }
                 let Some(vol) = current_volume(&addr).await else {
                     return;
                 };
-                let Some(level) = measure_db(&addr).await else {
-                    return;
-                };
-                if level < SILENCE_DB {
+                // The level takes MEASURE to read; the first, smallest dip
+                // runs meanwhile so the duck starts with the speech.
+                let first = duck_first(vol);
+                let (dipped, level) =
+                    tokio::join!(fade(&addr, vol, first, FADE_TICK, None), measure_db(&addr));
+                if !dipped {
                     return;
                 }
-                let target = duck_target(vol, level);
+                let Some(level) = level.filter(|l| *l >= SILENCE_DB) else {
+                    fade(&addr, first, vol, RESTORE_TICK, None).await;
+                    return;
+                };
+                let target = duck_target(vol, level).min(first);
                 if target >= vol {
                     return;
                 }
-                if fade(&addr, vol, target, FADE_TICK).await {
+                if fade(&addr, first, target, FADE_TICK, None).await {
                     info!(
                         from = vol,
                         to = target,
@@ -208,12 +237,12 @@ impl Media {
                 if inner.ducked_from.is_none() {
                     return;
                 }
-                let my_gen = inner.speech_gen;
+                let my_gen = self.speech.load(Ordering::SeqCst);
                 drop(inner);
                 tokio::time::sleep(RESTORE_HOLD).await;
                 let mut inner = self.inner.lock().await;
-                if inner.speech_gen == my_gen {
-                    inner.restore_volume().await;
+                if self.speech.load(Ordering::SeqCst) == my_gen {
+                    inner.restore_volume(&self.speech).await;
                 }
             }
         }
@@ -221,7 +250,7 @@ impl Media {
 
     /// Called when the link drops so a duck never outlives the session.
     pub async fn reset(&self) {
-        self.inner.lock().await.restore_volume().await;
+        self.inner.lock().await.restore_volume(&self.speech).await;
     }
 
     /// Checked on every poll of the link task: speech that never ended
@@ -233,7 +262,7 @@ impl Media {
         }
         if inner.spoke_at.is_some_and(|t| t.elapsed() > DUCK_WATCHDOG) {
             warn!("no end of speech reported — restoring the volume");
-            inner.restore_volume().await;
+            inner.restore_volume(&self.speech).await;
         }
     }
 
@@ -241,14 +270,20 @@ impl Media {
     /// undo it. Undone here once the sink is back — unless the volume
     /// has moved since, in which case it is somebody's choice now.
     pub async fn recover_duck(&self) {
-        let inner = self.inner.lock().await;
+        // The sink shows up a moment after the connect edge.
+        let Some(note) = read_duck() else {
+            return;
+        };
+        if !wait_for_sink(&note.addr).await {
+            return;
+        }
+        let mut inner = self.inner.lock().await;
         if inner.ducked_from.is_some() {
             return;
         }
         let Some(note) = read_duck() else {
             return;
         };
-        drop(inner);
         let Some(now) = current_volume(&note.addr).await else {
             return;
         };
@@ -261,37 +296,63 @@ impl Media {
             clear_duck();
             return;
         }
-        if fade(&note.addr, now, note.from, RESTORE_TICK).await {
+        let gen_now = self.speech.load(Ordering::SeqCst);
+        let stop = Some((Arc::clone(&self.speech), gen_now));
+        if fade(&note.addr, now, note.from, RESTORE_TICK, stop).await {
             info!(
                 to = note.from,
                 "undid a duck left behind by an earlier session"
             );
             clear_duck();
+        } else if self.speech.load(Ordering::SeqCst) != gen_now {
+            // Speech came in meanwhile: the note's duck is ours now, so
+            // that the volume ends up back at the level before it.
+            inner.ducked_from = Some(note.from);
+            inner.ducked_to = Some(note.to);
+            inner.cut_short = true;
+            inner.spoke_at = Some(Instant::now());
         }
     }
 }
 
 impl Inner {
-    async fn restore_volume(&mut self) {
+    async fn restore_volume(&mut self, speech: &Arc<AtomicU64>) {
         let Some(addr) = self.addr.clone() else {
             return;
         };
         let Some(vol) = self.ducked_from else {
             return;
         };
-        let from = current_volume(&addr).await.unwrap_or(vol);
+        let Some(from) = current_volume(&addr).await else {
+            // The sink went with the link. The note on disk stays for
+            // `recover_duck` to finish this once it is back.
+            debug!("no sink to restore on — keeping the note");
+            self.ducked_from = None;
+            self.ducked_to = None;
+            self.cut_short = false;
+            self.spoke_at = None;
+            return;
+        };
         // Someone reached for the volume while we had it down: that is
         // their level now, not ours to undo. iOS behaves the same way.
+        // After a restore cut short the volume sits between the two
+        // levels by our own doing.
         if let Some(to) = self.ducked_to
+            && !self.cut_short
             && from.abs_diff(to) > 1
         {
             debug!(from, to, "volume moved during the duck — leaving it alone");
             self.forget_duck();
             return;
         }
-        if fade(&addr, from, vol, RESTORE_TICK).await {
+        let gen_now = speech.load(Ordering::SeqCst);
+        let stop = Some((Arc::clone(speech), gen_now));
+        if fade(&addr, from, vol, RESTORE_TICK, stop).await {
             info!(to = vol, "speech ended — volume restored");
             self.forget_duck();
+        } else if speech.load(Ordering::SeqCst) != gen_now {
+            debug!("speech again while restoring");
+            self.cut_short = true;
         }
     }
 
@@ -300,6 +361,7 @@ impl Inner {
     fn forget_duck(&mut self) {
         self.ducked_from = None;
         self.ducked_to = None;
+        self.cut_short = false;
         self.spoke_at = None;
         clear_duck();
     }
@@ -551,6 +613,23 @@ async fn wait_for_airpods_output(addr: &str) -> bool {
     }
 }
 
+async fn wait_for_sink(addr: &str) -> bool {
+    let deadline = Instant::now() + SINK_WAIT;
+    loop {
+        let a = addr.to_string();
+        let found = tokio::task::spawn_blocking(move || audio::sink_for(&a).is_some())
+            .await
+            .unwrap_or(false);
+        if found {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+}
+
 async fn current_volume(addr: &str) -> Option<u8> {
     let addr = addr.to_string();
     tokio::task::spawn_blocking(move || audio::snapshot(&addr).volume_percent)
@@ -565,6 +644,11 @@ fn duck_target(vol: u8, level_db: f64) -> u8 {
     let heard = level_db + 60.0 * v.log10();
     let cut = (DUCK_REF_CUT + DUCK_SLOPE * (heard - DUCK_REF_DB)).clamp(DUCK_MIN_DB, DUCK_MAX_DB);
     (f64::from(vol) * 10f64.powf(-cut / 60.0)).round() as u8
+}
+
+/// The cut every duck reaches, whatever the level turns out to be.
+fn duck_first(vol: u8) -> u8 {
+    (f64::from(vol) * 10f64.powf(-DUCK_MIN_DB / 60.0)).round() as u8
 }
 
 /// RMS level of what is playing to the AirPods, before the sink volume.
@@ -617,7 +701,15 @@ fn loud_db(samples: &[[u8; 2]]) -> Option<f64> {
     Some(20.0 * (rms / 32768.0).log10())
 }
 
-async fn fade(addr: &str, from: u8, to: u8, tick: Duration) -> bool {
+/// Stops early, and reports failure, once `stop`'s counter has moved on
+/// from the value given with it.
+async fn fade(
+    addr: &str,
+    from: u8,
+    to: u8,
+    tick: Duration,
+    stop: Option<(Arc<AtomicU64>, u64)>,
+) -> bool {
     let addr = addr.to_string();
     tokio::task::spawn_blocking(move || {
         let Some(sink) = audio::sink_for(&addr) else {
@@ -630,6 +722,12 @@ async fn fade(addr: &str, from: u8, to: u8, tick: Duration) -> bool {
             FADE_STEP_TENTHS
         };
         while (end - v).abs() > FADE_STEP_TENTHS {
+            if stop
+                .as_ref()
+                .is_some_and(|(n, at)| n.load(Ordering::SeqCst) != *at)
+            {
+                return false;
+            }
             v += step;
             if audio::set_volume_tenths(&sink, v as u16).is_err() {
                 return false;
@@ -645,8 +743,8 @@ async fn fade(addr: &str, from: u8, to: u8, tick: Duration) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        BLOCK_SAMPLES, Ducked, EarAction, clear_duck, duck_path, duck_target, ear_action,
-        ear_change_matters, loud_db, parked_to_charge, read_duck, write_duck,
+        BLOCK_SAMPLES, Ducked, EarAction, clear_duck, duck_first, duck_path, duck_target,
+        ear_action, ear_change_matters, loud_db, parked_to_charge, read_duck, write_duck,
     };
     use podctl::InEar;
     use podctl::model::EarStatus::{InCase, InEar as In, OutOfEar, Unknown};
@@ -720,6 +818,18 @@ mod tests {
         assert_eq!(duck_target(100, -55.0), 79);
         // Never below the floor.
         assert_eq!(duck_target(100, 0.0), 32);
+    }
+
+    /// The dip that starts before the level is known must never go
+    /// further than the measured duck would.
+    #[test]
+    fn the_first_dip_is_the_smallest_duck() {
+        assert_eq!(duck_first(100), duck_target(100, -55.0));
+        for vol in 1..=100 {
+            for level in [-69.0, -55.0, -35.0, -20.0, 0.0] {
+                assert!(duck_target(vol, level) <= duck_first(vol), "{vol} {level}");
+            }
+        }
     }
 
     /// The note is what lets a killed daemon's duck be undone later, so
