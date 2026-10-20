@@ -10,7 +10,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
   show which `podctld` is on the socket and which protocol it speaks,
   and when that is not the one the binary belongs to, every command
   that runs into it says so: *"podctld is 0.3.0 (protocol 1), this is
-  0.4.0 (protocol 1) — restart the services with 'podctl reboot'"*. The
+  0.4.0 (protocol 2) — restart the services with 'podctl reboot'"*. The
   tray says it as a notification, the bubble in its log. Before this, a
   tray or CLI left running across an upgrade simply stopped working,
   with "malformed request" as the only clue.
@@ -20,6 +20,14 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
   cannot keep up, it sends the state again instead of leaving a gap.
 
 ### Fixed
+- **Every failure from the daemon exited 69**, so a script could not
+  tell "no daemon, try again later" from "this model will never do
+  that". Errors carry a kind now — `unavailable`, `unsupported`,
+  `not_implemented`, `backend`, `internal`, `usage` — which the shell
+  sees as 69, 1, 1, 71, 70 and 64, `--json` carries as `data.code`, and
+  the man page spells out, including the fact that `status` exits 0 even
+  when the AirPods are disconnected. The socket protocol is at 2 for
+  it.
 - **The daemon could be held open by a client that said nothing.** A
   connection now has five seconds to send its request, a request may be
   64 KB (an endless line used to buffer until the daemon was killed),

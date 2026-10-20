@@ -287,19 +287,47 @@ Example:
 .BR "RUST_LOG=debug podctld" .
 .SH EXIT STATUS
 Follows BSD
-.BR sysexits.h :
+.BR sysexits.h .
+.TP
 .B 0
-on success,
+Success.
+.B status
+succeeds even when the AirPods are disconnected; read
+.B connected
+from
+.B --json
+to test for that.
+.TP
+.B 1
+The request cannot work: the model does not have the feature, or podctl
+does not implement it yet. Trying again will not help.
+.TP
 .B 64
-for a usage error,
+Usage \(em an unknown command, a value that is not allowed, too many
+arguments, or a request the daemon could not read.
+.TP
 .B 65
-for malformed data,
+The daemon's answer could not be read.
+.TP
 .B 69
-when a required service is unavailable,
+Nothing to act on right now: no daemon, no AirPods paired, not
+connected. Later may be a different matter.
+.TP
 .B 70
-for an internal software error,
+A fault inside podctl.
+.TP
 .B 71
-for an OS error.
+The operating system or a tool podctl needs:
+.BR bluetoothctl ,
+.BR pactl ,
+D-Bus, or the socket itself.
+.PP
+With
+.BR --json ,
+an error object carries the same distinction as
+.B data.code
+.RI ( unavailable ", " unsupported ", " not_implemented ", " backend ", "
+.IR internal ", " usage ).
 .SH JSON OUTPUT
 With
 .BR --json ,

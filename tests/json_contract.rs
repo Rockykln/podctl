@@ -7,10 +7,11 @@ use std::process::{Command, Output};
 
 use podctl::model::{DeviceState, MicSelection, Mode, Profile};
 
+/// A directory that does not exist, so there is no socket to find and
+/// the CLI falls back to running in-process. Nothing is created, so
+/// nothing is left behind either.
 fn without_daemon() -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("podctl-json-test-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("temp dir");
-    dir
+    std::env::temp_dir().join(format!("podctl-no-daemon-{}", std::process::id()))
 }
 
 fn podctl(args: &[&str]) -> Output {

@@ -149,61 +149,61 @@ fn airpods_audio_state() -> podctl::model::AudioState {
 
 fn audio_volume(pct: u8) -> Response {
     let Some(sink) = airpods_sink() else {
-        return Response::err(audio::nothing_to_act_on("audio sink"));
+        return audio_err(audio::nothing_to_act_on("audio sink"));
     };
     match audio::set_volume(&sink, pct) {
         Ok(()) => Response::ok_done(),
-        Err(e) => Response::err(format!("{e}")),
+        Err(e) => audio_err(e.to_string()),
     }
 }
 
 fn audio_mute(muted: bool) -> Response {
     let Some(sink) = airpods_sink() else {
-        return Response::err(audio::nothing_to_act_on("audio sink"));
+        return audio_err(audio::nothing_to_act_on("audio sink"));
     };
     match audio::set_muted(&sink, muted) {
         Ok(()) => Response::ok_done(),
-        Err(e) => Response::err(format!("{e}")),
+        Err(e) => audio_err(e.to_string()),
     }
 }
 
 fn audio_profile(profile: Profile) -> Response {
     let Some(card) = airpods_card() else {
-        return Response::err(audio::nothing_to_act_on("card"));
+        return audio_err(audio::nothing_to_act_on("card"));
     };
     match audio::set_profile(&card, profile) {
         Ok(()) => Response::ok_done(),
-        Err(e) => Response::err(format!("{e}")),
+        Err(e) => audio_err(e.to_string()),
     }
 }
 
 fn audio_codec(codec: &str) -> Response {
     let Some(card) = airpods_card() else {
-        return Response::err(audio::nothing_to_act_on("card"));
+        return audio_err(audio::nothing_to_act_on("card"));
     };
     match audio::set_codec(&card, codec) {
         Ok(()) => Response::ok_done(),
-        Err(e) => Response::err(format!("{e}")),
+        Err(e) => audio_err(e.to_string()),
     }
 }
 
 fn audio_default() -> Response {
     let Some(sink) = airpods_sink() else {
-        return Response::err(audio::nothing_to_act_on("audio sink"));
+        return audio_err(audio::nothing_to_act_on("audio sink"));
     };
     match audio::set_default(&sink) {
         Ok(()) => Response::ok_done(),
-        Err(e) => Response::err(format!("{e}")),
+        Err(e) => audio_err(e.to_string()),
     }
 }
 
 fn audio_latency(ms: i32) -> Response {
     let Some(card) = airpods_card() else {
-        return Response::err(audio::nothing_to_act_on("card"));
+        return audio_err(audio::nothing_to_act_on("card"));
     };
     match audio::set_latency_offset(&card, ms) {
         Ok(()) => Response::ok_done(),
-        Err(e) => Response::err(format!("{e}")),
+        Err(e) => audio_err(e.to_string()),
     }
 }
 
@@ -213,7 +213,7 @@ fn bt_connect() -> Response {
     };
     match bluez::connect(&dev.address) {
         Ok(()) => Response::ok_done(),
-        Err(e) => Response::err(format!("{e}")),
+        Err(e) => bt_err(e.to_string()),
     }
 }
 
@@ -223,14 +223,14 @@ fn bt_disconnect() -> Response {
     };
     match bluez::disconnect(&dev.address) {
         Ok(()) => Response::ok_done(),
-        Err(e) => Response::err(format!("{e}")),
+        Err(e) => bt_err(e.to_string()),
     }
 }
 
 fn bt_pair(address: Option<String>, yes: bool) -> Response {
     match bluez::pair_choice(address, yes) {
         Ok(()) => Response::ok_done(),
-        Err(e) => Response::err(format!("{e}")),
+        Err(e) => bt_err(e.to_string()),
     }
 }
 
@@ -240,7 +240,7 @@ fn bt_unpair() -> Response {
     };
     match bluez::unpair(&dev.address) {
         Ok(()) => Response::ok_done(),
-        Err(e) => Response::err(format!("{e}")),
+        Err(e) => bt_err(e.to_string()),
     }
 }
 
@@ -259,7 +259,7 @@ fn bt_auto(on: bool) -> Response {
     };
     match bluez::set_trusted(&dev.address, on) {
         Ok(()) => Response::ok_done(),
-        Err(e) => Response::err(format!("{e}")),
+        Err(e) => bt_err(e.to_string()),
     }
 }
 
@@ -275,8 +275,19 @@ fn bt_rename(name: &str) -> Response {
     };
     match bluez::set_alias(&dev.address, name) {
         Ok(()) => Response::ok_done(),
-        Err(e) => Response::err(format!("{e}")),
+        Err(e) => bt_err(e.to_string()),
     }
+}
+
+/// An audio or a bluetooth error, with the kind read off its own
+/// message: a missing tool is a different problem from AirPods that are
+/// not there.
+fn audio_err(message: String) -> Response {
+    Response::err_code(audio::error_code_for(&message), message)
+}
+
+fn bt_err(message: String) -> Response {
+    Response::err_code(bluez::error_code_for(&message), message)
 }
 
 fn now_secs() -> i64 {

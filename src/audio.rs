@@ -433,6 +433,18 @@ pub fn nothing_to_act_on(what: &str) -> String {
     }
 }
 
+/// Which kind of failure an audio error is. `pactl` missing or failing
+/// is a backend problem; a sink that is not there may be there once the
+/// AirPods are connected. Every message from this module that comes
+/// from `pactl` names it.
+pub fn error_code_for(message: &str) -> crate::ipc::ErrorCode {
+    if message.contains("pactl") {
+        crate::ipc::ErrorCode::Backend
+    } else {
+        crate::ipc::ErrorCode::Unavailable
+    }
+}
+
 pub fn have_pactl() -> bool {
     Command::new("pactl")
         .env("LC_ALL", "C")
@@ -447,8 +459,33 @@ pub fn have_pactl() -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        CardInfo, available_codecs, parse_sink_codec, pick_sink, set_codec, sink_is_running,
+        CardInfo, available_codecs, error_code_for, nothing_to_act_on, parse_sink_codec, pick_sink,
+        set_codec, sink_is_running,
     };
+    use crate::ipc::ErrorCode;
+
+    /// The error kind is read off the message, so the two shapes this
+    /// module produces have to stay distinguishable.
+    #[test]
+    fn a_missing_tool_is_not_a_missing_sink() {
+        assert_eq!(error_code_for("pactl not in PATH? (…)"), ErrorCode::Backend);
+        assert_eq!(
+            error_code_for("pactl [\"list\"] failed: connection refused"),
+            ErrorCode::Backend
+        );
+        assert_eq!(
+            error_code_for("no AirPods audio sink found — connect them first."),
+            ErrorCode::Unavailable
+        );
+        // Whichever branch `nothing_to_act_on` takes, the kind follows.
+        let message = nothing_to_act_on("audio sink");
+        let want = if super::have_pactl() {
+            ErrorCode::Unavailable
+        } else {
+            ErrorCode::Backend
+        };
+        assert_eq!(error_code_for(&message), want, "{message}");
+    }
 
     /// A Bluetooth speaker and the AirPods, in that order — which is
     /// what made taking the first `bluez_output.*` send the volume,

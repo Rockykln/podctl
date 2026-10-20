@@ -15,7 +15,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::time::sleep;
 use tracing::{debug, info, warn};
 
-use podctl::{Capabilities, Event, Response, audio, bluez, caps::Model, model::PairedDevice};
+use podctl::{
+    Capabilities, Event, Response, audio, bluez, caps::Model, ipc::ErrorCode, model::PairedDevice,
+};
 
 use super::{Daemon, aap::AapTask};
 
@@ -383,8 +385,8 @@ pub async fn bt_connect(daemon: &Daemon) -> Response {
             Daemon::touch(&mut s);
             Response::ok_done()
         }
-        Ok(Err(e)) => Response::err(format!("{e}")),
-        Err(e) => Response::err(format!("connect task: {e}")),
+        Ok(Err(e)) => Response::err_code(bluez::error_code_for(&e.to_string()), format!("{e}")),
+        Err(e) => Response::err_code(ErrorCode::Internal, format!("connect task: {e}")),
     }
 }
 
@@ -400,8 +402,8 @@ pub async fn bt_disconnect(daemon: &Daemon) -> Response {
             let _ = daemon.events.send(Event::Disconnected);
             Response::ok_done()
         }
-        Ok(Err(e)) => Response::err(format!("{e}")),
-        Err(e) => Response::err(format!("disconnect task: {e}")),
+        Ok(Err(e)) => Response::err_code(bluez::error_code_for(&e.to_string()), format!("{e}")),
+        Err(e) => Response::err_code(ErrorCode::Internal, format!("disconnect task: {e}")),
     }
 }
 
@@ -409,8 +411,8 @@ pub async fn bt_pair(_daemon: &Daemon, address: Option<String>, yes: bool) -> Re
     let res = tokio::task::spawn_blocking(move || podctl::bluez::pair_choice(address, yes)).await;
     match res {
         Ok(Ok(())) => Response::ok_done(),
-        Ok(Err(e)) => Response::err(format!("{e}")),
-        Err(e) => Response::err(format!("pair task: {e}")),
+        Ok(Err(e)) => Response::err_code(bluez::error_code_for(&e.to_string()), format!("{e}")),
+        Err(e) => Response::err_code(ErrorCode::Internal, format!("pair task: {e}")),
     }
 }
 
@@ -425,8 +427,8 @@ pub async fn bt_unpair(daemon: &Daemon) -> Response {
             Daemon::touch(&mut s);
             Response::ok_done()
         }
-        Ok(Err(e)) => Response::err(format!("{e}")),
-        Err(e) => Response::err(format!("unpair task: {e}")),
+        Ok(Err(e)) => Response::err_code(bluez::error_code_for(&e.to_string()), format!("{e}")),
+        Err(e) => Response::err_code(ErrorCode::Internal, format!("unpair task: {e}")),
     }
 }
 
@@ -441,8 +443,8 @@ pub async fn bt_list() -> Response {
     .await;
     match res {
         Ok(Ok(items)) => Response::ok_list(items),
-        Ok(Err(e)) => Response::err(format!("{e}")),
-        Err(e) => Response::err(format!("list task: {e}")),
+        Ok(Err(e)) => Response::err_code(bluez::error_code_for(&e.to_string()), format!("{e}")),
+        Err(e) => Response::err_code(ErrorCode::Internal, format!("list task: {e}")),
     }
 }
 
@@ -458,8 +460,8 @@ pub async fn bt_set_trusted(daemon: &Daemon, on: bool) -> Response {
             Daemon::touch(&mut s);
             Response::ok_done()
         }
-        Ok(Err(e)) => Response::err(format!("{e}")),
-        Err(e) => Response::err(format!("trust task: {e}")),
+        Ok(Err(e)) => Response::err_code(bluez::error_code_for(&e.to_string()), format!("{e}")),
+        Err(e) => Response::err_code(ErrorCode::Internal, format!("trust task: {e}")),
     }
 }
 

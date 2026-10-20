@@ -145,3 +145,45 @@ fn the_client_sees_the_state_after_the_acknowledgement() {
         .expect("state");
     assert!(matches!(state, podctl::Response::State(_)), "{state:?}");
 }
+
+/// An error says what kind it is, so the CLI can turn it into an exit
+/// code a script can act on: every daemon error used to be 69.
+#[test]
+fn errors_carry_a_kind() {
+    let Some(daemon) = start("codes") else { return };
+    let mut client = podctl::client::Client::connect_at(&daemon.socket).expect("connect");
+
+    // Spatial audio is either not supported by the model or not
+    // implemented by podctl — never a service that might come back.
+    let answer = client
+        .request(
+            &podctl::Request::SetSpatial {
+                mode: podctl::model::SpatialAudio::Off,
+            },
+            Duration::from_secs(5),
+        )
+        .expect("answer");
+    let podctl::Response::Err(info) = answer else {
+        panic!("expected an error, got {answer:?}");
+    };
+    assert!(
+        matches!(
+            info.code,
+            podctl::ipc::ErrorCode::Unsupported | podctl::ipc::ErrorCode::NotImplemented
+        ),
+        "{info:?}"
+    );
+
+    // A request the daemon cannot read is the client's fault.
+    let stream = UnixStream::connect(&daemon.socket).expect("connect");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("timeout");
+    writeln!(&stream, r#"{{"op":"nonsense"}}"#).expect("write");
+    let mut answer = String::new();
+    BufReader::new(&stream)
+        .read_line(&mut answer)
+        .expect("read");
+    let v: serde_json::Value = serde_json::from_str(&answer).expect("json");
+    assert_eq!(v["data"]["code"], "usage", "{answer}");
+}

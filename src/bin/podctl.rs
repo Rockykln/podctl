@@ -3,6 +3,7 @@ use std::str::FromStr;
 
 use podctl::{
     PressSide, Response, WatchRole, client, commands, exitcode,
+    ipc::ErrorCode,
     ipc::Request,
     model::{ConvAwareness, MicSelection, Mode, PressAction, Profile, SpatialAudio},
 };
@@ -61,6 +62,14 @@ struct CliError {
 }
 
 impl CliError {
+    fn new(code: i32, msg: impl Into<String>) -> Self {
+        Self {
+            msg: msg.into(),
+            hint: None,
+            code,
+        }
+    }
+
     fn usage(msg: impl Into<String>) -> Self {
         Self {
             msg: msg.into(),
@@ -520,10 +529,10 @@ fn try_daemon(req: &Request) -> Result<Option<Response>, CliError> {
         return Ok(None);
     };
     match client.request(req, client::timeout_for(req)) {
-        Ok(Response::Err(message)) if message.starts_with("malformed request") => {
+        Ok(Response::Err(info)) if info.code == ErrorCode::Usage => {
             // The daemon could not read what we sent: almost always a
             // daemon of another version, not a bug in the request.
-            let mut err = CliError::unavailable(message);
+            let mut err = CliError::new(exit_code_for(info.code), info.message);
             if let Some(note) = client::version_mismatch() {
                 err = err.with_hint(note);
             }
@@ -582,10 +591,23 @@ fn handle_response(verb: &str, resp: Response, out: Output) -> Result<i32, CliEr
             println!("pending: {reason}");
             Ok(exitcode::OK)
         }
-        Response::Err(error) => {
-            eprintln!("{PROG}: {error}");
-            Ok(exitcode::UNAVAILABLE)
+        Response::Err(info) => {
+            eprintln!("{PROG}: {}", info.message);
+            Ok(exit_code_for(info.code))
         }
+    }
+}
+
+/// What the shell sees. Every daemon error used to be 69, so a script
+/// could not tell "try again later" from "this model will never do it".
+fn exit_code_for(code: ErrorCode) -> i32 {
+    match code {
+        ErrorCode::Unavailable => exitcode::UNAVAILABLE,
+        // Not a service problem and not worth retrying: plain failure.
+        ErrorCode::Unsupported | ErrorCode::NotImplemented => exitcode::ERR,
+        ErrorCode::Backend => exitcode::OSERR,
+        ErrorCode::Internal => exitcode::SOFTWARE,
+        ErrorCode::Usage => exitcode::USAGE,
     }
 }
 
@@ -593,7 +615,7 @@ fn handle_response(verb: &str, resp: Response, out: Output) -> Result<i32, CliEr
 /// line unless `--pretty` is asked for. There used to be three shapes
 /// and a mix of pretty and compact.
 fn print_json(verb: &str, resp: &Response, pretty: bool) {
-    use podctl::json::{Envelope, error};
+    use podctl::json::Envelope;
     match resp {
         Response::State(state) => {
             if commands::find(verb).map(|c| c.name) == Some("battery") {
@@ -610,7 +632,7 @@ fn print_json(verb: &str, resp: &Response, pretty: bool) {
         Response::Pending(reason) => {
             Envelope::ok("pending", serde_json::json!({ "reason": reason })).print(pretty)
         }
-        Response::Err(message) => error(message).print(pretty),
+        Response::Err(info) => podctl::json::daemon_error(info.code, &info.message).print(pretty),
     }
 }
 
@@ -671,7 +693,9 @@ fn stream_events(out: Output) -> Result<i32, CliError> {
         role: WatchRole::Observer,
     };
     match client.request(&req, client::timeout_for(&req)) {
-        Ok(Response::Err(message)) => return Err(CliError::unavailable(message)),
+        Ok(Response::Err(info)) => {
+            return Err(CliError::new(exit_code_for(info.code), info.message));
+        }
         Ok(_) => {}
         Err(e) => return Err(CliError::unavailable(e.to_string())),
     }
@@ -697,9 +721,9 @@ fn stream_events(out: Output) -> Result<i32, CliError> {
         }
         match resp {
             Response::Event(e) => fmt::print_event(&e),
-            Response::Err(error) => {
-                eprintln!("{PROG}: {error}");
-                return Ok(exitcode::UNAVAILABLE);
+            Response::Err(info) => {
+                eprintln!("{PROG}: {}", info.message);
+                return Ok(exit_code_for(info.code));
             }
             _ => {}
         }

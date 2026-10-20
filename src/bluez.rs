@@ -282,6 +282,18 @@ fn bluetoothctl(args: &[&str]) -> anyhow::Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+/// Which kind of failure a bluetooth error is. `bluetoothctl` or
+/// `dbus-send` missing or failing is a backend problem; a device that
+/// did not answer may answer later. Every message from this module that
+/// comes from one of the two names it.
+pub fn error_code_for(message: &str) -> crate::ipc::ErrorCode {
+    if message.contains("bluetoothctl") || message.contains("dbus-send") {
+        crate::ipc::ErrorCode::Backend
+    } else {
+        crate::ipc::ErrorCode::Unavailable
+    }
+}
+
 pub fn have_bluetoothctl() -> bool {
     Command::new("bluetoothctl")
         .env("LC_ALL", "C")

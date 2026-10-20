@@ -82,6 +82,23 @@ pub fn error_with_hint<'a>(message: &'a str, hint: &'a str) -> Envelope<ErrorDat
     }
 }
 
+/// The daemon's own error, with the kind it reported. `hint` stays for
+/// the CLI's own hints.
+pub fn daemon_error(code: crate::ipc::ErrorCode, message: &str) -> Envelope<DaemonErrorData<'_>> {
+    Envelope {
+        schema: SCHEMA,
+        ok: false,
+        kind: "err",
+        data: DaemonErrorData { code, message },
+    }
+}
+
+#[derive(Serialize)]
+pub struct DaemonErrorData<'a> {
+    pub code: crate::ipc::ErrorCode,
+    pub message: &'a str,
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Envelope, error};

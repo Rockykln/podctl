@@ -10,7 +10,9 @@ use crate::model::{
 /// Version of the socket protocol: raised when a request or a response
 /// changes shape, not for a new command. A client that gets a different
 /// one knows the two halves do not fit before anything goes wrong.
-pub const PROTO: u32 = 1;
+///
+/// 2: errors carry a code, not just a sentence.
+pub const PROTO: u32 = 2;
 
 pub fn socket_path() -> PathBuf {
     if let Ok(dir) = std::env::var("XDG_RUNTIME_DIR") {
@@ -156,7 +158,41 @@ pub enum Response {
     Hello(Hello),
     Done,
     Pending(String),
-    Err(String),
+    Err(ErrorInfo),
+}
+
+/// What kind of failure it was. A script could not tell "no daemon"
+/// from "this model cannot do it" from "bluetoothctl failed", and so
+/// could not tell whether retrying was worth anything.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ErrorCode {
+    /// Nothing to act on right now: no daemon, no device, not
+    /// connected. Trying again later may well work.
+    #[default]
+    Unavailable,
+    /// This model cannot do it. Trying again will not help.
+    Unsupported,
+    /// podctl cannot do it yet — the setting's AAP id is not known.
+    NotImplemented,
+    /// `bluetoothctl`, `pactl` or D-Bus failed, or is not installed.
+    Backend,
+    /// A fault inside podctl itself.
+    Internal,
+    /// The request itself was wrong.
+    Usage,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ErrorInfo {
+    pub code: ErrorCode,
+    pub message: String,
+}
+
+impl std::fmt::Display for ErrorInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
 }
 
 /// The daemon's half of the handshake.
@@ -198,8 +234,16 @@ impl Response {
     pub fn ok_event(e: Event) -> Self {
         Response::Event(e)
     }
+    /// An error whose kind is "nothing to act on right now" — the most
+    /// common one, and what every error used to be.
     pub fn err(msg: impl Into<String>) -> Self {
-        Response::Err(msg.into())
+        Response::err_code(ErrorCode::Unavailable, msg)
+    }
+    pub fn err_code(code: ErrorCode, msg: impl Into<String>) -> Self {
+        Response::Err(ErrorInfo {
+            code,
+            message: msg.into(),
+        })
     }
     pub fn is_err(&self) -> bool {
         matches!(self, Response::Err(_))

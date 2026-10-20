@@ -18,7 +18,7 @@ use tracing::debug;
 
 use podctl::{
     Capabilities, ConvAwareness, DeviceState, Event, Mode, PressSide, Request, Response,
-    model::PressAction,
+    ipc::ErrorCode, model::PressAction,
 };
 
 const EVENT_BUS_CAPACITY: usize = 64;
@@ -381,10 +381,10 @@ impl Daemon {
         feature: &str,
     ) -> Result<(), Response> {
         if !want(caps) {
-            return Err(Response::err(format!(
-                "{feature} is not supported on {}",
-                caps.model.label()
-            )));
+            return Err(Response::err_code(
+                ErrorCode::Unsupported,
+                format!("{feature} is not supported on {}", caps.model.label()),
+            ));
         }
         Ok(())
     }
@@ -398,7 +398,10 @@ impl Daemon {
             Mode::Adaptive => (caps.has_adaptive, 4),
         };
         if !supported {
-            return Response::err(format!("{mode} is not supported on {}", caps.model.label()));
+            return Response::err_code(
+                ErrorCode::Unsupported,
+                format!("{mode} is not supported on {}", caps.model.label()),
+            );
         }
         let frame = podctl::aap::set_noise_control(code).encode();
         if let Err(e) = self.aap_send(&frame).await {
@@ -447,7 +450,7 @@ impl Daemon {
             return r;
         }
         let _ = mode;
-        Response::err(NOT_IMPL)
+        Response::err_code(ErrorCode::NotImplemented, NOT_IMPL)
     }
 
     async fn set_ear_detection(&self, on: bool) -> Response {
@@ -515,7 +518,7 @@ impl Daemon {
             return r;
         }
         let _ = on;
-        Response::err(NOT_IMPL)
+        Response::err_code(ErrorCode::NotImplemented, NOT_IMPL)
     }
 
     async fn set_press(&self, side: PressSide, action: PressAction) -> Response {
@@ -527,7 +530,7 @@ impl Daemon {
             return r;
         }
         let _ = (side, action);
-        Response::err(NOT_IMPL)
+        Response::err_code(ErrorCode::NotImplemented, NOT_IMPL)
     }
 
     async fn set_tone(&self, on: bool) -> Response {
@@ -539,7 +542,7 @@ impl Daemon {
             return r;
         }
         let _ = on;
-        Response::err(NOT_IMPL)
+        Response::err_code(ErrorCode::NotImplemented, NOT_IMPL)
     }
 
     async fn rename(&self, name: String) -> Response {
@@ -574,8 +577,8 @@ impl Daemon {
                 Self::touch(&mut state);
                 Response::ok_done()
             }
-            Ok(Err(e)) => Response::err(format!("{e}")),
-            Err(e) => Response::err(format!("rename task: {e}")),
+            Ok(Err(e)) => audio_err(e.to_string()),
+            Err(e) => Response::err_code(ErrorCode::Internal, format!("rename task: {e}")),
         }
     }
     /// Undo a volume this session lowered for speech — on the way out,
@@ -598,6 +601,12 @@ impl Daemon {
 /// theirs.
 const NO_ADDRESS: &str = "no AirPods address known — none paired, or not seen yet";
 
+/// An audio error, with the kind read off its message: `pactl` missing
+/// or failing is not the same as AirPods that are not connected.
+fn audio_err(message: String) -> Response {
+    Response::err_code(podctl::audio::error_code_for(&message), message)
+}
+
 async fn audio_address(d: &Daemon) -> Option<String> {
     d.state.read().await.address.clone()
 }
@@ -619,8 +628,8 @@ async fn audio_set_volume(d: &Daemon, percent: u8) -> Response {
             Daemon::touch(&mut s);
             Response::ok_done()
         }
-        Ok(Err(e)) => Response::err(format!("{e}")),
-        Err(e) => Response::err(format!("audio task: {e}")),
+        Ok(Err(e)) => audio_err(e.to_string()),
+        Err(e) => Response::err_code(ErrorCode::Internal, format!("audio task: {e}")),
     }
 }
 
@@ -641,8 +650,8 @@ async fn audio_set_muted(d: &Daemon, muted: bool) -> Response {
             Daemon::touch(&mut s);
             Response::ok_done()
         }
-        Ok(Err(e)) => Response::err(format!("{e}")),
-        Err(e) => Response::err(format!("audio task: {e}")),
+        Ok(Err(e)) => audio_err(e.to_string()),
+        Err(e) => Response::err_code(ErrorCode::Internal, format!("audio task: {e}")),
     }
 }
 
@@ -663,8 +672,8 @@ async fn audio_set_profile(d: &Daemon, profile: podctl::Profile) -> Response {
             Daemon::touch(&mut s);
             Response::ok_done()
         }
-        Ok(Err(e)) => Response::err(format!("{e}")),
-        Err(e) => Response::err(format!("audio task: {e}")),
+        Ok(Err(e)) => audio_err(e.to_string()),
+        Err(e) => Response::err_code(ErrorCode::Internal, format!("audio task: {e}")),
     }
 }
 
@@ -686,8 +695,8 @@ async fn audio_set_codec(d: &Daemon, codec: String) -> Response {
             Daemon::touch(&mut s);
             Response::ok_done()
         }
-        Ok(Err(e)) => Response::err(format!("{e}")),
-        Err(e) => Response::err(format!("audio task: {e}")),
+        Ok(Err(e)) => audio_err(e.to_string()),
+        Err(e) => Response::err_code(ErrorCode::Internal, format!("audio task: {e}")),
     }
 }
 
@@ -708,8 +717,8 @@ async fn audio_make_default(d: &Daemon) -> Response {
             Daemon::touch(&mut s);
             Response::ok_done()
         }
-        Ok(Err(e)) => Response::err(format!("{e}")),
-        Err(e) => Response::err(format!("audio task: {e}")),
+        Ok(Err(e)) => audio_err(e.to_string()),
+        Err(e) => Response::err_code(ErrorCode::Internal, format!("audio task: {e}")),
     }
 }
 
@@ -730,7 +739,7 @@ async fn audio_set_latency(d: &Daemon, ms: i32) -> Response {
             Daemon::touch(&mut s);
             Response::ok_done()
         }
-        Ok(Err(e)) => Response::err(format!("{e}")),
-        Err(e) => Response::err(format!("audio task: {e}")),
+        Ok(Err(e)) => audio_err(e.to_string()),
+        Err(e) => Response::err_code(ErrorCode::Internal, format!("audio task: {e}")),
     }
 }

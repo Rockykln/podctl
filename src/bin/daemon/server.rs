@@ -13,6 +13,7 @@ use tokio::sync::Semaphore;
 use tokio::time::timeout;
 use tracing::{debug, info, warn};
 
+use podctl::ipc::ErrorCode;
 use podctl::{Request, Response, WatchRole};
 
 use super::Daemon;
@@ -108,20 +109,25 @@ async fn handle_connection(sock: UnixStream, daemon: Arc<Daemon>) -> anyhow::Res
         Ok(Ok(None)) => return Ok(()),
         Ok(Err(e)) => return Err(e.into()),
         Err(_) => {
-            let resp = Response::err("no request within five seconds.");
+            let resp = Response::err_code(ErrorCode::Usage, "no request within five seconds.");
             let _ = write_line(&mut tx, &resp).await;
             return Ok(());
         }
     };
     if first.len() as u64 >= MAX_REQUEST_BYTES {
-        let resp = Response::err(format!("request longer than {MAX_REQUEST_BYTES} bytes."));
+        let resp = Response::err_code(
+            ErrorCode::Usage,
+            format!("request longer than {MAX_REQUEST_BYTES} bytes."),
+        );
         write_line(&mut tx, &resp).await?;
         return Ok(());
     }
     let req: Request = match serde_json::from_str(first.trim()) {
         Ok(r) => r,
         Err(e) => {
-            let resp = Response::err(format!("malformed request: {e}"));
+            // Usage, because the request is what is wrong — a client
+            // of another version, most of the time.
+            let resp = Response::err_code(ErrorCode::Usage, format!("malformed request: {e}"));
             write_line(&mut tx, &resp).await?;
             return Ok(());
         }
