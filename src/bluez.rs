@@ -278,9 +278,41 @@ fn bluetoothctl(args: &[&str]) -> anyhow::Result<String> {
         .map_err(|e| anyhow::anyhow!("bluetoothctl not in PATH? ({e})"))?;
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
-        anyhow::bail!("bluetoothctl {:?} failed: {}", args, err.trim());
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let reason = failure_reason(err.trim(), &stdout);
+        anyhow::bail!("bluetoothctl {:?} failed: {}", args, reason);
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// `bluetoothctl` prints why a command failed on stdout ("Failed to
+/// connect: org.bluez.Error…"), between the property changes it echoes.
+fn failure_reason(stderr: &str, stdout: &str) -> String {
+    if !stderr.is_empty() {
+        return stderr.to_string();
+    }
+    let lines = || stdout.lines().map(strip_ansi).map(|l| l.trim().to_string());
+    lines()
+        .rfind(|l| l.contains("Failed") || l.contains("org.bluez.Error"))
+        .or_else(|| lines().rfind(|l| !l.is_empty()))
+        .unwrap_or_else(|| "no reason given".into())
+}
+
+fn strip_ansi(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            for c in chars.by_ref() {
+                if c.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// Which kind of failure a bluetooth error is. `bluetoothctl` or
@@ -322,6 +354,19 @@ pub fn primary_airpods() -> Option<DeviceSummary> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_reason_for_a_failure_is_found_on_stdout() {
+        let out = "Attempting to connect to AA:BB:CC:DD:EE:01\n\
+                   [\x1b[0;93mCHG\x1b[0m] Device 11:22:33:44:55:66 RSSI: 0xffffffac (-84)\n\
+                   Failed to connect: org.bluez.Error.Failed br-connection-busy\n";
+        assert_eq!(
+            super::failure_reason("", out),
+            "Failed to connect: org.bluez.Error.Failed br-connection-busy"
+        );
+        assert_eq!(super::failure_reason("bad", out), "bad");
+        assert_eq!(super::failure_reason("", ""), "no reason given");
+    }
+
     /// A typo must not reach `bluetoothctl pair`, and nothing gets
     /// paired without being named or confirmed.
     #[test]

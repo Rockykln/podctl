@@ -51,6 +51,8 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 - The buds send nothing while someone keeps talking, so the watchdog
   for a missing end of speech now waits 30 s instead of 10 — it brought
   the music back up during a long sentence.
+- `podctl connect` and the other BlueZ commands failed with an empty
+  reason; `bluetoothctl` prints it on stdout.
 - `podctl status` without a daemon ran `bluetoothctl` twice, once for
   the device and once more for the address the audio lookup needed.
 - **A settings frame without a value switched the microphone over.** A
