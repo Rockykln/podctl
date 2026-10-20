@@ -71,6 +71,7 @@ pub async fn run(daemon: Arc<Daemon>) {
             {
                 let mut s = daemon.state.write().await;
                 let cached_battery = s.battery;
+                let cached_battery_at = s.battery_at;
                 let cached_aap = s.aap_linked;
                 let cached_in_ear = s.in_ear;
                 let cached_lid = s.case_lid_open;
@@ -80,6 +81,7 @@ pub async fn run(daemon: Arc<Daemon>) {
                 let had_model = cached_caps.model != Model::Unknown;
                 *s = snap;
                 s.battery = cached_battery;
+                s.battery_at = cached_battery_at;
                 s.aap_linked = cached_aap;
                 s.in_ear = cached_in_ear;
                 s.case_lid_open = cached_lid;
@@ -258,6 +260,7 @@ impl AapSupervisor {
         daemon.media.reset().await;
         let mut s = daemon.state.write().await;
         s.battery = podctl::Battery::default();
+        s.battery_at = None;
         s.in_ear = podctl::InEar::default();
         s.case_lid_open = None;
         // Settings too: they come from the device's own dump, and the
@@ -364,7 +367,7 @@ fn redact_mac(mac: &str) -> String {
     }
 }
 
-fn now_secs() -> i64 {
+pub fn now_secs() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)

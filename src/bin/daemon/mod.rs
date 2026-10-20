@@ -241,6 +241,9 @@ impl Daemon {
     pub async fn update_battery<F: FnOnce(&mut podctl::Battery)>(&self, f: F) -> podctl::Battery {
         let mut s = self.state.write().await;
         f(&mut s.battery);
+        if s.battery.any_known() {
+            s.battery_at = Some(link::now_secs());
+        }
         Self::touch(&mut s);
         s.battery
     }

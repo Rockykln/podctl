@@ -38,6 +38,20 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
   nobody was there to draw the bubble. A hangup ends the stream now.
 
 ### Changed
+- **`podctl status` was rewritten.** One label column, labels that are
+  the command names (`ear`, `loud-reduction`, `auto-connect`), one line
+  per bud with a bar on a terminal and nothing but columns in a pipe,
+  and the charging state as a word — the lightning bolt was two cells
+  wide in most terminals, so the columns moved as soon as a bud
+  charged. `trusted` is gone: it is the same BlueZ flag as
+  `auto-connect` and read as two settings. Disconnected, `status`
+  showed the word "disconnected" and nothing else; it now shows the
+  levels the case last announced over bluetooth LE, with their age, and
+  with nothing paired it says that instead. `podctl battery` prints the
+  same rows, and `podctl list` cuts a long name to its column instead
+  of shifting every line after it.
+- `PODS_NO_LR` is now `PODCTL_NO_LR` (the old name still works) and is
+  documented.
 - **`--json` has one shape for every command**:
   `{"schema":1,"ok":true,"kind":"state","data":{…}}`, one object on one
   line, so a stream of them (`watch`, `meter`) is newline-delimited

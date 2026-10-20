@@ -150,14 +150,30 @@ Audio, bluetooth and 'ble' also work without it.
 ";
 
 const STATUS: &str = "\
-podctl status — full snapshot
+podctl status — everything we know
 
-Prints everything the daemon knows: model, firmware, battery, in-ear
-state, listening mode, conversation awareness, bud settings, audio
-state (volume/profile/codec), bluetooth state (RSSI/trusted/auto-connect),
-press counts.
+    AirPods Pro (2nd gen, USB-C)  \"My AirPods\"  connected · AAP up · 0s ago
 
-The 'updated' field shows how fresh the data is.
+      battery   left    80%  [########--]  charging
+                right   75%  [########--]
+                case    40%  [####------]
+      in-ear    both in ear   case lid closed
+
+      listening mode anc · conv on
+      settings  ear on · mic auto · one-bud-anc off · auto-anc 50 · chime 100
+      audio     60%  high  aac  [default sink]
+                codecs: sbc, aac
+      bluetooth AA:BB:CC:DD:EE:01  rssi -52 dBm  auto-connect on
+      firmware  L 7A305 · R 7A305 · case 7A305
+
+The labels are the command names, so what you read is what you can
+type. Bars appear on a terminal and not in a pipe. Disconnected, the
+levels the case last announced over bluetooth LE are shown with their
+age; with nothing paired, status says so.
+
+The age after the state says how fresh the daemon's picture is.
+It exits 0 either way — read 'connected' from --json to test for a
+link.
 ";
 
 const BATTERY: &str = "\

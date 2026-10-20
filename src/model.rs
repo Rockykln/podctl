@@ -354,6 +354,11 @@ pub struct DeviceState {
     pub settings: PodSettings,
     pub audio: AudioState,
     pub bluetooth: BtState,
+    /// When a battery level last arrived, over AAP or over the case's
+    /// LE announcement. `updated_at` moves with every poll, so it
+    /// cannot say how old the levels are.
+    #[serde(default)]
+    pub battery_at: Option<i64>,
     pub updated_at: i64,
 }
 
