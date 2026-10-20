@@ -21,6 +21,7 @@ complete -c podctl -n '__fish_seen_subcommand_from codec'            -a 'sbc aac
 complete -c podctl -n '__fish_seen_subcommand_from press'            -a 'left right mode-cycle siri none'
 complete -c podctl -n '__fish_seen_subcommand_from meter'            -a '--plain --json --once --interval --device'
 complete -c podctl -n '__fish_seen_subcommand_from ble'              -a 'on off'
+complete -c podctl -n '__fish_seen_subcommand_from pair'             -a '--yes'
 complete -c podctl -n '__fish_seen_subcommand_from tray'             -a 'start stop status restart'
 complete -c podctl -n '__fish_seen_subcommand_from completion'       -a 'bash zsh fish'
 complete -c podctl -n '__fish_seen_subcommand_from debug'            -a 'emit-case-lid --no-redact'

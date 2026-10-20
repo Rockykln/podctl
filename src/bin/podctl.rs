@@ -304,7 +304,13 @@ fn parse_verb(verb: &str, rest: &[String]) -> Result<Request, CliError> {
 
         "connect" => Request::Connect,
         "disconnect" | "dc" => Request::Disconnect,
-        "pair" => Request::Pair,
+        "pair" => Request::Pair {
+            address: rest
+                .iter()
+                .find(|a| !a.starts_with('-'))
+                .map(|a| a.to_uppercase()),
+            yes: rest.iter().any(|a| a == "--yes" || a == "-y"),
+        },
         "unpair" | "forget" => Request::Unpair,
         "list" | "ls" => Request::List,
         "auto-connect" | "auto" => Request::SetAutoConnect {

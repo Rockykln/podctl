@@ -280,10 +280,17 @@ const PAIR: &str = "\
 podctl pair — pair a nearby AirPods
 
 Put the AirPods in pairing mode (long-press the case button until the
-LED blinks white), then run this. The daemon will scan, find them, and
-pair via BlueZ.
+LED blinks white), then run this. It scans for twelve seconds and shows
+what it found; pairing then needs either the address or --yes, because
+anything in pairing mode within a few metres shows up here, including
+somebody else's.
 
-    podctl pair
+    podctl pair                   # scan and list what is in range
+    podctl pair --yes             # take the one candidate, if there is
+                                  # exactly one
+    podctl pair AA:BB:CC:DD:EE:FF # pair that one
+
+    podctl status                 # afterwards: should show them
 ";
 
 const UNPAIR: &str = "\

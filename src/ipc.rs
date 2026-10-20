@@ -73,7 +73,14 @@ pub enum Request {
 
     Connect,
     Disconnect,
-    Pair,
+    Pair {
+        /// Pair this address, instead of looking for candidates.
+        #[serde(default)]
+        address: Option<String>,
+        /// Take the single candidate found without asking back.
+        #[serde(default)]
+        yes: bool,
+    },
     Unpair,
     List,
     SetAutoConnect {

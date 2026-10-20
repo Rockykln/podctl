@@ -404,16 +404,8 @@ pub async fn bt_disconnect(daemon: &Daemon) -> Response {
     }
 }
 
-pub async fn bt_pair(_daemon: &Daemon) -> Response {
-    let res = tokio::task::spawn_blocking(|| {
-        let found = bluez::discover(12)?;
-        let target = found.into_iter().find(|d| !d.paired).ok_or_else(|| {
-            anyhow::anyhow!("no new AirPods spotted — open the case until the LED blinks white.")
-        })?;
-        bluez::pair(&target.address)?;
-        Ok::<_, anyhow::Error>(())
-    })
-    .await;
+pub async fn bt_pair(_daemon: &Daemon, address: Option<String>, yes: bool) -> Response {
+    let res = tokio::task::spawn_blocking(move || podctl::bluez::pair_choice(address, yes)).await;
     match res {
         Ok(Ok(())) => Response::ok_done(),
         Ok(Err(e)) => Response::err(format!("{e}")),

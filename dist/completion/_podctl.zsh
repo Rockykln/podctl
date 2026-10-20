@@ -63,6 +63,7 @@ _pods() {
             ;;
         meter)      _values 'flag' --plain --json --once --interval --device ;;
         ble)        _values 'switch' on off ;;
+        pair)       _values 'flag' --yes ;;
         tray)       _values 'action' start stop status restart ;;
         completion) _values 'shell' bash zsh fish ;;
         debug)      _values 'arg' emit-case-lid --no-redact ;;

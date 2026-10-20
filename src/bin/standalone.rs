@@ -30,7 +30,7 @@ pub fn dispatch(req: &Request) -> Response {
 
         Request::Connect => bt_connect(),
         Request::Disconnect => bt_disconnect(),
-        Request::Pair => bt_pair(),
+        Request::Pair { address, yes } => bt_pair(address.clone(), *yes),
         Request::Unpair => bt_unpair(),
         Request::List => bt_list(),
         Request::SetAutoConnect { on } => bt_auto(*on),
@@ -220,20 +220,8 @@ fn bt_disconnect() -> Response {
     }
 }
 
-fn bt_pair() -> Response {
-    let found = match bluez::discover(12) {
-        Ok(v) => v,
-        Err(e) => return Response::err(format!("scan failed: {e}")),
-    };
-    let target = match found.into_iter().find(|d| !d.paired) {
-        Some(d) => d,
-        None => {
-            return Response::err(
-                "no new AirPods spotted — make sure the case is open and the LED blinks white.",
-            );
-        }
-    };
-    match bluez::pair(&target.address) {
+fn bt_pair(address: Option<String>, yes: bool) -> Response {
+    match bluez::pair_choice(address, yes) {
         Ok(()) => Response::ok_done(),
         Err(e) => Response::err(format!("{e}")),
     }

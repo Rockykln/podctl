@@ -89,8 +89,16 @@ System tone / chime volume.
 .B connect, disconnect
 Bring the link up or down.
 .TP
-.B pair, unpair
-Pair or forget the AirPods.
+.BR "pair " [ address ] " [" --yes ]
+Scan for twelve seconds and list what is in pairing mode nearby.
+Pairing needs either the address or
+.BR --yes ,
+which takes the one candidate when there is exactly one — anything in
+pairing mode within a few metres turns up here, including somebody
+else's.
+.TP
+.B unpair
+Forget the pairing; the AirPods have to be paired fresh afterwards.
 .TP
 .B list, ls
 List paired AirPods on this adapter.

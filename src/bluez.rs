@@ -177,6 +177,41 @@ pub fn unpair(addr: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Pair what the caller named, or what a scan turned up — but never
+/// just the first thing in range. Anything in pairing mode within a few
+/// metres shows up here, a neighbour's buds included, and pairing also
+/// trusts the device.
+pub fn pair_choice(address: Option<String>, yes: bool) -> anyhow::Result<()> {
+    if let Some(addr) = address {
+        if crate::ble::parse_addr(&addr).is_none() {
+            anyhow::bail!("'{addr}' is not a Bluetooth address (AA:BB:CC:DD:EE:FF)");
+        }
+        return pair(&addr);
+    }
+    let found = discover(12)?;
+    let mut fresh: Vec<DeviceSummary> = found.into_iter().filter(|d| !d.paired).collect();
+    fresh.sort_by(|a, b| a.name.cmp(&b.name));
+    match fresh.as_slice() {
+        [] => anyhow::bail!(
+            "no new AirPods spotted — open the case and hold the button until the LED blinks white."
+        ),
+        [one] if yes => pair(&one.address),
+        several => {
+            let list = several
+                .iter()
+                .map(|d| format!("  {}  {}", d.address, d.name))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let hint = if several.len() == 1 {
+                "pair it with 'podctl pair --yes', or name the address"
+            } else {
+                "name the address of the one you want"
+            };
+            anyhow::bail!("in pairing mode right now:\n{list}\n{hint}")
+        }
+    }
+}
+
 pub fn discover(secs: u32) -> anyhow::Result<Vec<DeviceSummary>> {
     let res = bluetoothctl(&["--timeout", &secs.to_string(), "scan", "on"]);
     if res.is_err() {
@@ -270,4 +305,17 @@ pub fn primary_airpods() -> Option<DeviceSummary> {
         .find(|d| d.connected)
         .cloned()
         .or_else(|| all.first().cloned())
+}
+
+#[cfg(test)]
+mod tests {
+    /// A typo must not reach `bluetoothctl pair`, and nothing gets
+    /// paired without being named or confirmed.
+    #[test]
+    fn an_address_has_to_look_like_one() {
+        let err = super::pair_choice(Some("nonsense".into()), false)
+            .expect_err("not an address")
+            .to_string();
+        assert!(err.contains("not a Bluetooth address"), "{err}");
+    }
 }

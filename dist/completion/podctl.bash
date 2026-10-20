@@ -27,6 +27,7 @@ _pods() {
             ;;
         meter)           COMPREPLY=( $(compgen -W "--plain --json --once --interval --device" -- "$cur") );;
         ble)             COMPREPLY=( $(compgen -W "on off" -- "$cur") );;
+        pair)            COMPREPLY=( $(compgen -W "--yes" -- "$cur") );;
         tray)            COMPREPLY=( $(compgen -W "start stop status restart" -- "$cur") );;
         completion)      COMPREPLY=( $(compgen -W "bash zsh fish" -- "$cur") );;
         debug)           COMPREPLY=( $(compgen -W "emit-case-lid --no-redact" -- "$cur") );;

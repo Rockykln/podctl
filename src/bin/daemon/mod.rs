@@ -328,7 +328,7 @@ impl Daemon {
 
             Request::Connect => link::bt_connect(self).await,
             Request::Disconnect => link::bt_disconnect(self).await,
-            Request::Pair => link::bt_pair(self).await,
+            Request::Pair { address, yes } => link::bt_pair(self, address.clone(), yes).await,
             Request::Unpair => link::bt_unpair(self).await,
             Request::List => link::bt_list().await,
             Request::SetAutoConnect { on } => link::bt_set_trusted(self, on).await,
