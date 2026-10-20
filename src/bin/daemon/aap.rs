@@ -163,11 +163,7 @@ fn run(
                 frame_count += 1;
                 frames.store(frame_count, Ordering::Relaxed);
                 let opcode = if n >= 5 { buf[4] } else { 0xFF };
-                let preview: String = buf[..n.min(24)]
-                    .iter()
-                    .map(|b| format!("{b:02x}"))
-                    .collect::<Vec<_>>()
-                    .join(" ");
+                let preview = rx_preview(&buf[..n], opcode);
                 debug!(frame_count, n, opcode = format!("{opcode:02x}"), %preview, "AAP rx");
                 if let Some(frame) = Frame::parse(&buf[..n]) {
                     rt.block_on(handle_frame(&daemon, &frame));
@@ -426,6 +422,20 @@ async fn apply_conv_level(daemon: &Arc<Daemon>, payload: &[u8]) {
     tokio::spawn(async move { d.media.on_conv_level(level, enabled).await });
 }
 
+/// Hex dump of a received frame for the debug log, cut off at 24
+/// bytes. The reply to the key request is the identity resolving key
+/// itself: that one never goes to the log.
+fn rx_preview(frame: &[u8], opcode: u8) -> String {
+    if opcode == op::PROXIMITY_KEYS {
+        return "<keys withheld>".into();
+    }
+    frame[..frame.len().min(24)]
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn short_mac(mac: &str) -> String {
     mac.replace(':', "").chars().take(6).collect()
 }
@@ -452,6 +462,17 @@ mod tests {
         let rc = unsafe { socketpair(AF_UNIX, SOCK_STREAM, 0, fds.as_mut_ptr()) };
         assert_eq!(rc, 0, "socketpair");
         (fds[0], fds[1])
+    }
+
+    /// The key reply is 13 of the 16 IRK bytes within the first 24 of
+    /// the frame — exactly what the preview used to print.
+    #[test]
+    fn the_key_reply_never_reaches_the_log() {
+        let mut frame = vec![0x04, 0x00, 0x04, 0x00, op::PROXIMITY_KEYS, 0x00, 0x01];
+        frame.extend_from_slice(&[0xAB; 20]);
+        let shown = rx_preview(&frame, op::PROXIMITY_KEYS);
+        assert!(!shown.contains("ab"), "{shown}");
+        assert_eq!(rx_preview(&frame, op::BATTERY).len(), 24 * 3 - 1);
     }
 
     /// The worker closes its socket on the way out and `reap()` calls

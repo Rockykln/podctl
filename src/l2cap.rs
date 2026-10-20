@@ -7,6 +7,9 @@ use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
 
 const AF_BLUETOOTH: i32 = 31;
 const SOCK_SEQPACKET: i32 = 5;
+/// Without this every process the daemon starts — `bluetoothctl`,
+/// `dbus-send`, `pactl` — inherits the open AAP channel.
+const SOCK_CLOEXEC: i32 = 0o2000000;
 const BTPROTO_L2CAP: i32 = 0;
 const BDADDR_BREDR: u8 = 0x00;
 
@@ -49,7 +52,7 @@ impl L2capStream {
             io::Error::new(io::ErrorKind::InvalidInput, format!("bad MAC '{mac}'"))
         })?;
 
-        let fd = unsafe { socket(AF_BLUETOOTH, SOCK_SEQPACKET, BTPROTO_L2CAP) };
+        let fd = unsafe { socket(AF_BLUETOOTH, SOCK_SEQPACKET | SOCK_CLOEXEC, BTPROTO_L2CAP) };
         if fd < 0 {
             return Err(last_err());
         }

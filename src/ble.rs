@@ -82,7 +82,10 @@ pub fn parse_advert(data: &[u8]) -> Option<Advert> {
     // Everything the buds report is ordered primary first, so the two
     // halves swap as soon as the right bud leads.
     let flipped = !primary_left;
-    let level = |nibble: u8| (nibble != 15).then_some(nibble * 10);
+    // Ten tenths is full; 15 is the documented "unknown", and the
+    // values in between are not an encoding we know — reporting 140 %
+    // because of one is worse than saying nothing.
+    let level = |nibble: u8| (nibble <= 10).then_some(nibble * 10);
     let (left_nib, right_nib) = if flipped {
         (pods >> 4, pods & 0x0f)
     } else {
@@ -172,6 +175,21 @@ mod tests {
         assert!(a.lid_closed);
         assert_eq!(a.lid_counter, 0);
         assert_eq!(a.left.battery, Some(80));
+    }
+
+    /// Nibbles 11 to 15 are not levels. The parser used to multiply
+    /// them by ten and report up to 140 %.
+    #[test]
+    fn rejects_battery_nibbles_above_ten() {
+        let a = adv("07190124200b778f1100055f5740de21491ea5bcb9b3a07f8e950d");
+        assert_eq!(a.left.battery, Some(70));
+        for nibble in 11u8..=15 {
+            let pods = nibble | (nibble << 4);
+            let hex = format!("07190124200b{pods:02x}8f1100055f5740de21491ea5bcb9b3a07f8e950d");
+            let a = adv(&hex);
+            assert_eq!(a.left.battery, None, "nibble {nibble}");
+            assert_eq!(a.right.battery, None, "nibble {nibble}");
+        }
     }
 
     #[test]
