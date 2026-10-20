@@ -522,6 +522,12 @@ impl Daemon {
         if name.len() > 64 {
             return Response::err("name too long (max 64 bytes UTF-8)");
         }
+        // What BlueZ stores is what the tray, the popup and every
+        // terminal will print later.
+        let name = podctl::model::sanitize_display_name(&name);
+        if name.is_empty() {
+            return Response::err("name has nothing printable in it");
+        }
         let addr = {
             let state = self.state.read().await;
             state.address.clone()

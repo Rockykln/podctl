@@ -83,7 +83,10 @@ pub fn info(addr: &str) -> anyhow::Result<DeviceSummary> {
     let out = bluetoothctl(&["info", addr])?;
     Ok(DeviceSummary {
         address: addr.to_string(),
-        name: field(&out, "Name:").unwrap_or_else(|| addr.to_string()),
+        name: field(&out, "Name:")
+            .map(|n| crate::model::sanitize_display_name(&n))
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| addr.to_string()),
         connected: field(&out, "Connected:")
             .map(|v| v == "yes")
             .unwrap_or(false),
@@ -127,6 +130,9 @@ pub fn set_alias(addr: &str, alias: &str) -> anyhow::Result<()> {
     let adapter = first_adapter()
         .ok_or_else(|| anyhow::anyhow!("no bluetooth adapter (/sys/class/bluetooth/hci*) found"))?;
     let dev_path = format!("/org/bluez/{}/dev_{}", adapter, addr.replace(':', "_"));
+    // Not even a name we write ourselves gets to carry control
+    // characters: it comes back to us through BlueZ later.
+    let alias = crate::model::sanitize_display_name(alias);
     let variant = format!("variant:string:{alias}");
     let out = Command::new("dbus-send")
         .env("LC_ALL", "C")

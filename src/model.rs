@@ -343,6 +343,27 @@ pub struct DeviceState {
     pub updated_at: i64,
 }
 
+/// Device names come from the device, over the air, and end up in a
+/// terminal, a tooltip and a notification. Control characters in one
+/// can move the cursor, clear the line or repaint what is already
+/// printed, and bidi overrides can make a name read as something else
+/// entirely, so neither survives the trip.
+pub fn sanitize_display_name(raw: &str) -> String {
+    const MAX_CHARS: usize = 64;
+    raw.chars()
+        .filter(|c| !c.is_control())
+        .filter(|c| {
+            !matches!(
+                c,
+                '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+            )
+        })
+        .take(MAX_CHARS)
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum Event {
@@ -389,7 +410,32 @@ pub enum PressKind {
 
 #[cfg(test)]
 mod tests {
-    use super::{Battery, ConvAwareness, Event, Mode};
+    use super::{Battery, ConvAwareness, Event, Mode, sanitize_display_name};
+
+    #[test]
+    fn a_name_cannot_steer_the_terminal() {
+        // Clear screen, carriage return, a bidi override: all three are
+        // things a device may put in its name.
+        let got = sanitize_display_name("Air\u{1b}[2Jpods\r\u{202e}dangerous");
+        assert_eq!(got, "Air[2Jpodsdangerous");
+        let padded = sanitize_display_name("  Test AirPods  ");
+        assert_eq!(padded, "Test AirPods");
+        assert_eq!(sanitize_display_name("\u{7}\u{0}"), "");
+    }
+
+    #[test]
+    fn a_name_cannot_fill_the_screen() {
+        let long = "A".repeat(200);
+        assert_eq!(sanitize_display_name(&long).chars().count(), 64);
+    }
+
+    /// Anything that is simply a name stays untouched, emoji included.
+    #[test]
+    fn ordinary_names_are_left_alone() {
+        for name in ["AirPods Pro", "Test AirPods 🎧", "Käthes Hörer"] {
+            assert_eq!(sanitize_display_name(name), name);
+        }
+    }
 
     #[test]
     fn mode_and_conv_events_carry_a_named_value() {
