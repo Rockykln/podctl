@@ -10,6 +10,7 @@ _podctl() {
     fi
 
     local cmds="status s battery b bat ping mode m conv c spatial ear ear-detection mic loud-reduction loud press tone-on-press tone rename one-bud-anc obanc auto-anc anc-strength chime chime-volume connect disconnect dc pair unpair forget list ls auto-connect auto volume v vol mute profile p codec default default-sink latency watch w meter ble tray popup reboot completion debug install uninstall help version"
+    local globals="--json --pretty --verbose -v --help -h --version"
 
     local i vi=0 verb=""
     for ((i = 1; i < cword; i++)); do
@@ -17,7 +18,7 @@ _podctl() {
     done
 
     if [[ -z $verb ]]; then
-        COMPREPLY=( $(compgen -W "$cmds --json --pretty --help --version" -- "$cur") )
+        COMPREPLY=( $(compgen -W "$cmds $globals" -- "$cur") )
         return
     fi
 
@@ -140,5 +141,9 @@ _podctl() {
             esac
             ;;
     esac
+
+    if [[ -z ${COMPREPLY[*]} && $cur == -* ]]; then
+        COMPREPLY=( $(compgen -W "$globals" -- "$cur") )
+    fi
 }
 complete -F _podctl podctl

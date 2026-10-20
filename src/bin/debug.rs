@@ -15,7 +15,6 @@ pub fn run(no_redact: bool) -> String {
             "yes"
         }
     );
-    let _ = writeln!(out);
 
     section(&mut out, "podctl");
     let _ = writeln!(out, "  version       {}", env!("CARGO_PKG_VERSION"));
@@ -88,7 +87,8 @@ pub fn run(no_redact: bool) -> String {
         let _ = writeln!(out, "  mismatch      {note}");
     }
     let mut key_stored = None;
-    match daemon_status() {
+    let daemon_state = daemon_status();
+    match &daemon_state {
         Some(st) => {
             let _ = writeln!(out, "  bluez link    {}", yesno(st.connected));
             let _ = writeln!(out, "  aap link      {}", yesno(st.aap_linked));
@@ -131,10 +131,30 @@ pub fn run(no_redact: bool) -> String {
                 "  modalias      {}",
                 dev.modalias.as_deref().unwrap_or("-")
             );
-            let caps = dev.capabilities();
+            // AAP layouts depend on the firmware, so every bug starts here.
+            let fw = daemon_state.as_ref().map(|st| &st.info);
             let _ = writeln!(
                 out,
-                "  caps          anc:{} trans:{} adaptive:{} conv:{} loud:{}",
+                "  firmware      {}",
+                match fw {
+                    Some(i) if i.firmware_left.is_some() || i.firmware_right.is_some() => format!(
+                        "L {} · R {} · case {}",
+                        i.firmware_left.as_deref().unwrap_or("?"),
+                        i.firmware_right.as_deref().unwrap_or("?"),
+                        i.firmware_case.as_deref().unwrap_or("?")
+                    ),
+                    _ => "?  (connect them and ask the daemon)".into(),
+                }
+            );
+            // The modalias is a guess from the model code; the daemon
+            // has the settings dump.
+            let (caps, caps_from) = match &daemon_state {
+                Some(st) => (st.capabilities, "daemon"),
+                None => (dev.capabilities(), "modalias"),
+            };
+            let _ = writeln!(
+                out,
+                "  caps ({caps_from:<8}) anc:{} trans:{} adaptive:{} conv:{} loud:{}",
                 yesno(caps.has_anc),
                 yesno(caps.has_transparency),
                 yesno(caps.has_adaptive),
@@ -143,10 +163,17 @@ pub fn run(no_redact: bool) -> String {
             );
             let _ = writeln!(
                 out,
-                "                spatial:{} press-hold:{} ear-det:{} mic-sel:{}",
+                "                spatial:{} press-hold:{} press-vol:{} tone:{}",
                 yesno(caps.has_spatial_audio),
                 yesno(caps.has_press_and_hold),
+                yesno(caps.has_press_volume),
+                yesno(caps.has_tone_on_press)
+            );
+            let _ = writeln!(
+                out,
+                "                ear-det:{} ear-det-setting:{} mic-sel:{}",
                 yesno(caps.has_in_ear_detection),
+                yesno(caps.has_ear_detection_setting),
                 yesno(caps.has_mic_selection)
             );
         }
@@ -210,16 +237,19 @@ pub fn run(no_redact: bool) -> String {
     for var in ["WAYLAND_DISPLAY", "DISPLAY"] {
         let here = std::env::var_os(var).is_some();
         let systemd = systemd_env_has(var);
-        let note = if here && !systemd {
-            "  <- set here but NOT in the systemd user env"
-        } else {
-            ""
+        // Unreachable is not missing: under sudo, over ssh without
+        // lingering and in containers the manager cannot be asked, and
+        // the report used to blame the session for it.
+        let (shown, note) = match systemd {
+            None => ("?", "  (user manager not reachable)"),
+            Some(true) => ("yes", ""),
+            Some(false) if here => ("no", "  <- set here but NOT in the systemd user env"),
+            Some(false) => ("no", ""),
         };
         let _ = writeln!(
             out,
-            "  {var:<22}  shell {} / systemd {}{note}",
-            yesno(here),
-            yesno(systemd)
+            "  {var:<22}  shell {} / systemd {shown}{note}",
+            yesno(here)
         );
     }
 
@@ -234,13 +264,168 @@ pub fn run(no_redact: bool) -> String {
         "  XDG_CONFIG_HOME present  {}",
         yesno(std::env::var_os("XDG_CONFIG_HOME").is_some())
     );
-    let _ = writeln!(
-        out,
-        "  RUST_LOG                 {}",
-        std::env::var("RUST_LOG").unwrap_or_else(|_| "(unset)".into())
-    );
+    for var in ["PODCTL_LOG", "RUST_LOG"] {
+        let _ = writeln!(
+            out,
+            "  {var:<22}   {}",
+            std::env::var(var).unwrap_or_else(|_| "(unset)".into())
+        );
+    }
+
+    section(&mut out, "logs");
+    let _ = writeln!(out, "  {JOURNAL_CMD} -n {LOG_LINES}");
+    match journal_tail(LOG_LINES) {
+        Ok(lines) if lines.is_empty() => {
+            let _ = writeln!(out, "  (nothing in the journal for these units)");
+        }
+        Ok(lines) => {
+            let literals = local_literals(daemon_state.as_ref());
+            for line in lines {
+                let _ = writeln!(out, "  {}", redact_text(&line, &literals, no_redact));
+            }
+        }
+        Err(why) => {
+            let _ = writeln!(out, "  (no journal: {why})");
+        }
+    }
 
     out
+}
+
+const LOG_LINES: usize = 40;
+const JOURNAL_CMD: &str = "journalctl --user -u podctld -u podctl-tray -u podctl-popup";
+
+/// The last lines of the three services, or why there are none.
+fn journal_tail(n: usize) -> Result<Vec<String>, String> {
+    let mut cmd = Command::new("journalctl");
+    cmd.args(["--user", "--no-pager", "-o", "short-iso", "-n"])
+        .arg(n.to_string());
+    for unit in ["podctld", "podctl-tray", "podctl-popup"] {
+        cmd.args(["-u", unit]);
+    }
+    let out = cmd
+        .output()
+        .map_err(|e| format!("journalctl not available ({e})"))?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        return Err(if err.is_empty() {
+            "journalctl refused".into()
+        } else {
+            err
+        });
+    }
+    Ok(String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(str::to_string)
+        .collect())
+}
+
+/// Strings that exist only on this machine. A journal line carries the
+/// hostname, and the daemon logs serial numbers at debug level.
+fn local_literals(state: Option<&podctl::DeviceState>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    if let Some(h) = host_name() {
+        out.push(h);
+    }
+    for key in ["USER", "LOGNAME"] {
+        if let Ok(v) = std::env::var(key) {
+            out.push(v);
+        }
+    }
+    if let Some(st) = state {
+        let info = &st.info;
+        for serial in [&info.serial_left, &info.serial_right, &info.serial_case]
+            .into_iter()
+            .flatten()
+        {
+            out.push(serial.clone());
+        }
+        // Only a name the user chose; an Apple default says nothing.
+        if let Some(name) = &st.name
+            && redact_name(name, false) != *name
+        {
+            out.push(name.clone());
+        }
+    }
+    out.retain(|l| l.chars().count() >= 3);
+    out.sort();
+    out.dedup();
+    // Longest first, so a name that contains another is not cut in half.
+    out.sort_by_key(|l| std::cmp::Reverse(l.len()));
+    out
+}
+
+fn host_name() -> Option<String> {
+    let out = Command::new("uname").arg("-n").output().ok()?;
+    let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!name.is_empty()).then_some(name)
+}
+
+/// A journal line is free text, which the field-by-field redaction above
+/// does not reach into.
+fn redact_text(line: &str, literals: &[String], no_redact: bool) -> String {
+    if no_redact {
+        return line.to_string();
+    }
+    let mut s = mask_macs(line);
+    if let Ok(home) = std::env::var("HOME")
+        && home.len() > 1
+    {
+        s = s.replace(&home, "~");
+    }
+    if let Ok(dir) = std::env::var("XDG_RUNTIME_DIR")
+        && dir.starts_with("/run/user/")
+    {
+        s = s.replace(&dir, "/run/user/<uid>");
+    }
+    for lit in literals {
+        s = s.replace(lit.as_str(), "<redacted>");
+    }
+    s
+}
+
+/// `AA:BB:CC:DD:EE:FF` and the `_` spelling PipeWire uses, anywhere in a
+/// line. The OUI stays: it only says "Apple".
+fn mask_macs(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut rest = line;
+    while !rest.is_empty() {
+        if let Some(sep) = mac_prefix(rest) {
+            out.push_str(&rest[..8]);
+            for _ in 0..3 {
+                out.push(sep);
+                out.push_str("**");
+            }
+            rest = &rest[17..];
+        } else {
+            let ch = rest.chars().next().expect("not empty");
+            out.push(ch);
+            rest = &rest[ch.len_utf8()..];
+        }
+    }
+    out
+}
+
+/// `Some(separator)` when `s` starts with six hex pairs.
+fn mac_prefix(s: &str) -> Option<char> {
+    let b = s.as_bytes();
+    if b.len() < 17 {
+        return None;
+    }
+    let sep = b[2];
+    if sep != b':' && sep != b'_' {
+        return None;
+    }
+    for group in 0..6 {
+        let at = group * 3;
+        if !b[at].is_ascii_hexdigit() || !b[at + 1].is_ascii_hexdigit() {
+            return None;
+        }
+        if group < 5 && b[at + 2] != sep {
+            return None;
+        }
+    }
+    Some(sep as char)
 }
 
 fn section(out: &mut String, name: &str) {
@@ -352,16 +537,20 @@ fn unit_state(unit: &str) -> String {
 /// Whether the systemd *user manager* carries `var`. The session sets
 /// this via `import-environment` / `dbus-update-activation-environment`;
 /// without it the tray and popup start blind.
-fn systemd_env_has(var: &str) -> bool {
-    Command::new("systemctl")
+/// `None` when the manager did not answer at all.
+fn systemd_env_has(var: &str) -> Option<bool> {
+    let out = Command::new("systemctl")
         .args(["--user", "show-environment"])
         .output()
-        .map(|o| {
-            String::from_utf8_lossy(&o.stdout)
-                .lines()
-                .any(|l| l.split('=').next() == Some(var))
-        })
-        .unwrap_or(false)
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    Some(
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .any(|l| l.split('=').next() == Some(var)),
+    )
 }
 
 /// One-shot `status` against the daemon. `None` if it isn't answering —
@@ -470,4 +659,53 @@ fn redact_path(p: &str, no_redact: bool) -> String {
         return "/run/user/<uid>".into();
     }
     p.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{mask_macs, redact_text};
+
+    /// Both spellings, in the middle of a sentence, and the OUI kept.
+    #[test]
+    fn a_mac_in_a_log_line_is_masked() {
+        assert_eq!(
+            mask_macs("link to AA:BB:CC:DD:EE:01 up"),
+            "link to AA:BB:CC:**:**:** up"
+        );
+        assert_eq!(
+            mask_macs("sink bluez_output.AA_BB_CC_DD_EE_01.1"),
+            "sink bluez_output.AA_BB_CC_**_**_**.1"
+        );
+    }
+
+    /// Words that look like one but are not.
+    #[test]
+    fn other_text_is_left_alone() {
+        for line in [
+            "12:34:56 started",
+            "time 15:16:55 ok",
+            "AA:BB:CC:DD:EE up",
+            "codec aac, 44100 Hz · peak -12.5 dBFS",
+        ] {
+            assert_eq!(mask_macs(line), line, "{line}");
+        }
+    }
+
+    /// The hostname and a custom device name are what identify a person
+    /// in a journal line pasted into an issue.
+    #[test]
+    fn local_strings_are_replaced() {
+        let literals = vec!["Test AirPods".to_string(), "host1".to_string()];
+        assert_eq!(
+            redact_text("host1 podctld[7]: Test AirPods linked", &literals, false),
+            "<redacted> podctld[7]: <redacted> linked"
+        );
+    }
+
+    #[test]
+    fn no_redact_keeps_everything() {
+        let literals = vec!["host1".to_string()];
+        let line = "host1 podctld[7]: AA:BB:CC:DD:EE:01";
+        assert_eq!(redact_text(line, &literals, true), line);
+    }
 }

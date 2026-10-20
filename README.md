@@ -226,8 +226,12 @@ is redacted by default:
 - custom Bluetooth names → `<custom name redacted>` (default Apple
   names like "AirPods Pro" pass through)
 - `$HOME` paths → `~`, `/run/user/<uid>` masked
+- the journal lines at the end → host name, user name and serial
+  numbers taken out
 
-Use `podctl debug --no-redact` for local diagnostics only.
+Use `podctl debug --no-redact` for local diagnostics only. Note that
+`podctl status --json` is *not* redacted: it carries the full address
+and the serial numbers.
 
 ## How it talks to the AirPods
 

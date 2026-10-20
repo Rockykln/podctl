@@ -76,6 +76,7 @@ _podctl() {
     if [[ -z $verb ]]; then
         _describe -t commands 'podctl command' cmds
         _describe -t aliases 'alias' aliases
+        compadd --json --pretty --verbose -v --help -h --version
         return
     fi
 
@@ -198,5 +199,9 @@ _podctl() {
             esac
             ;;
     esac
+
+    if [[ ${words[CURRENT]} == -* ]]; then
+        compadd --json --pretty --verbose -v --help -h --version
+    fi
 }
 _podctl "$@"

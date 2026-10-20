@@ -250,3 +250,8 @@ Originally documented by [LibrePods](https://github.com/kavishdevar/librepods).
   `~/.local/share/man` is outside your manpath.
 - Conversation Awareness only reacts while audio is playing — that is
   the device's own behaviour, not a podctl limitation.
+- Something is not working and the message does not say why → `podctl
+  -v <command>` logs what the CLI does (which socket, which `pactl`
+  call, what the daemon answered). For the services, `PODCTL_LOG=debug`
+  and `journalctl --user -u podctld -f`; `podctl debug` has the last 40
+  journal lines of all three at the end, redacted.

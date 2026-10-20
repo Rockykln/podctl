@@ -6,6 +6,21 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased] — for 0.4
 
 ### Added
+- **`podctl debug` carries the logs.** The report ends with the last 40
+  journal lines of `podctld`, the tray and the bubble, through the same
+  redaction as the rest: the host name, the user name, serial numbers
+  and MAC addresses are taken out of them. It also names the firmware
+  of both buds and the case, reads the capabilities from the daemon
+  instead of guessing them from the Bluetooth modalias, and lists
+  `tone`, `press-vol` and `ear-det-setting`, which were missing.
+- **`podctl -v`** logs what the CLI itself does on stderr — which
+  socket it tried and what the error was, what it asked the daemon and
+  what came back, which `pactl` calls it ran. Until now the CLI said
+  nothing about its own work, and "it is not talking to the daemon" had
+  no trail at all.
+- **`PODCTL_LOG`** sets the level for every podctl process and takes
+  precedence over `RUST_LOG`, so a `RUST_LOG=trace` left behind in a
+  shell no longer makes everything started from it chatty.
 - **The daemon introduces itself.** `podctl version` and `podctl debug`
   show which `podctld` is on the socket and which protocol it speaks,
   and when that is not the one the binary belongs to, every command
@@ -20,6 +35,20 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
   cannot keep up, it sends the state again instead of leaving a gap.
 
 ### Fixed
+- **Every log line under systemd carried two timestamps**, ours and
+  journald's, and escape codes journald does not need. The three
+  services had a subscriber each with its own idea of the format; they
+  share one now, which leaves the timestamp and the colours to journald
+  when stderr really is the journal (the inode from `JOURNAL_STREAM`,
+  not just the variable, which a terminal started from a unit inherits).
+- **`podctl debug` blamed the session for an unreachable systemd user
+  manager.** With no answer from it, every variable looked unset and
+  the report printed *"set here but NOT in the systemd user env"* —
+  under `sudo`, over ssh without lingering and in containers. It says
+  the manager could not be reached.
+- The three shell completions offered only the flags someone had
+  written into them by hand; they come from the table, so `--verbose`
+  is there too.
 - **`podctl install` left the old version running.** `enable --now`
   does nothing to a unit that is already up, so after an upgrade
   `podctld`, the tray and the bubble kept running from the binary that

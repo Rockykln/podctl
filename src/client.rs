@@ -59,7 +59,16 @@ impl Client {
 
     /// The same for a socket somewhere else than the usual place.
     pub fn connect_at(path: &std::path::Path) -> Option<Self> {
-        let stream = UnixStream::connect(path).ok()?;
+        let stream = match UnixStream::connect(path) {
+            Ok(s) => s,
+            Err(e) => {
+                // The one question `-v` exists for: is there a daemon,
+                // and if not, what did the socket say.
+                tracing::debug!(socket = %path.display(), error = %e, "no daemon");
+                return None;
+            }
+        };
+        tracing::debug!(socket = %path.display(), "connected to the daemon");
         let writer = stream.try_clone().ok()?;
         Some(Self {
             reader: BufReader::new(stream),
@@ -74,6 +83,7 @@ impl Client {
             .set_write_timeout(Some(WRITE_TIMEOUT))
             .map_err(Error::Io)?;
         let line = serde_json::to_string(req).expect("a request serialises");
+        tracing::debug!(%line, "request");
         writeln!(self.writer, "{line}").map_err(Error::Io)?;
         self.writer.flush().map_err(Error::Io)?;
         self.next_line(Some(wait))
@@ -101,6 +111,7 @@ impl Client {
         if read == 0 {
             return Err(Error::Closed);
         }
+        tracing::debug!(line = %answer.trim(), "answer");
         serde_json::from_str(answer.trim()).map_err(|e| Error::Malformed(e.to_string()))
     }
 }

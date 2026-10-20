@@ -33,12 +33,22 @@ the
 subscription require the daemon.
 .SH ENVIRONMENT
 .TP
-.B RUST_LOG
+.B PODCTL_LOG
 Log level filter (default
 .IR info ).
 Examples:
 .BR debug ,
 .BR "info,podctld=trace" .
+Takes precedence over
+.BR RUST_LOG .
+.TP
+.B RUST_LOG
+The same, when
+.B PODCTL_LOG
+is unset.
+.PP
+Logs go to standard error. Under systemd the timestamp and the colours
+are left to journald, which adds its own.
 .TP
 .B XDG_RUNTIME_DIR
 Directory for the socket (default

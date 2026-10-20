@@ -121,6 +121,12 @@ fn run(mut args: Vec<String>) -> Result<i32, CliError> {
         json: pop_flag(&mut args, "--json"),
         pretty: pop_flag(&mut args, "--pretty"),
     };
+    // The CLI says nothing about its own work unless asked, so a `-v`
+    // turns the library's own lines on: which socket, which answer,
+    // which pactl call.
+    if pop_flag(&mut args, "--verbose") | pop_flag(&mut args, "-v") {
+        podctl::logging::init("debug");
+    }
 
     // Asked for before anything is dispatched: `debug --help` used to
     // print a whole diagnostic report, `meter --help` went looking for

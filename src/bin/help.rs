@@ -133,6 +133,7 @@ USAGE
 OPTIONS
     --json          answer as one JSON object per line
     --pretty        with --json, indent it over several lines
+    --verbose, -v   log what podctl does on stderr (socket, pactl, answers)
 ";
 
 const TAIL: &str = "\
@@ -604,12 +605,18 @@ const DEBUG: &str = "\
 podctl debug — diagnostic report
 
 Prints a structured report suitable for pasting into a bug report or
-chat: versions, tools, daemon state, AirPods model + capabilities,
-PipeWire sink/card/profile, audio codec list.
+chat: versions, tools, daemon state, AirPods model + firmware +
+capabilities, PipeWire sink/card/profile, audio codec list, and the
+last 40 journal lines of the three services.
 
 By default, identifying data is redacted: MAC addresses show only the
 Apple OUI (first three bytes), custom Bluetooth names become
-'<custom name redacted>', and home/runtime paths are normalised.
+'<custom name redacted>', home/runtime paths are normalised, and the
+journal lines have the host name, the user name and serial numbers
+taken out.
+
+Note that 'podctl status --json' is not redacted: it carries the full
+address and the serial numbers.
 
     podctl debug                  # safe to paste in public
     podctl debug --no-redact      # full info, LOCAL ONLY

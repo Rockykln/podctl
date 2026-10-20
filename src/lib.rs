@@ -13,6 +13,7 @@ pub mod ipc;
 pub mod json;
 pub mod keys;
 pub mod l2cap;
+pub mod logging;
 pub mod model;
 pub mod xdg;
 

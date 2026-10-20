@@ -367,6 +367,7 @@ fn parse_sink_mute(name: &str) -> bool {
 }
 
 fn pactl(args: &[&str]) -> anyhow::Result<String> {
+    tracing::debug!(?args, "pactl");
     // pactl's gettext-translated booleans ("Mute: yes" → "Mute: ja" on a
     // German system) and translated mute/profile labels break the parser
     // on non-C locales. Force C across the board.

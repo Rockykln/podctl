@@ -21,7 +21,7 @@ const PROG: &str = "podctl-tray";
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
     install_default_sigpipe();
-    init_tracing();
+    podctl::logging::init("info");
 
     match run().await {
         Ok(()) => ExitCode::from(0),
@@ -169,16 +169,6 @@ async fn wait_for_shutdown(quit: &tokio::sync::Notify) {
         _ = term.recv() => {}
         _ = quit.notified() => {}
     }
-}
-
-fn init_tracing() {
-    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
-    tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_target(false)
-        .with_writer(std::io::stderr)
-        .init();
 }
 
 fn install_default_sigpipe() {

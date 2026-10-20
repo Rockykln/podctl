@@ -33,7 +33,7 @@ const BACKOFF_MAX_MS: u64 = 30_000;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
-    init_tracing();
+    podctl::logging::init("info");
     let args: Vec<String> = std::env::args().skip(1).collect();
 
     if args.iter().any(|a| a == "-h" || a == "--help") {
@@ -645,19 +645,6 @@ fn apply_battery(snap: &mut Snapshot, b: &Battery) {
 
 async fn oneshot(req: &Request) -> anyhow::Result<Response> {
     Ok(podctl::client::async_io::send(req).await?)
-}
-
-/// Without this podctl-popup wrote nothing at all — not a startup line,
-/// not an error — so a bubble that never appeared left no trace in the
-/// journal. The unit sets RUST_LOG=info and that went nowhere.
-fn init_tracing() {
-    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
-    tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_target(false)
-        .with_writer(std::io::stderr)
-        .init();
 }
 
 fn single_instance() -> Option<std::fs::File> {

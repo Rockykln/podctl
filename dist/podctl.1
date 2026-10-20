@@ -273,6 +273,14 @@ With
 indent the object over several lines. For reading it yourself; scripts
 want the single line.
 .TP
+.B --verbose, -v
+Log what
+.B podctl
+itself does to standard error: which socket it tried, what it asked the
+daemon and what came back, which
+.B pactl
+calls it ran. For "why is it not talking to the daemon".
+.TP
 .B --help, -h
 Print help (top-level or, after a verb, the verb's detailed page).
 .SH ENVIRONMENT
@@ -298,11 +306,23 @@ is not the same as which ear it sits in.
 .B PODS_NO_LR
 is the old name and still works.
 .TP
+.B PODCTL_LOG
+Log level filter for every podctl process (default
+.IR info ,
+and nothing at all for the CLI unless
+.B -v
+is given). Takes precedence over
+.BR RUST_LOG ,
+so a
+.B RUST_LOG=trace
+left behind in a shell does not make every podctl process started from
+it chatty. Example:
+.BR "PODCTL_LOG=debug podctld" .
+.TP
 .B RUST_LOG
-Sets daemon log level (default
-.IR info ).
-Example:
-.BR "RUST_LOG=debug podctld" .
+The same, when
+.B PODCTL_LOG
+is unset.
 .SH EXIT STATUS
 Follows BSD
 .BR sysexits.h .

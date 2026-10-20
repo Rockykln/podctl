@@ -265,6 +265,7 @@ pub fn bt_state(s: &DeviceSummary) -> BtState {
 }
 
 fn bluetoothctl(args: &[&str]) -> anyhow::Result<String> {
+    tracing::debug!(?args, "bluetoothctl");
     // Force C locale so booleans like "yes"/"no" and field labels
     // ("Connected:", "Modalias:", …) are stable across distros even if a
     // future bluez version picks up a gettext catalog for them.
