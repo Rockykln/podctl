@@ -35,6 +35,8 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
   cannot keep up, it sends the state again instead of leaving a gap.
 
 ### Fixed
+- `podctl status` without a daemon ran `bluetoothctl` twice, once for
+  the device and once more for the address the audio lookup needed.
 - **A settings frame without a value switched the microphone over.** A
   missing byte was read as zero, and zero is exactly what the mic
   selection calls "auto"; the same frame also set the chime volume to

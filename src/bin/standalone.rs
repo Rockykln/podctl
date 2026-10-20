@@ -105,16 +105,19 @@ fn no_daemon_marker() -> Option<std::path::PathBuf> {
 
 fn status() -> Response {
     let mut state = DeviceState::default();
-    if let Some(dev) = bluez::primary_airpods() {
-        state.address = Some(dev.address.clone());
-        state.name = Some(dev.name.clone());
-        state.connected = dev.connected;
-        state.capabilities = dev.capabilities();
-        state.bluetooth = bluez::bt_state(&dev);
-    } else {
-        state.capabilities = Capabilities::default();
+    // One lookup for all of it: the audio snapshot asked for the
+    // address again, which is a second bluetoothctl call per status.
+    match bluez::primary_airpods() {
+        Some(dev) => {
+            state.address = Some(dev.address.clone());
+            state.name = Some(dev.name.clone());
+            state.connected = dev.connected;
+            state.capabilities = dev.capabilities();
+            state.bluetooth = bluez::bt_state(&dev);
+            state.audio = audio::snapshot(&dev.address);
+        }
+        None => state.capabilities = Capabilities::default(),
     }
-    state.audio = airpods_audio_state();
     // The two switches podctl keeps itself; the daemon-less status has
     // no AAP state otherwise, but these it can still answer.
     state.settings = podctl::config::load().pod_settings();
@@ -130,13 +133,6 @@ fn airpods_sink() -> Option<audio::SinkInfo> {
 
 fn airpods_card() -> Option<audio::CardInfo> {
     audio::card_for(&bluez::primary_airpods_address()?)
-}
-
-fn airpods_audio_state() -> podctl::model::AudioState {
-    match bluez::primary_airpods_address() {
-        Some(addr) => audio::snapshot(&addr),
-        None => Default::default(),
-    }
 }
 
 fn audio_volume(pct: u8) -> Response {
