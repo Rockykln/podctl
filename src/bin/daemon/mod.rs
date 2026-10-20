@@ -62,7 +62,13 @@ impl Daemon {
     pub fn new() -> Self {
         let (tx, _rx) = broadcast::channel(EVENT_BUS_CAPACITY);
         Self {
-            state: RwLock::new(DeviceState::default()),
+            // Ear detection and the mic mode are ours to remember: the
+            // Pro 2 keep them out of their settings dump, so `status`
+            // would show nothing until podctl had set them itself.
+            state: RwLock::new(DeviceState {
+                settings: podctl::config::load().pod_settings(),
+                ..DeviceState::default()
+            }),
             events: tx,
             aap_stream: RwLock::new(None),
             last_resubscribe: Mutex::new(None),
@@ -455,8 +461,12 @@ impl Daemon {
         if let Err(e) = self.aap_send(&frame).await {
             return Response::err(e);
         }
-        // Echo-only would mean `podctl status` lags until reconnect (same
-        // class as the old set_conv bug) — reflect optimistically.
+        // The switch also gates podctl's own auto-pause, and the buds
+        // never report it back (not even in the settings dump the Pro 2
+        // send after subscribing), so it is ours to keep.
+        if let Err(e) = podctl::config::set_ear_detection(on) {
+            return Response::err(format!("could not write the settings file: {e}"));
+        }
         {
             let mut s = self.state.write().await;
             s.settings.ear_detection = Some(on);
@@ -482,6 +492,9 @@ impl Daemon {
         let frame = podctl::aap::set_mic_mode(code).encode();
         if let Err(e) = self.aap_send(&frame).await {
             return Response::err(e);
+        }
+        if let Err(e) = podctl::config::set_mic(mic) {
+            return Response::err(format!("could not write the settings file: {e}"));
         }
         {
             let mut s = self.state.write().await;

@@ -205,6 +205,11 @@ daemon; only acts while the AirPods are the default output.
 
     podctl ear on
     podctl ear off
+
+The buds are told as well, but they don't report the switch back — the
+Pro 2 USB-C leave it out of the settings dump entirely. podctl therefore
+keeps it in ~/.config/podctl/daemon.toml ('ear_detection = true'), which
+is also what decides whether it pauses. It starts out on.
 ";
 
 const MIC: &str = "\
@@ -215,6 +220,9 @@ podctl mic — microphone selection
     right   always use right bud's mic
 
     podctl mic auto
+
+Like ear detection, the buds keep this to themselves, so podctl remembers
+it in ~/.config/podctl/daemon.toml ('mic = auto').
 ";
 
 const LOUD: &str = "\
@@ -568,8 +576,8 @@ sends is dropped. The key stays in ~/.local/state/podctl/, mode 0600.
     podctl ble on                 # listen again
 
 The setting lives in ~/.config/podctl/daemon.toml and can be edited
-there too. A running daemon picks up a change within a few seconds; no
-restart needed.
+there too, next to 'ear_detection' and 'mic'. A running daemon picks up
+a change within a few seconds; no restart needed.
 ";
 
 const PING: &str = "\

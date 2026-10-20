@@ -47,9 +47,12 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 - **The notification fallback showed an empty notification.** It carries
   the device name and the levels as text now.
 - A BLE battery reading above ten tenths was reported as up to 140 %.
-- Ear detection and the microphone mode were ignored in the settings the
-  buds report, so playback paused on a bud coming out even with ear
-  detection switched off at the phone.
+- **Ear detection and the microphone mode were shown as nothing at all**
+  until podctl had set them in that session: the Pro 2 USB-C leave both
+  out of the settings they report. Both live in
+  `~/.config/podctl/daemon.toml` now, so the switch that decides whether
+  a bud coming out pauses playback survives a restart. Buds that do
+  report them still have the last word.
 - `podctld.service` ordered itself against `bluetooth.service`, which a
   user unit cannot do, and messages pointed at `podctl setup`, which has
   never existed.

@@ -259,8 +259,9 @@ impl AapSupervisor {
         s.in_ear = podctl::InEar::default();
         s.case_lid_open = None;
         // Settings too: they come from the device's own dump, and the
-        // next pair may answer differently.
-        s.settings = podctl::PodSettings::default();
+        // next pair may answer differently. Ear detection and the mic
+        // mode are the exception — podctl remembers those itself.
+        s.settings = podctl::config::load().pod_settings();
         Daemon::touch(&mut s);
     }
 

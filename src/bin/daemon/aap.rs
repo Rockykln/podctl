@@ -314,10 +314,10 @@ async fn apply_settings(daemon: &Daemon, payload: &[u8]) {
             }
         }
         setting::EAR_DETECTION => {
-            // The device-side switch doubles as the auto-pause switch.
-            // Until this frame was read, the daemon only knew the value
-            // if it had set it itself, and an unknown one counts as on:
-            // auto-pause worked against a switch turned off on a phone.
+            // Some models keep this out of their dump (the Pro 2 USB-C
+            // do), which is why podctl remembers the switch itself. A
+            // model that does report it has the last word: the value may
+            // have been changed on a phone since.
             let on = match v0 {
                 1 => Some(true),
                 2 => Some(false),
@@ -332,6 +332,7 @@ async fn apply_settings(daemon: &Daemon, payload: &[u8]) {
                     })
                     .await;
                 if changed {
+                    let _ = podctl::config::set_ear_detection(b);
                     daemon.broadcast_event(podctl::Event::SettingsChanged);
                 }
             }
@@ -352,6 +353,7 @@ async fn apply_settings(daemon: &Daemon, payload: &[u8]) {
                     })
                     .await;
                 if changed {
+                    let _ = podctl::config::set_mic(m);
                     daemon.broadcast_event(podctl::Event::SettingsChanged);
                 }
             }

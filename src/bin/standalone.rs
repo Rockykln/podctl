@@ -119,6 +119,9 @@ fn status() -> Response {
         state.capabilities = Capabilities::default();
     }
     state.audio = airpods_audio_state();
+    // The two switches podctl keeps itself; the daemon-less status has
+    // no AAP state otherwise, but these it can still answer.
+    state.settings = podctl::config::load().pod_settings();
     state.updated_at = now_secs();
     Response::ok_state(state)
 }

@@ -54,10 +54,17 @@ file, exit 0.
 The control socket.
 .TP
 .I $XDG_CONFIG_HOME/podctl/daemon.toml
-Optional settings. Currently only
-.BR ble " = " true ,
-which lets the daemon listen for the case's Bluetooth LE announcement
-while the buds are disconnected.
+Optional settings:
+.BR ble " = " true
+lets the daemon listen for the case's Bluetooth LE announcement while the
+buds are disconnected,
+.BR ear_detection " = " true
+decides whether a bud leaving the ear pauses playback, and
+.BR mic " = " auto
+holds the microphone selection. The buds report neither of the latter
+two back, so this file is what
+.B podctl status
+shows.
 .TP
 .I $XDG_STATE_HOME/podctl/keys-<address>
 The proximity keys the buds hand out, mode 0600. Needed to tell their

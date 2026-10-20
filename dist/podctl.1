@@ -53,10 +53,14 @@ Spatial audio mode.
 In-ear detection. When on,
 .B podctld
 pauses playing MPRIS players when a bud comes out and resumes them when
-it goes back in (within 15 minutes).
+it goes back in (within 15 minutes). The buds are told too, but they
+never report the switch back, so it is kept as
+.BR ear_detection " in " $XDG_CONFIG_HOME/podctl/daemon.toml
+and defaults to on.
 .TP
 .BI "mic " "auto|left|right"
-Microphone selection.
+Microphone selection. Also kept in
+.IR daemon.toml " (" mic ")."
 .TP
 .BI "loud-reduction " "on|off"
 Cap loud sound spikes (Apple's hearing-safety feature). The AAP setting
