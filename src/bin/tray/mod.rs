@@ -61,18 +61,18 @@ async fn run() -> anyhow::Result<()> {
         .await
         .map_err(|e| anyhow::anyhow!("connect to session bus: {e}"))?;
 
-    let watcher = StatusNotifierWatcherProxy::new(&conn).await.map_err(|e| {
-        anyhow::anyhow!(
-            "no StatusNotifierWatcher on the bus: {e} \
-             (GNOME without an extension does not provide one — see 'podctl tray status')"
-        )
-    })?;
-    watcher
-        .register_status_notifier_item(&well_known)
-        .await
-        .map_err(|e| anyhow::anyhow!("register with watcher: {e}"))?;
-
-    info!(name = %well_known, "podctl-tray registered");
+    // A missing watcher is not a reason to die. Exiting here put the
+    // unit into a restart loop every two seconds — on GNOME without
+    // the extension, for as long as the session lasted — and the icon
+    // never appeared once a panel came back later either.
+    match register(&conn, &well_known).await {
+        Ok(()) => info!(name = %well_known, "podctl-tray registered"),
+        Err(e) => info!(
+            error = %e,
+            "no StatusNotifierWatcher yet — waiting for one              (GNOME needs the AppIndicator extension, see 'podctl tray status')"
+        ),
+    }
+    watch_for_watcher(conn.clone(), well_known.clone(), Arc::clone(&state));
 
     let notifier = match notify::Notifier::new(&conn, cfg.notify_threshold).await {
         Ok(n) => Some(Arc::new(n)),
@@ -87,6 +87,57 @@ async fn run() -> anyhow::Result<()> {
     wait_for_shutdown(&quit).await;
     info!("shutting down");
     Ok(())
+}
+
+async fn register(conn: &zbus::Connection, well_known: &str) -> zbus::Result<()> {
+    let watcher = StatusNotifierWatcherProxy::new(conn).await?;
+    watcher.register_status_notifier_item(well_known).await
+}
+
+/// Panels come and go — plasmashell restarts, waybar is reloaded — and
+/// each new one starts an empty watcher. Registering once at startup
+/// meant the icon was gone until the tray itself was restarted.
+fn watch_for_watcher(conn: zbus::Connection, well_known: String, state: SharedState) {
+    tokio::spawn(async move {
+        let dbus = match zbus::fdo::DBusProxy::new(&conn).await {
+            Ok(d) => d,
+            Err(e) => {
+                warn!(error = %e, "cannot watch for a tray host");
+                return;
+            }
+        };
+        let mut owners = match dbus
+            .receive_name_owner_changed_with_args(&[(0, sni::WATCHER_NAME)])
+            .await
+        {
+            Ok(s) => s,
+            Err(e) => {
+                warn!(error = %e, "cannot watch for a tray host");
+                return;
+            }
+        };
+        use futures_util::StreamExt;
+        while let Some(signal) = owners.next().await {
+            let Ok(args) = signal.args() else { continue };
+            if args.new_owner().is_none() {
+                continue;
+            }
+            match register(&conn, &well_known).await {
+                Ok(()) => {
+                    info!("tray host is back — registered again");
+                    // The new panel knows nothing about us yet.
+                    let snapshot = state.read().await.clone();
+                    if let Err(e) = watch::emit_sni(&conn, &snapshot).await {
+                        warn!(error = %e, "emit sni signals after re-register");
+                    }
+                    if let Err(e) = watch::emit_menu(&conn, &snapshot).await {
+                        warn!(error = %e, "emit menu signals after re-register");
+                    }
+                }
+                Err(e) => warn!(error = %e, "re-register with the tray host failed"),
+            }
+        }
+    });
 }
 
 async fn wait_for_shutdown(quit: &tokio::sync::Notify) {

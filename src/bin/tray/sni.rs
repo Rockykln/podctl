@@ -18,6 +18,8 @@ const VOLUME_STEP: i16 = 5;
 /// Two activations closer together than this are one double click.
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 
+pub const WATCHER_NAME: &str = "org.kde.StatusNotifierWatcher";
+
 pub const ITEM_PATH: &str = "/StatusNotifierItem";
 pub const MENU_PATH: &str = "/MenuBar";
 

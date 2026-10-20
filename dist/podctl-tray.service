@@ -4,12 +4,15 @@ Documentation=man:podctl(1)
 After=graphical-session.target podctld.service
 PartOf=graphical-session.target
 Wants=podctld.service
+# A tray host that is missing is waited for rather than failed over, so
+# the default start limit would only get in the way of a real restart.
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
 ExecStart=/usr/local/bin/podctl-tray
 Restart=on-failure
-RestartSec=2
+RestartSec=5
 Environment=RUST_LOG=info
 SyslogIdentifier=podctl-tray
 

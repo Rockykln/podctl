@@ -170,7 +170,7 @@ async fn notify_changed(state: &SharedState, conn: &Connection, notifier: Option
     }
 }
 
-async fn emit_sni(conn: &Connection, snapshot: &TrayState) -> zbus::Result<()> {
+pub(crate) async fn emit_sni(conn: &Connection, snapshot: &TrayState) -> zbus::Result<()> {
     let iface_ref = conn.object_server().interface::<_, Item>(ITEM_PATH).await?;
     let emitter = iface_ref.signal_emitter();
     Item::new_icon(emitter).await?;
@@ -180,7 +180,7 @@ async fn emit_sni(conn: &Connection, snapshot: &TrayState) -> zbus::Result<()> {
     Ok(())
 }
 
-async fn emit_menu(conn: &Connection, snapshot: &TrayState) -> zbus::Result<()> {
+pub(crate) async fn emit_menu(conn: &Connection, snapshot: &TrayState) -> zbus::Result<()> {
     let iface_ref = conn.object_server().interface::<_, Menu>(MENU_PATH).await?;
     let emitter = iface_ref.signal_emitter();
     let updated = menu::properties_snapshot(snapshot);
