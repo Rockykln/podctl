@@ -11,13 +11,17 @@ use podctl::{audio, exitcode};
 const SAMPLE_RATE: u32 = 44100;
 const CHANNELS: u32 = 2;
 
-pub fn run(args: &[String]) -> i32 {
-    let json = args.iter().any(|a| a == "--json");
+/// A window shorter than this reads zero samples at a time and spins.
+const MIN_INTERVAL_MS: u64 = 10;
+
+pub fn run(args: &[String], json: bool) -> i32 {
+    let json = json || args.iter().any(|a| a == "--json");
     let plain = args.iter().any(|a| a == "--plain");
     let one_shot = args.iter().any(|a| a == "--once");
     let interval_ms: u64 = arg_value(args, "--interval")
         .and_then(|v| v.parse().ok())
-        .unwrap_or(100);
+        .unwrap_or(100)
+        .max(MIN_INTERVAL_MS);
     let device = arg_value(args, "--device").or_else(find_airpods_sink);
 
     let Some(sink) = device else {

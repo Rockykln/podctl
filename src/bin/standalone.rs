@@ -15,7 +15,11 @@ pub fn dispatch(req: &Request) -> Response {
     match req {
         Request::Status => status(),
         Request::Battery => status(),
-        Request::Ping => Response::ok_pong(),
+        // Answering a ping without a daemon says the opposite of
+        // what the caller asked.
+        Request::Ping => Response::err(
+            "the daemon is not running (podctl install, or systemctl --user start podctld).",
+        ),
 
         Request::SetVolume { percent } => audio_volume(*percent),
         Request::SetMuted { muted } => audio_mute(*muted),
@@ -44,11 +48,11 @@ pub fn dispatch(req: &Request) -> Response {
         | Request::SetChimeVolume { .. }
         | Request::SetAutoAncLevel { .. } => Response::err(
             "this setting changes a value on the AirPods themselves — needs the daemon. \
-             run 'podctl setup' to install.",
+             install it with 'podctl install'.",
         ),
 
         Request::Watch { .. } => {
-            Response::err("watch needs the daemon — install it with 'podctl setup'.")
+            Response::err("watch needs the daemon — install it with 'podctl install'.")
         }
 
         Request::DebugEmitCaseLid { .. } => {
@@ -78,7 +82,7 @@ fn show_banner_once() {
     let _ = writeln!(
         std::io::stderr(),
         "note: running without daemon — some commands disabled, no live state. \
-         install with 'podctl setup'."
+         install it with 'podctl install'."
     );
 }
 

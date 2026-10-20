@@ -87,6 +87,17 @@ impl std::error::Error for CliError {}
 fn run(mut args: Vec<String>) -> Result<i32, CliError> {
     let json = pop_flag(&mut args, "--json");
 
+    // Asked for before anything is dispatched: `debug --help` used to
+    // print a whole diagnostic report, `meter --help` went looking for
+    // a sink, and `completion --help` complained about an unknown shell.
+    if let Some(verb) = args.first().map(String::as_str)
+        && !matches!(verb, "help" | "-h" | "--help")
+        && args[1..].iter().any(|a| a == "--help" || a == "-h")
+    {
+        help::print_verb(verb);
+        return Ok(exitcode::OK);
+    }
+
     let verb = match args.first().map(String::as_str) {
         None | Some("help") | Some("-h") | Some("--help") => {
             help::print_top(args.get(1).map(String::as_str));
@@ -125,56 +136,31 @@ fn run(mut args: Vec<String>) -> Result<i32, CliError> {
             return Ok(exitcode::OK);
         }
         Some("meter") => {
-            return Ok(meter::run(&args[1..]));
+            return Ok(meter::run(&args[1..], json));
         }
         Some("ble") => {
-            if args.iter().any(|a| a == "--help" || a == "-h") {
-                help::print_verb("ble");
-                return Ok(exitcode::OK);
-            }
             return ble_switch(args.get(1).map(String::as_str), json);
         }
         Some("install") => {
-            if args.iter().any(|a| a == "--help" || a == "-h") {
-                help::print_verb("install");
-                return Ok(exitcode::OK);
-            }
             return Ok(install::install(&args[1..]));
         }
         Some("tray") => {
             return Ok(tray_cli::run(&args[1..]));
         }
         Some("popup") => {
-            if args.iter().any(|a| a == "--help" || a == "-h") {
-                help::print_verb("popup");
-                return Ok(exitcode::OK);
-            }
             let resp = try_daemon(&Request::ShowPopup)?.ok_or_else(|| {
                 CliError::unavailable("popup needs the daemon (podctld not running)")
             })?;
             return handle_response("popup", resp, json);
         }
         Some("reboot") => {
-            if args.iter().any(|a| a == "--help" || a == "-h") {
-                help::print_verb("reboot");
-                return Ok(exitcode::OK);
-            }
             return Ok(reboot());
         }
         Some("uninstall") => {
-            if args.iter().any(|a| a == "--help" || a == "-h") {
-                help::print_verb("uninstall");
-                return Ok(exitcode::OK);
-            }
             return Ok(install::uninstall(&args[1..]));
         }
         Some(v) => v.to_string(),
     };
-
-    if args.iter().any(|a| a == "--help" || a == "-h") {
-        help::print_verb(&verb);
-        return Ok(exitcode::OK);
-    }
 
     if matches!(verb.as_str(), "watch" | "w") {
         return stream_events(json);
@@ -587,7 +573,7 @@ fn stream_events(json: bool) -> Result<i32, CliError> {
     let path = podctl::socket_path();
     let stream = UnixStream::connect(&path).map_err(|_| {
         CliError::unavailable(format!(
-            "watch needs the daemon (no socket at {}). install with 'podctl setup'.",
+            "watch needs the daemon (no socket at {}). install it with 'podctl install'.",
             path.display()
         ))
     })?;
