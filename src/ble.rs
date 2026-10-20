@@ -222,8 +222,9 @@ mod tests {
 
     #[test]
     fn parse_addr_wants_exactly_six_bytes() {
-        assert_eq!(parse_addr("40:11:22:33:44:55").unwrap()[0], 0x50);
-        assert_eq!(parse_addr("40:11:22:33:44:55").unwrap()[5], 0x53);
+        assert_eq!(parse_addr("40:11:22:33:44:55").unwrap()[0], 0x40);
+        // BlueZ prints upper case, the parser must take both.
+        assert_eq!(parse_addr("40:11:22:33:44:5A").unwrap()[5], 0x5a);
         assert!(parse_addr("40:11:22:33:44").is_none());
         assert!(parse_addr("40:11:22:33:44:55:00").is_none());
         assert!(parse_addr("zz:11:22:33:44:55").is_none());
