@@ -91,37 +91,34 @@ impl Media {
     }
 
     pub async fn on_in_ear(&self, prev: InEar, now: InEar, enabled: bool) {
-        let before = prev.count_in_ear();
-        let after = now.count_in_ear();
-        // One bud parked in the case to charge while the other stays in:
-        // that is listening on one bud, not a break.
-        let parked = parked_to_charge(now);
-        if !enabled || (before == after && !parked) {
+        if !ear_change_matters(prev, now, enabled) {
             return;
         }
+        let before = prev.count_in_ear();
+        let after = now.count_in_ear();
+        let parked = parked_to_charge(now);
         let mut inner = self.inner.lock().await;
         inner.ear_gen += 1;
         let my_gen = inner.ear_gen;
-        if after < before {
-            // Second bud out after the first: already paused, and the
-            // resume target stays what it was before the first removal.
-            let Some(addr) = inner.addr.clone() else {
-                return;
-            };
-            if !inner.paused.is_empty() || !airpods_are_output(&addr).await {
+        match ear_action(prev, now, !inner.paused.is_empty(), inner.resume_at_count) {
+            EarAction::Nothing => return,
+            EarAction::Pause => {
+                let Some(addr) = inner.addr.clone() else {
+                    return;
+                };
+                if !airpods_are_output(&addr).await {
+                    return;
+                }
+                let paused = inner.pause_playing().await;
+                if !paused.is_empty() {
+                    info!(players = ?paused, before, after, "paused on ear removal");
+                    inner.paused = paused;
+                    inner.paused_at = Some(Instant::now());
+                    inner.resume_at_count = before;
+                }
                 return;
             }
-            let paused = inner.pause_playing().await;
-            if !paused.is_empty() {
-                info!(players = ?paused, before, after, "paused on ear removal");
-                inner.paused = paused;
-                inner.paused_at = Some(Instant::now());
-                inner.resume_at_count = before;
-            }
-            return;
-        }
-        if inner.paused.is_empty() || (after < inner.resume_at_count && !parked) {
-            return;
+            EarAction::Resume => {}
         }
         drop(inner);
         tokio::time::sleep(RESUME_SETTLE).await;
@@ -499,6 +496,41 @@ fn parked_to_charge(now: InEar) -> bool {
     matches!((now.primary, now.secondary), (InCase, In) | (In, InCase))
 }
 
+/// Whether the change concerns playback at all. The device reports the
+/// same ear state more than once, and the generation counter behind
+/// this would cut off a resume that is still waiting.
+fn ear_change_matters(prev: InEar, now: InEar, enabled: bool) -> bool {
+    enabled && (prev.count_in_ear() != now.count_in_ear() || parked_to_charge(now))
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum EarAction {
+    Nothing,
+    Pause,
+    Resume,
+}
+
+/// What the change means for playback, given what we did last time.
+fn ear_action(prev: InEar, now: InEar, already_paused: bool, resume_at: u8) -> EarAction {
+    let before = prev.count_in_ear();
+    let after = now.count_in_ear();
+    if after < before {
+        // A second bud out must not move the resume target.
+        return if already_paused {
+            EarAction::Nothing
+        } else {
+            EarAction::Pause
+        };
+    }
+    if !already_paused {
+        return EarAction::Nothing;
+    }
+    if after < resume_at && !parked_to_charge(now) {
+        return EarAction::Nothing;
+    }
+    EarAction::Resume
+}
+
 async fn airpods_are_output(addr: &str) -> bool {
     let addr = addr.to_string();
     tokio::task::spawn_blocking(move || audio::sink_for(&addr).is_some_and(|s| s.is_default))
@@ -613,8 +645,8 @@ async fn fade(addr: &str, from: u8, to: u8, tick: Duration) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        BLOCK_SAMPLES, Ducked, clear_duck, duck_path, duck_target, loud_db, parked_to_charge,
-        read_duck, write_duck,
+        BLOCK_SAMPLES, Ducked, EarAction, clear_duck, duck_path, duck_target, ear_action,
+        ear_change_matters, loud_db, parked_to_charge, read_duck, write_duck,
     };
     use podctl::InEar;
     use podctl::model::EarStatus::{InCase, InEar as In, OutOfEar, Unknown};
@@ -628,6 +660,44 @@ mod tests {
         assert!(!parked_to_charge(ear(InCase, OutOfEar)));
         assert!(!parked_to_charge(ear(In, In)));
         assert!(!parked_to_charge(ear(InCase, Unknown)));
+    }
+
+    #[test]
+    fn an_unchanged_ear_state_is_no_change() {
+        let ear = |primary, secondary| InEar { primary, secondary };
+        assert!(!ear_change_matters(ear(In, In), ear(In, In), true));
+        assert!(!ear_change_matters(
+            ear(OutOfEar, OutOfEar),
+            ear(OutOfEar, Unknown),
+            true
+        ));
+        // One bud gone to charge: same count, still a change.
+        assert!(ear_change_matters(ear(In, In), ear(In, InCase), true));
+        assert!(ear_change_matters(ear(In, In), ear(In, OutOfEar), true));
+        assert!(!ear_change_matters(
+            ear(In, In),
+            ear(OutOfEar, OutOfEar),
+            false
+        ));
+    }
+
+    #[test]
+    fn what_an_ear_change_means_for_playback() {
+        let ear = |primary, secondary| InEar { primary, secondary };
+        let both = ear(In, In);
+        let one = ear(In, OutOfEar);
+        let none = ear(OutOfEar, OutOfEar);
+        let parked = ear(In, InCase);
+
+        assert_eq!(ear_action(both, one, false, 0), EarAction::Pause);
+        assert_eq!(ear_action(one, none, true, 2), EarAction::Nothing);
+        assert_eq!(ear_action(none, one, false, 0), EarAction::Nothing);
+        // One bud back in is not enough when two were in before —
+        // unless the other one is charging.
+        assert_eq!(ear_action(none, one, true, 2), EarAction::Nothing);
+        assert_eq!(ear_action(one, both, true, 2), EarAction::Resume);
+        assert_eq!(ear_action(none, parked, true, 2), EarAction::Resume);
+        assert_eq!(ear_action(none, one, true, 1), EarAction::Resume);
     }
 
     #[test]
