@@ -14,7 +14,8 @@ tools it shells out to need to be present.
   bus.
 - For the audio verbs (`volume`, `mute`, `profile`, `codec`, …):
   PipeWire (with the PulseAudio shim) **or** PulseAudio — podctl talks to
-  `pactl`.
+  `pactl`. On Debian and Ubuntu `pipewire-pulse` does not bring `pactl`
+  along: that one is in `pulseaudio-utils`.
 - For `podctl meter` and the conversation-awareness volume stage:
   `pw-record` (pipewire-audio). Without it both fall back to `parec`
   (pulseaudio-utils), which reads the sink monitor — silent for
@@ -33,7 +34,7 @@ if neither `pw-record` nor `parec` is there.
 | --- | --- | --- |
 | `bluetoothctl` | bluez / bluez-utils | everything (device + AAP) |
 | `dbus-send` | dbus | `podctl rename` |
-| `pactl` | pipewire-pulse *or* pulseaudio-utils | audio verbs |
+| `pactl` | pulseaudio-utils (pipewire-pulse on Arch) | audio verbs |
 | `pw-record` | pipewire-audio | `podctl meter`, conversation ducking |
 | `parec` | pulseaudio-utils | fallback for the above on PulseAudio |
 | `systemctl` | systemd | `podctl install`/`reboot` user services |
@@ -228,8 +229,8 @@ Originally documented by [LibrePods](https://github.com/kavishdevar/librepods).
 
 ## Troubleshooting
 
-- "pactl not in PATH" → install the PulseAudio-utils / pipewire-pulse
-  package for your distro (table above). Core control still works
+- "pactl not found" → install `pulseaudio-utils` (on Arch: the `pactl`
+  in `pipewire-pulse`), see the table above. Core control still works
   without it.
 - "bluetoothctl … failed" → ensure `bluetooth.service` is running and
   the AirPods are paired (`podctl list`).

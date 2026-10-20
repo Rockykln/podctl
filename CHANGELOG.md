@@ -53,6 +53,15 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
   `~/.config/podctl/daemon.toml` now, so the switch that decides whether
   a bud coming out pauses playback survives a restart. Buds that do
   report them still have the last word.
+- **`podctl status` named the wrong codec.** The plain `a2dp-sink`
+  profile was read as AAC, and a PipeWire built without AAC runs SBC in
+  it — the sink itself is asked now. `podctl codec` lists what is really
+  on offer, instead of offering an AAC that isn't there.
+- **A missing `pactl` was reported as missing AirPods.** On Debian and
+  Ubuntu `pipewire-pulse` does not bring `pactl` along, which the
+  install notes got wrong too.
+- `podctl meter` opened with one implausible reading — the first samples
+  out of the capture are whatever its buffer held.
 - `podctld.service` ordered itself against `bluetooth.service`, which a
   user unit cannot do, and messages pointed at `podctl setup`, which has
   never existed.

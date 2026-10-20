@@ -14,6 +14,11 @@ const CHANNELS: u32 = 2;
 /// A window shorter than this reads zero samples at a time and spins.
 const MIN_INTERVAL_MS: u64 = 10;
 
+/// Dropped before measuring: the first samples out of `pw-record` are
+/// whatever the ring buffer held when it started, which read as
+/// -1.3 dBFS peak on a silent sink.
+const WARMUP_MS: u64 = 100;
+
 pub fn run(args: &[String], json: bool) -> i32 {
     let json = json || args.iter().any(|a| a == "--json");
     let plain = args.iter().any(|a| a == "--plain");
@@ -50,6 +55,9 @@ pub fn run(args: &[String], json: bool) -> i32 {
 
     let isatty = unsafe { libc_isatty(1) != 0 };
     let bar_width: usize = 36;
+
+    let warmup = (SAMPLE_RATE as u64 * WARMUP_MS / 1000) as usize * CHANNELS as usize * 2;
+    let _ = stdout.read_exact(&mut vec![0u8; warmup]);
 
     loop {
         if stdout.read_exact(&mut buf).is_err() {

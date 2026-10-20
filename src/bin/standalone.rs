@@ -145,7 +145,7 @@ fn airpods_audio_state() -> podctl::model::AudioState {
 
 fn audio_volume(pct: u8) -> Response {
     let Some(sink) = airpods_sink() else {
-        return Response::err("no AirPods audio sink found — connect them first.");
+        return Response::err(audio::nothing_to_act_on("audio sink"));
     };
     match audio::set_volume(&sink, pct) {
         Ok(()) => Response::ok_done(),
@@ -155,7 +155,7 @@ fn audio_volume(pct: u8) -> Response {
 
 fn audio_mute(muted: bool) -> Response {
     let Some(sink) = airpods_sink() else {
-        return Response::err("no AirPods audio sink found.");
+        return Response::err(audio::nothing_to_act_on("audio sink"));
     };
     match audio::set_muted(&sink, muted) {
         Ok(()) => Response::ok_done(),
@@ -165,7 +165,7 @@ fn audio_mute(muted: bool) -> Response {
 
 fn audio_profile(profile: Profile) -> Response {
     let Some(card) = airpods_card() else {
-        return Response::err("no AirPods card found.");
+        return Response::err(audio::nothing_to_act_on("card"));
     };
     match audio::set_profile(&card, profile) {
         Ok(()) => Response::ok_done(),
@@ -175,7 +175,7 @@ fn audio_profile(profile: Profile) -> Response {
 
 fn audio_codec(codec: &str) -> Response {
     let Some(card) = airpods_card() else {
-        return Response::err("no AirPods card found.");
+        return Response::err(audio::nothing_to_act_on("card"));
     };
     match audio::set_codec(&card, codec) {
         Ok(()) => Response::ok_done(),
@@ -185,7 +185,7 @@ fn audio_codec(codec: &str) -> Response {
 
 fn audio_default() -> Response {
     let Some(sink) = airpods_sink() else {
-        return Response::err("no AirPods audio sink found.");
+        return Response::err(audio::nothing_to_act_on("audio sink"));
     };
     match audio::set_default(&sink) {
         Ok(()) => Response::ok_done(),
@@ -195,7 +195,7 @@ fn audio_default() -> Response {
 
 fn audio_latency(ms: i32) -> Response {
     let Some(card) = airpods_card() else {
-        return Response::err("no AirPods card found.");
+        return Response::err(audio::nothing_to_act_on("card"));
     };
     match audio::set_latency_offset(&card, ms) {
         Ok(()) => Response::ok_done(),

@@ -80,7 +80,46 @@ fn sink_is_running(out: &str, addr: &str) -> bool {
 pub fn card_for(addr: &str) -> Option<CardInfo> {
     let target = format!("bluez_card.{}", addr.replace(':', "_"));
     let out = pactl(&["list", "cards"]).ok()?;
-    parse_card_block(&out, &target)
+    let mut card = parse_card_block(&out, &target)?;
+    if card.codec.is_none() {
+        // The plain `a2dp-sink` profile doesn't name its codec, and it
+        // is not always AAC — without AAC built in, PipeWire runs SBC
+        // in it.
+        card.codec = running_codec(addr);
+    }
+    Some(card)
+}
+
+/// What the sink of the device at `addr` is actually encoding with.
+fn running_codec(addr: &str) -> Option<String> {
+    let out = pactl(&["list", "sinks"]).ok()?;
+    parse_sink_codec(&out, addr)
+}
+
+fn parse_sink_codec(out: &str, addr: &str) -> Option<String> {
+    let want = bluez_prefix("bluez_output", addr);
+    let mut ours = false;
+    for line in out.lines() {
+        if line.starts_with("Sink #") {
+            ours = false;
+            continue;
+        }
+        let trimmed = line.trim_start();
+        if let Some(name) = trimmed.strip_prefix("Name:") {
+            ours = name.trim().starts_with(&want);
+            continue;
+        }
+        if ours
+            && let Some(v) = trimmed.strip_prefix("api.bluez5.codec")
+            && let Some(v) = v.trim().strip_prefix('=')
+        {
+            let codec = v.trim().trim_matches('"').to_ascii_lowercase();
+            if !codec.is_empty() {
+                return Some(codec);
+            }
+        }
+    }
+    None
 }
 
 fn parse_card_block(out: &str, target: &str) -> Option<CardInfo> {
@@ -162,9 +201,6 @@ fn extract_address(name: &str) -> Option<String> {
 }
 
 fn extract_codec(profile: &str) -> Option<String> {
-    if profile == "a2dp-sink" {
-        return Some("aac".into());
-    }
     profile.strip_prefix("a2dp-sink-").map(|s| s.to_string())
 }
 
@@ -231,12 +267,13 @@ fn pick_profile(card: &CardInfo, kind: Profile) -> anyhow::Result<String> {
 
 pub fn set_codec(card: &CardInfo, codec: &str) -> anyhow::Result<()> {
     let codec = codec.trim().to_ascii_lowercase();
-    let target = if codec == "aac" {
-        "a2dp-sink".to_string()
-    } else {
-        format!("a2dp-sink-{codec}")
-    };
+    let target = format!("a2dp-sink-{codec}");
     if !card.profiles.contains(&target) {
+        // The codec the plain `a2dp-sink` profile runs has no profile of
+        // its own to switch to — it is already the one asked for.
+        if card.codec.as_deref() == Some(codec.as_str()) {
+            return Ok(());
+        }
         anyhow::bail!(
             "codec '{codec}' not available (try one of: {})",
             available_codecs(card).join(", ")
@@ -250,14 +287,13 @@ pub fn available_codecs(card: &CardInfo) -> Vec<String> {
     let mut out: Vec<String> = card
         .profiles
         .iter()
-        .filter_map(|p| {
-            if p == "a2dp-sink" {
-                Some("aac".to_string())
-            } else {
-                p.strip_prefix("a2dp-sink-").map(|c| c.to_string())
-            }
-        })
+        .filter_map(|p| p.strip_prefix("a2dp-sink-").map(|c| c.to_string()))
         .collect();
+    if let Some(running) = &card.codec
+        && !out.iter().any(|c| c == running)
+    {
+        out.push(running.clone());
+    }
     out.sort();
     out.dedup();
     out
@@ -384,6 +420,19 @@ fn have(bin: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// What to say when there is no sink or card to act on: a missing
+/// `pactl` (Debian's `pipewire-pulse` does not bring it along) is a
+/// different problem from disconnected AirPods.
+pub fn nothing_to_act_on(what: &str) -> String {
+    if have_pactl() {
+        format!("no AirPods {what} found — connect them first.")
+    } else {
+        "pactl not found — it comes with pulseaudio-utils on Debian, Ubuntu, Fedora and openSUSE, \
+         and with pipewire-pulse on Arch."
+            .into()
+    }
+}
+
 pub fn have_pactl() -> bool {
     Command::new("pactl")
         .env("LC_ALL", "C")
@@ -397,7 +446,9 @@ pub fn have_pactl() -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{pick_sink, sink_is_running};
+    use super::{
+        CardInfo, available_codecs, parse_sink_codec, pick_sink, set_codec, sink_is_running,
+    };
 
     /// A Bluetooth speaker and the AirPods, in that order — which is
     /// what made taking the first `bluez_output.*` send the volume,
@@ -440,5 +491,68 @@ mod tests {
         let older = "7\tbluez_output.AA_BB_CC_DD_EE_01.a2dp-sink\tPipeWire\ts16le\tIDLE";
         let s = pick_sink(older, "AA:BB:CC:DD:EE:01", None).expect("AirPods sink");
         assert_eq!(s.id, 7);
+    }
+
+    const SINK_DETAIL: &str = "\
+Sink #42
+\tState: RUNNING
+\tName: bluez_output.FF_EE_DD_CC_BB_AA.1
+\tDescription: Speaker
+\tProperties:
+\t\tapi.bluez5.codec = \"aac\"
+\t\tapi.bluez5.profile = \"a2dp-sink\"
+Sink #43
+\tState: IDLE
+\tName: bluez_output.AA_BB_CC_DD_EE_01.1
+\tDescription: AirPods
+\tProperties:
+\t\tapi.bluez5.codec = \"sbc\"
+\t\tapi.bluez5.profile = \"a2dp-sink\"";
+
+    /// The plain `a2dp-sink` profile was read as AAC, and a PipeWire
+    /// built without AAC runs SBC in it — `status` said "aac" over an
+    /// SBC stream. The sink itself says which one it is.
+    #[test]
+    fn the_codec_comes_from_the_sink() {
+        assert_eq!(
+            parse_sink_codec(SINK_DETAIL, "AA:BB:CC:DD:EE:01").as_deref(),
+            Some("sbc")
+        );
+        assert_eq!(
+            parse_sink_codec(SINK_DETAIL, "FF:EE:DD:CC:BB:AA").as_deref(),
+            Some("aac")
+        );
+        assert!(parse_sink_codec(SINK_DETAIL, "11:22:33:44:55:66").is_none());
+    }
+
+    fn card(profiles: &[&str], codec: Option<&str>) -> CardInfo {
+        CardInfo {
+            name: "bluez_card.AA_BB_CC_DD_EE_01".into(),
+            address: "AA:BB:CC:DD:EE:01".into(),
+            active_profile: "a2dp-sink".into(),
+            profiles: profiles.iter().map(|p| p.to_string()).collect(),
+            codec: codec.map(|c| c.to_string()),
+        }
+    }
+
+    /// `a2dp-sink` is not a codec of its own, so the list names what it
+    /// runs instead of claiming AAC is on offer.
+    #[test]
+    fn available_codecs_are_the_real_ones() {
+        let c = card(
+            &["off", "a2dp-sink", "a2dp-sink-sbc_xq", "headset-head-unit"],
+            Some("sbc"),
+        );
+        assert_eq!(available_codecs(&c), vec!["sbc", "sbc_xq"]);
+        let with_aac = card(&["a2dp-sink", "a2dp-sink-aac"], Some("aac"));
+        assert_eq!(available_codecs(&with_aac), vec!["aac"]);
+    }
+
+    #[test]
+    fn asking_for_the_codec_already_running_is_no_error() {
+        let c = card(&["off", "a2dp-sink", "a2dp-sink-sbc_xq"], Some("sbc"));
+        set_codec(&c, "SBC").expect("already running sbc");
+        let err = set_codec(&c, "aac").expect_err("no aac here").to_string();
+        assert!(err.contains("not available"), "{err}");
     }
 }
