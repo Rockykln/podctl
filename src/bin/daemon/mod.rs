@@ -95,11 +95,24 @@ impl Daemon {
     /// Send a raw AAP frame to the device. Returns an error if the AAP
     /// socket isn't open (e.g. AirPods are disconnected).
     pub async fn aap_send(&self, frame: &[u8]) -> Result<(), String> {
-        let guard = self.aap_stream.read().await;
-        let Some(stream) = guard.as_ref() else {
-            return Err("AAP socket not connected".into());
+        // The write goes out on a blocking thread, and the lock is let
+        // go of first: a full send window — buds out of range, the link
+        // on its way out — used to hold a runtime worker and the read
+        // guard at once, so `set_aap_stream` waited for the write lock
+        // and the whole daemon stood still.
+        let stream = {
+            let guard = self.aap_stream.read().await;
+            match guard.as_ref() {
+                Some(s) => Arc::clone(s),
+                None => return Err("AAP socket not connected".into()),
+            }
         };
-        stream.send(frame).map_err(|e| format!("AAP write: {e}"))
+        let frame = frame.to_vec();
+        match tokio::task::spawn_blocking(move || stream.send(&frame)).await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(e)) => Err(format!("AAP write: {e}")),
+            Err(e) => Err(format!("AAP write task: {e}")),
+        }
     }
 
     /// Ask the AirPods to re-send their whole state dump.

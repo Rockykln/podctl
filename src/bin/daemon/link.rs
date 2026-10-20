@@ -199,9 +199,9 @@ impl AapSupervisor {
         };
         self.recycles += 1;
         warn!(reason, recycle = self.recycles, "recycling the AAP socket");
-        tokio::task::spawn_blocking(move || task.shutdown())
-            .await
-            .ok();
+        // Not awaited: the worker needs until its read timeout to
+        // notice, and this loop has a disconnect to see to.
+        tokio::task::spawn_blocking(move || task.shutdown());
         self.started = None;
         self.battery_due = None;
         // Reconnect on the next poll rather than inheriting the failure
@@ -248,9 +248,7 @@ impl AapSupervisor {
             return;
         };
         self.started = None;
-        tokio::task::spawn_blocking(move || task.shutdown())
-            .await
-            .ok();
+        tokio::task::spawn_blocking(move || task.shutdown());
         // Clear the AAP-derived state — values are stale once the link
         // drops. `case_lid_open` goes with them: leaving it at `Some(true)`
         // would swallow the lid edge on the next connect, and with it the

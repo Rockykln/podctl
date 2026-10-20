@@ -18,6 +18,11 @@ use podctl::{
 
 use super::Daemon;
 
+/// Deadline for one connect attempt, and the timeout on reads and
+/// writes afterwards. A link that has gone quiet is noticed within
+/// this instead of holding a thread for the kernel's own timeout.
+const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 const HANDSHAKE: &[u8] = &[
     0x00, 0x00, 0x04, 0x00, 0x01, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 ];
@@ -159,6 +164,22 @@ fn run(
                 info!(frame_count, "AAP EOF");
                 break;
             }
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock
+                        | std::io::ErrorKind::TimedOut
+                        | std::io::ErrorKind::Interrupted
+                ) =>
+            {
+                // The read timeout is there so this loop looks at the
+                // cancel flag now and then; a quiet link is not a
+                // broken one, and a signal is no reason to reconnect.
+                if cancelled.load(Ordering::SeqCst) {
+                    info!(frame_count, "AAP cancelled");
+                    break;
+                }
+            }
             Ok(n) => {
                 frame_count += 1;
                 frames.store(frame_count, Ordering::Relaxed);
@@ -202,7 +223,8 @@ fn connect_with_retry(mac: &str, cancelled: &AtomicBool) -> Option<L2capStream> 
                 return None;
             }
         }
-        match L2capStream::connect(mac, aap::AAP_PSM) {
+        let cancel = || cancelled.load(Ordering::SeqCst);
+        match L2capStream::connect(mac, aap::AAP_PSM, CONNECT_TIMEOUT, &cancel) {
             Ok(s) => {
                 if attempt > 0 {
                     info!(attempt = attempt + 1, "L2CAP connected after retry");
