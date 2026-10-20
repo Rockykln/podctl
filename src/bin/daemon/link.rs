@@ -156,6 +156,10 @@ struct AapSupervisor {
     battery_due: Option<Instant>,
     resubscribes: u32,
     recycles: u32,
+    /// The state holds values from a link that may be gone. A task that
+    /// dies on its own is reaped before the poll sees the disconnect, so
+    /// `task` alone can't say whether `stop` still has to clear them.
+    linked: bool,
 }
 
 impl AapSupervisor {
@@ -184,6 +188,7 @@ impl AapSupervisor {
         info!(attempt = self.fails + 1, "starting AAP task");
         self.task = Some(super::aap::spawn(daemon.clone(), mac.to_string()));
         self.started = Some(Instant::now());
+        self.linked = true;
         self.retry_at = None;
         self.battery_due = Some(Instant::now() + BATTERY_GRACE);
         self.resubscribes = 0;
@@ -248,11 +253,13 @@ impl AapSupervisor {
         self.battery_due = None;
         self.resubscribes = 0;
         self.recycles = 0;
-        let Some(task) = self.task.take() else {
-            return;
-        };
+        if let Some(task) = self.task.take() {
+            tokio::task::spawn_blocking(move || task.shutdown());
+        }
         self.started = None;
-        tokio::task::spawn_blocking(move || task.shutdown());
+        if !std::mem::take(&mut self.linked) {
+            return;
+        }
         // Clear the AAP-derived state — values are stale once the link
         // drops. `case_lid_open` goes with them: leaving it at `Some(true)`
         // would swallow the lid edge on the next connect, and with it the

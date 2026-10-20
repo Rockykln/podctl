@@ -35,6 +35,11 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
   cannot keep up, it sends the state again instead of leaving a gap.
 
 ### Fixed
+- **`podctl status` kept showing battery, in-ear state, listening mode
+  and settings after the AirPods disconnected.** The link to the buds
+  breaks a moment before BlueZ reports the disconnect, and the clean-up
+  that follows only ran while the link task was still around. Now only
+  what podctl stores itself (ear detection, microphone) is left.
 - `podctl status` without a daemon ran `bluetoothctl` twice, once for
   the device and once more for the address the audio lookup needed.
 - **A settings frame without a value switched the microphone over.** A
