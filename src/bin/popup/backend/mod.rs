@@ -21,6 +21,11 @@ pub trait Backend {
     /// has to be told the same duration the hold loop uses. Backends
     /// that own their surface ignore it.
     fn set_hold(&mut self, _hold: Duration) {}
+    /// What the card says, in words. The notification fallback shows
+    /// text — a server that scales the card down to an icon leaves the
+    /// battery levels unreadable otherwise. Backends that draw the card
+    /// themselves ignore it.
+    fn set_labels(&mut self, _title: &str, _body: &str) {}
     fn open(&mut self, w: u32, h: u32) -> Result<()>;
     fn push_frame(&mut self, f: &Frame) -> Result<()>;
     fn close(&mut self) -> Result<()>;

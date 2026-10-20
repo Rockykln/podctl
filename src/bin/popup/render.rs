@@ -76,7 +76,7 @@ impl Snapshot {
     }
 }
 
-fn mode_label(m: Mode) -> &'static str {
+pub fn mode_label(m: Mode) -> &'static str {
     match m {
         Mode::Off => "Off",
         Mode::NoiseCancellation => "Noise Cancellation",

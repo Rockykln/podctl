@@ -5,7 +5,7 @@ mod config;
 mod render;
 
 use std::process::ExitCode;
-use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::thread::{self, sleep};
 use std::time::{Duration, Instant};
 
@@ -234,24 +234,63 @@ enum Drained {
     Stop(Outcome),
 }
 
+/// What one command does: redraw (`Show` also restarts the hold timer),
+/// or end the cycle.
+enum Applied {
+    Redrawn { reset: bool },
+    Stop(Outcome),
+}
+
+fn apply(cmd: Cmd, bgra: &mut Vec<u8>, theme: &Theme, be: &mut dyn Backend) -> Applied {
+    let (snap, reset) = match cmd {
+        Cmd::Show(s) => (s, true),
+        Cmd::Refresh(s) => (s, false),
+        Cmd::Hide => return Applied::Stop(Outcome::Done),
+        Cmd::Quit => return Applied::Stop(Outcome::Quit),
+    };
+    let (title, body) = labels(&snap);
+    be.set_labels(&title, &body);
+    *bgra = render::to_bgra_premul(&render::render(&snap, theme));
+    Applied::Redrawn { reset }
+}
+
+/// The card in words: device name, then the levels it shows.
+fn labels(snap: &Snapshot) -> (String, String) {
+    let mut parts = Vec::with_capacity(3);
+    for (side, pod) in [("L", snap.left), ("R", snap.right), ("Case", snap.case)] {
+        if let Some(level) = pod.level {
+            parts.push(if pod.charging {
+                format!("{side} {level} % charging")
+            } else {
+                format!("{side} {level} %")
+            });
+        }
+    }
+    let body = if !parts.is_empty() {
+        parts.join(" · ")
+    } else if snap.connected {
+        snap.mode
+            .map(render::mode_label)
+            .unwrap_or("Connected")
+            .to_string()
+    } else {
+        "Disconnected".into()
+    };
+    (snap.model.clone(), body)
+}
+
 /// Apply every queued command. `Show` redraws and asks the hold timer
 /// to restart (a fresh trigger); `Refresh` only redraws (battery tick);
 /// `Hide`/`Quit`/dropped-sender stop the cycle.
-fn drain(rx: &Receiver<Cmd>, bgra: &mut Vec<u8>, theme: &Theme) -> Drained {
+fn drain(rx: &Receiver<Cmd>, bgra: &mut Vec<u8>, theme: &Theme, be: &mut dyn Backend) -> Drained {
     let mut reset = false;
     loop {
         match rx.try_recv() {
-            Ok(Cmd::Show(s)) => {
-                *bgra = render::to_bgra_premul(&render::render(&s, theme));
-                reset = true;
-            }
-            Ok(Cmd::Refresh(s)) => {
-                *bgra = render::to_bgra_premul(&render::render(&s, theme));
-            }
-            Ok(Cmd::Hide) => return Drained::Stop(Outcome::Done),
-            Ok(Cmd::Quit) | Err(TryRecvError::Disconnected) => {
-                return Drained::Stop(Outcome::Quit);
-            }
+            Ok(cmd) => match apply(cmd, bgra, theme, be) {
+                Applied::Redrawn { reset: r } => reset |= r,
+                Applied::Stop(o) => return Drained::Stop(o),
+            },
+            Err(TryRecvError::Disconnected) => return Drained::Stop(Outcome::Quit),
             Err(TryRecvError::Empty) => {
                 return if reset {
                     Drained::ResetHold
@@ -286,6 +325,8 @@ fn show_cycle(
     if short(be.kind()) != pick.name {
         info!(wanted = %pick.name, using = short(be.kind()), "backend fell back");
     }
+    let (title, body) = labels(&snap);
+    be.set_labels(&title, &body);
 
     let hidden = -(CARD_H as f32);
     let rest = REST_MARGIN as f32;
@@ -298,7 +339,7 @@ fn show_cycle(
             let _ = be.close();
             return Outcome::Done;
         }
-        if let Drained::Stop(o) = drain(rx, &mut bgra, theme) {
+        if let Drained::Stop(o) = drain(rx, &mut bgra, theme, be.as_mut()) {
             stop = Some(o);
             break;
         }
@@ -311,20 +352,47 @@ fn show_cycle(
             last = rest;
             let mut deadline = Instant::now() + hold;
             let mut o = Outcome::Done;
-            while Instant::now() < deadline {
-                match drain(rx, &mut bgra, theme) {
+            // Nothing moves while the bubble stands still, so it waits
+            // for the next command instead of pushing the same frame
+            // sixty times a second: that was ~340 commits per bubble,
+            // and on X11 a full 260 kB upload plus a shape change each
+            // time.
+            loop {
+                let now = Instant::now();
+                if now >= deadline {
+                    break;
+                }
+                let cmd = match rx.recv_timeout(deadline - now) {
+                    Ok(c) => c,
+                    Err(RecvTimeoutError::Timeout) => break,
+                    Err(RecvTimeoutError::Disconnected) => {
+                        o = Outcome::Quit;
+                        break;
+                    }
+                };
+                let mut reset = match apply(cmd, &mut bgra, theme, be.as_mut()) {
+                    Applied::Redrawn { reset } => reset,
+                    Applied::Stop(s) => {
+                        o = s;
+                        break;
+                    }
+                };
+                // Whatever else is queued belongs to the same redraw.
+                match drain(rx, &mut bgra, theme, be.as_mut()) {
                     Drained::Stop(s) => {
                         o = s;
                         break;
                     }
-                    Drained::ResetHold => deadline = Instant::now() + hold,
+                    Drained::ResetHold => reset = true,
                     Drained::Continue => {}
+                }
+                if reset {
+                    deadline = Instant::now() + hold;
                 }
                 if push(be.as_mut(), &bgra, rest).is_err() {
                     let _ = be.close();
                     return o;
                 }
-                sleep(FRAME);
             }
             o
         }
@@ -655,11 +723,14 @@ fn dump(path: &str, theme: &Theme) -> std::io::Result<()> {
 }
 
 fn demo(theme: &Theme, want: Option<String>) -> anyhow::Result<()> {
-    let pm = render::render(&Snapshot::sample(), theme);
+    let snap = Snapshot::sample();
+    let pm = render::render(&snap, theme);
     let bgra = render::to_bgra_premul(&pm);
     let pick = want.as_deref().unwrap_or("wl");
     let mut be = open_backend(pick, want.is_some(), Duration::from_millis(DEMO_HOLD_MS))?;
     eprintln!("podctl-popup: backend {}", short(be.kind()));
+    let (title, body) = labels(&snap);
+    be.set_labels(&title, &body);
     present(be.as_mut(), &bgra)?;
     be.close()?;
     Ok(())
@@ -739,4 +810,52 @@ fn print_usage() {
     println!("  podctl-popup --dump <file.png> [--theme dark|light]");
     println!("  podctl-popup --demo [--backend wl|x11|notify] [--theme dark|light]");
     println!("  podctl-popup                               (run; watches the daemon)");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::labels;
+    use crate::render::{Pod, Snapshot};
+
+    fn snap() -> Snapshot {
+        Snapshot {
+            model: "AirPods Pro 2".into(),
+            connected: true,
+            mode: Some(podctl::model::Mode::Transparency),
+            left: Pod {
+                level: Some(82),
+                charging: false,
+            },
+            right: Pod {
+                level: Some(79),
+                charging: false,
+            },
+            case: Pod {
+                level: Some(64),
+                charging: true,
+            },
+        }
+    }
+
+    /// The notification fallback shows these two lines instead of the
+    /// card; it used to send the device name and an empty body.
+    #[test]
+    fn levels_become_one_line() {
+        let (title, body) = labels(&snap());
+        assert_eq!(title, "AirPods Pro 2");
+        assert_eq!(body, "L 82 % · R 79 % · Case 64 % charging");
+    }
+
+    #[test]
+    fn without_levels_the_state_stands_in() {
+        let mut s = snap();
+        s.left = Pod::default();
+        s.right = Pod::default();
+        s.case = Pod::default();
+        assert_eq!(labels(&s).1, "Transparency");
+        s.mode = None;
+        assert_eq!(labels(&s).1, "Connected");
+        s.connected = false;
+        assert_eq!(labels(&s).1, "Disconnected");
+    }
 }

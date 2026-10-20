@@ -19,6 +19,10 @@ pub struct Notify {
     id: u32,
     fp: u64,
     expire_ms: i32,
+    title: String,
+    body: String,
+    rt: Option<tokio::runtime::Runtime>,
+    conn: Option<zbus::Connection>,
 }
 
 impl Notify {
@@ -31,14 +35,33 @@ impl Notify {
             id: 0,
             fp: 0,
             expire_ms: DEFAULT_EXPIRE_MS,
+            title: "AirPods".into(),
+            body: String::new(),
+            rt: None,
+            conn: None,
         }
     }
 
-    fn rt() -> Result<tokio::runtime::Runtime> {
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .context("tokio runtime")
+    /// Runtime and bus connection are kept: a bubble sends several
+    /// updates, and building both again for each one is a round trip
+    /// to the bus for nothing.
+    fn session(&mut self) -> Result<(&tokio::runtime::Runtime, &zbus::Connection)> {
+        if self.rt.is_none() {
+            self.rt = Some(
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .context("tokio runtime")?,
+            );
+        }
+        let rt = self.rt.as_ref().expect("runtime just built");
+        if self.conn.is_none() {
+            self.conn = Some(
+                rt.block_on(zbus::Connection::session())
+                    .context("session bus")?,
+            );
+        }
+        Ok((rt, self.conn.as_ref().expect("connection just built")))
     }
 }
 
@@ -51,6 +74,15 @@ impl Backend for Notify {
         // Round up: expiring a hair before the hold loop closes the
         // notification ourselves would flash the bubble out early.
         self.expire_ms = hold.as_millis().min(i32::MAX as u128) as i32 + 250;
+    }
+
+    fn set_labels(&mut self, title: &str, body: &str) {
+        self.title = if title.is_empty() {
+            "AirPods".into()
+        } else {
+            title.to_string()
+        };
+        self.body = body.to_string();
     }
 
     fn open(&mut self, w: u32, h: u32) -> Result<()> {
@@ -72,13 +104,18 @@ impl Backend for Notify {
         let uri = format!("file://{}", self.img.display());
         let replaces = self.id;
         let expire_ms = self.expire_ms;
-        let id = Self::rt()?.block_on(async {
-            let conn = zbus::Connection::session().await?;
+        let title = self.title.clone();
+        let body = self.body.clone();
+        let (rt, conn) = self.session()?;
+        let id = rt.block_on(async {
             let mut hints: HashMap<&str, Value> = HashMap::new();
             hints.insert("urgency", Value::U8(0));
             hints.insert("image-path", Value::from(uri.as_str()));
             hints.insert("category", Value::from("device"));
             hints.insert("desktop-entry", Value::from("podctl"));
+            // Not worth keeping in a notification centre: the bubble is
+            // a glance at a battery level, and it is gone in seconds.
+            hints.insert("transient", Value::Bool(true));
             let reply = conn
                 .call_method(
                     Some(SVC),
@@ -89,8 +126,8 @@ impl Backend for Notify {
                         "podctl",
                         replaces,
                         "audio-headphones",
-                        "AirPods",
-                        "",
+                        title.as_str(),
+                        body.as_str(),
                         Vec::<&str>::new(),
                         hints,
                         expire_ms,
@@ -109,8 +146,8 @@ impl Backend for Notify {
     fn close(&mut self) -> Result<()> {
         if self.id != 0 {
             let id = self.id;
-            let _ = Self::rt()?.block_on(async {
-                let conn = zbus::Connection::session().await?;
+            let (rt, conn) = self.session()?;
+            let _ = rt.block_on(async {
                 conn.call_method(Some(SVC), PATH, Some(SVC), "CloseNotification", &(id,))
                     .await?;
                 Ok::<(), zbus::Error>(())
