@@ -55,6 +55,11 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
   iPhone.** Every so often the AirPods end the AAP session from their
   side and wait for a new handshake; podctl kept listening on the dead
   socket until the next reconnect. It opens a new one now.
+- **The music resumed while a bud was being taken out.** The in-ear
+  sensor reports "in" again for a second or more while the bud is still
+  in a hand. Right after a pause the buds have to stay in for 2 s before
+  playback resumes; putting one back in later takes 0.5 s, half of
+  what it took before.
 - `podctl connect` and the other BlueZ commands failed with an empty
   reason; `bluetoothctl` prints it on stdout.
 - `podctl status` without a daemon ran `bluetoothctl` twice, once for

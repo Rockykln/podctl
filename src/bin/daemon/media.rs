@@ -20,9 +20,13 @@ const RESUME_WINDOW: Duration = Duration::from_secs(15 * 60);
 /// After a reconnect from the case the AirPods sink needs a moment to
 /// reappear; resuming earlier would play through the speakers.
 const SINK_WAIT: Duration = Duration::from_secs(15);
-/// The in-ear sensor flickers while a bud is pulled out (out, in, out
-/// within half a second). Resume only once the buds have stayed in.
-const RESUME_SETTLE: Duration = Duration::from_secs(1);
+/// The in-ear sensor flickers while a bud is pulled out: on a Pro 2 it
+/// reported "in" again for well over a second while the bud was in a hand.
+/// Right after a pause the buds have to stay in longer before the music
+/// comes back; later on, putting one back in is taken at its word.
+const RESUME_SETTLE_EARLY: Duration = Duration::from_secs(2);
+const RESUME_SETTLE: Duration = Duration::from_millis(500);
+const FLICKER_AFTER_PAUSE: Duration = Duration::from_secs(3);
 /// Proxies (browser integration, scrobblers) mirror another player's
 /// track, and some turn Pause/Play into a toggle — calling both would
 /// pause and unpause the same song. Only one player per track is touched,
@@ -128,8 +132,9 @@ impl Media {
             }
             EarAction::Resume => {}
         }
+        let settle = resume_settle(inner.paused_at.map(|t| t.elapsed()));
         drop(inner);
-        tokio::time::sleep(RESUME_SETTLE).await;
+        tokio::time::sleep(settle).await;
         let mut inner = self.inner.lock().await;
         if inner.ear_gen != my_gen || inner.paused.is_empty() {
             return;
@@ -593,6 +598,14 @@ fn ear_action(prev: InEar, now: InEar, already_paused: bool, resume_at: u8) -> E
     EarAction::Resume
 }
 
+fn resume_settle(since_pause: Option<Duration>) -> Duration {
+    if since_pause.is_some_and(|d| d < FLICKER_AFTER_PAUSE) {
+        RESUME_SETTLE_EARLY
+    } else {
+        RESUME_SETTLE
+    }
+}
+
 async fn airpods_are_output(addr: &str) -> bool {
     let addr = addr.to_string();
     tokio::task::spawn_blocking(move || audio::sink_for(&addr).is_some_and(|s| s.is_default))
@@ -743,11 +756,13 @@ async fn fade(
 #[cfg(test)]
 mod tests {
     use super::{
-        BLOCK_SAMPLES, Ducked, EarAction, clear_duck, duck_first, duck_path, duck_target,
-        ear_action, ear_change_matters, loud_db, parked_to_charge, read_duck, write_duck,
+        BLOCK_SAMPLES, Ducked, EarAction, RESUME_SETTLE, RESUME_SETTLE_EARLY, clear_duck,
+        duck_first, duck_path, duck_target, ear_action, ear_change_matters, loud_db,
+        parked_to_charge, read_duck, resume_settle, write_duck,
     };
     use podctl::InEar;
     use podctl::model::EarStatus::{InCase, InEar as In, OutOfEar, Unknown};
+    use std::time::Duration;
 
     #[test]
     fn only_one_bud_charging_while_the_other_plays_counts_as_parked() {
@@ -818,6 +833,14 @@ mod tests {
         assert_eq!(duck_target(100, -55.0), 79);
         // Never below the floor.
         assert_eq!(duck_target(100, 0.0), 32);
+    }
+
+    #[test]
+    fn a_bud_back_right_after_the_pause_has_to_stay_in_longer() {
+        let s = Duration::from_secs;
+        assert_eq!(resume_settle(Some(s(1))), RESUME_SETTLE_EARLY);
+        assert_eq!(resume_settle(Some(s(5))), RESUME_SETTLE);
+        assert_eq!(resume_settle(None), RESUME_SETTLE);
     }
 
     /// The dip that starts before the level is known must never go
