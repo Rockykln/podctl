@@ -100,15 +100,7 @@ unsafe extern "C" {
 }
 
 fn no_daemon_marker() -> Option<std::path::PathBuf> {
-    let base = std::env::var("XDG_CONFIG_HOME")
-        .ok()
-        .map(std::path::PathBuf::from)
-        .or_else(|| {
-            std::env::var("HOME")
-                .ok()
-                .map(|h| std::path::PathBuf::from(h).join(".config"))
-        })?;
-    Some(base.join("podctl").join("no-daemon"))
+    Some(podctl::xdg::config_dir().join("no-daemon"))
 }
 
 fn status() -> Response {

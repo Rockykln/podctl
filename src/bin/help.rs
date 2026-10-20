@@ -514,7 +514,7 @@ const COMPLETION: &str = "\
 podctl completion — emit shell completion script
 
     podctl completion bash    > ~/.local/share/bash-completion/completions/podctl
-    podctl completion zsh     > ~/.local/share/zsh/site-functions/_pods
+    podctl completion zsh     > ~/.local/share/zsh/site-functions/_podctl
     podctl completion fish    > ~/.config/fish/completions/podctl.fish
 
 Each script is self-contained — no runtime dependency on podctl being
@@ -537,18 +537,26 @@ const INSTALL: &str = "\
 podctl install — install podctl globally for your user
 
 Copies the binaries to ~/.local/bin/, drops shell completion into the
-right place for your shell (fish/bash/zsh autodetected from \\$SHELL),
+right place for your shell (fish/bash/zsh autodetected from $SHELL),
 installs man pages to ~/.local/share/man/man1/, and asks whether you
 want a systemd user service that keeps the daemon running. When the
 podctl-tray / podctl-popup binaries sit next to podctl it offers those
 too — the tray's left-click needs podctl-popup to draw anything.
 
 No root needed. Run from the build directory or anywhere the binaries
-are co-located.
+are co-located. Services that are already running are restarted, so an
+upgrade takes effect instead of leaving the old copy running.
+
+If a distro package (podctl-bin, podctl-git) already provides podctl,
+install stops: ~/.local/bin would shadow it in $PATH and the units in
+~/.config would take precedence, so every later package upgrade would
+have no effect. Either use the packaged services —
+'systemctl --user enable --now podctld' — or pass --force.
 
 FLAGS
     --yes              non-interactive — assume yes to every prompt
-    --no-daemon        skip the systemd unit
+    --force            install even though a distro package provides podctl
+    --no-daemon        skip the systemd unit (writes the no-daemon marker)
     --no-completion    skip shell completion
     --no-manpages      skip man pages
     --no-tray          do not offer the tray icon
@@ -574,7 +582,13 @@ marker. Idempotent: missing files are ignored.
 Only ever touches what it lists. If podctl is *also* installed as a
 distro package and you run this from ~/.local/bin, the package and its
 services are left running — the listing names it and the pacman command
-to remove it yourself.
+to remove it yourself. Which package is asked about is the one that owns
+the copy you are running, not whatever owns /usr/bin/podctl.
+
+Your settings (~/.config/podctl) and the proximity keys
+(~/.local/state/podctl, which is what lets podctl recognise your buds'
+rotating bluetooth address) are left in place and named in the listing.
+--purge removes them too.
 
 Run from a system install, the listing instead includes the package
 itself, and confirming it (or passing --yes) runs
@@ -583,6 +597,7 @@ agree to it.
 
     podctl uninstall
     podctl uninstall --yes
+    podctl uninstall --purge     # settings and keys as well
 ";
 
 const DEBUG: &str = "\

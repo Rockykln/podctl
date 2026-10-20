@@ -12,6 +12,7 @@ const MAN_PODSD: &str = include_str!("../../dist/podctld.1");
 
 pub fn install(args: &[String]) -> i32 {
     let yes = args.iter().any(|a| a == "-y" || a == "--yes");
+    let force = args.iter().any(|a| a == "--force");
     let no_daemon = args.iter().any(|a| a == "--no-daemon");
     let no_completion = args.iter().any(|a| a == "--no-completion");
     let no_manpages = args.iter().any(|a| a == "--no-manpages");
@@ -61,37 +62,38 @@ pub fn install(args: &[String]) -> i32 {
         return exitcode::UNAVAILABLE;
     }
 
-    let home = match std::env::var("HOME") {
-        Ok(h) => PathBuf::from(h),
-        Err(_) => {
-            eprintln!("podctl: $HOME is not set");
-            return exitcode::USAGE;
-        }
-    };
-    let bin_dir = home.join(".local").join("bin");
+    if std::env::var_os("HOME").is_none() {
+        eprintln!("podctl: $HOME is not set");
+        return exitcode::USAGE;
+    }
+
+    // A per-user install shadows a packaged one in $PATH, and the units
+    // under ~/.config take precedence over the package's: from then on
+    // every `pacman -Syu` leaves the old copy running, with nothing to
+    // say why.
+    if !force && let Some(pkg) = owning_package() {
+        eprintln!("podctl: the distro package '{pkg}' already provides podctl.");
+        eprintln!("        a per-user install would shadow it, and later package upgrades");
+        eprintln!("        would have no effect.");
+        eprintln!("hint: enable the packaged services instead:");
+        eprintln!("        systemctl --user enable --now podctld");
+        eprintln!("      or pass --force to install here anyway.");
+        return exitcode::USAGE;
+    }
+
+    let dirs = Dirs::current();
+    let bin_dir = dirs.bin.clone();
     let pods_dst = bin_dir.join("podctl");
     let podsd_dst = bin_dir.join("podctld");
     let pods_tray_dst = bin_dir.join("podctl-tray");
     let pods_popup_dst = bin_dir.join("podctl-popup");
-    let unit_path = home
-        .join(".config")
-        .join("systemd")
-        .join("user")
-        .join("podctld.service");
-    let tray_unit_path = home
-        .join(".config")
-        .join("systemd")
-        .join("user")
-        .join("podctl-tray.service");
-    let popup_unit_path = home
-        .join(".config")
-        .join("systemd")
-        .join("user")
-        .join("podctl-popup.service");
-    let man_dir = home.join(".local").join("share").join("man").join("man1");
+    let unit_path = dirs.unit.join("podctld.service");
+    let tray_unit_path = dirs.unit.join("podctl-tray.service");
+    let popup_unit_path = dirs.unit.join("podctl-popup.service");
+    let man_dir = dirs.man.clone();
 
     let shell = detect_shell();
-    let completion_target = completion_path(&shell, &home);
+    let completion_target = dirs.completion(&shell);
     let has_systemctl = have_systemctl();
 
     // Tray and popup are optional UI, so they are offered rather than
@@ -195,9 +197,16 @@ pub fn install(args: &[String]) -> i32 {
         if let Err(e) = std::fs::create_dir_all(&man_dir) {
             eprintln!("podctl: create {}: {e}", man_dir.display());
         } else {
-            let _ = std::fs::write(man_dir.join("podctl.1"), MAN_PODS);
-            let _ = std::fs::write(man_dir.join("podctld.1"), MAN_PODSD);
-            println!("  installed man pages");
+            let mut written = true;
+            for (name, text) in [("podctl.1", MAN_PODS), ("podctld.1", MAN_PODSD)] {
+                if let Err(e) = std::fs::write(man_dir.join(name), text) {
+                    eprintln!("podctl: write {name}: {e}");
+                    written = false;
+                }
+            }
+            if written {
+                println!("  installed man pages");
+            }
         }
     }
 
@@ -229,9 +238,9 @@ pub fn install(args: &[String]) -> i32 {
                 eprintln!("podctl: write unit: {e}");
             } else {
                 let _ = run("systemctl", &["--user", "daemon-reload"]);
-                if run("systemctl", &["--user", "enable", "--now", "podctld"]).is_ok() {
+                if enable_and_restart("podctld").is_ok() {
                     daemon_enabled = true;
-                    println!("  enabled podctld.service");
+                    println!("  enabled and started podctld.service");
                 } else {
                     eprintln!(
                         "podctl: systemctl --user enable failed (unit written but not started)"
@@ -239,13 +248,13 @@ pub fn install(args: &[String]) -> i32 {
                 }
             }
         } else {
-            let marker = home.join(".config").join("podctl").join("no-daemon");
-            if let Some(parent) = marker.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            let _ = std::fs::write(&marker, "");
-            println!("  daemon skipped (marker written, no banner shown)");
+            write_no_daemon_marker(&dirs.config);
         }
+    }
+    // `--no-daemon` says the same thing as declining the question, and
+    // used to leave the "running without daemon" banner switched on.
+    if no_daemon {
+        write_no_daemon_marker(&dirs.config);
     }
 
     if with_tray && has_systemctl {
@@ -260,9 +269,9 @@ pub fn install(args: &[String]) -> i32 {
             eprintln!("podctl: write tray unit: {e}");
         } else {
             let _ = run("systemctl", &["--user", "daemon-reload"]);
-            if run("systemctl", &["--user", "enable", "--now", "podctl-tray"]).is_ok() {
+            if enable_and_restart("podctl-tray").is_ok() {
                 tray_enabled = true;
-                println!("  enabled podctl-tray.service");
+                println!("  enabled and started podctl-tray.service");
             } else {
                 eprintln!(
                     "podctl: systemctl --user enable podctl-tray failed (unit written but not started)"
@@ -283,9 +292,9 @@ pub fn install(args: &[String]) -> i32 {
             eprintln!("podctl: write popup unit: {e}");
         } else {
             let _ = run("systemctl", &["--user", "daemon-reload"]);
-            if run("systemctl", &["--user", "enable", "--now", "podctl-popup"]).is_ok() {
+            if enable_and_restart("podctl-popup").is_ok() {
                 popup_enabled = true;
-                println!("  enabled podctl-popup.service");
+                println!("  enabled and started podctl-popup.service");
             } else {
                 eprintln!(
                     "podctl: systemctl --user enable podctl-popup failed (unit written but not started)"
@@ -310,12 +319,23 @@ pub fn install(args: &[String]) -> i32 {
             .map(|m| !m.contains(".local/share/man"))
             .unwrap_or(true)
     {
-        let manpath_dir = home.join(".local").join("share").join("man");
+        let manpath_dir = dirs.data.join("man");
         if !is_in_default_manpath(&manpath_dir) {
             println!();
             println!("note: 'man podctl' may need MANPATH:");
             println!("  export MANPATH=\"$HOME/.local/share/man:$MANPATH\"");
         }
+    }
+    if !no_completion && shell == "zsh" && !zsh_fpath_has(&completion_target) {
+        println!();
+        println!("note: zsh needs the completion directory in $fpath. Add before compinit:");
+        println!(
+            "  fpath=({} $fpath)",
+            completion_target
+                .parent()
+                .unwrap_or(&completion_target)
+                .display()
+        );
     }
     if daemon_enabled {
         println!();
@@ -334,25 +354,24 @@ pub fn install(args: &[String]) -> i32 {
 
 pub fn uninstall(args: &[String]) -> i32 {
     let yes = args.iter().any(|a| a == "-y" || a == "--yes");
+    let purge = args.iter().any(|a| a == "--purge");
 
-    let home = match std::env::var("HOME") {
-        Ok(h) => PathBuf::from(h),
-        Err(_) => {
-            eprintln!("podctl: $HOME is not set");
-            return exitcode::USAGE;
-        }
+    if std::env::var_os("HOME").is_none() {
+        eprintln!("podctl: $HOME is not set");
+        return exitcode::USAGE;
+    }
+    let xdg = XdgPaths::current();
+
+    // Which package owns the copy that is running, not whatever owns
+    // /usr/bin/podctl: with a self-built /usr/local/bin/podctl in front
+    // of a packaged one, the old check handed the package to pacman
+    // while leaving the running binary in place.
+    let system_pkg = owning_package_of_running_copy();
+    let foreign_pkg = if system_pkg.is_none() {
+        owning_package()
+    } else {
+        None
     };
-
-    let xdg = XdgPaths::from_home(&home);
-
-    // A distro package is detected no matter which copy is running, but it
-    // is only ours to remove when we *are* that copy: `podctl install`
-    // shadows /usr/bin/podctl in $PATH, and the user-level uninstall must
-    // not reach into a package it was not asked about.
-    let pkg = owning_package();
-    let owned = pkg.is_some() && running_from_system_bin();
-    let system_pkg = if owned { pkg.clone() } else { None };
-    let foreign_pkg = if owned { None } else { pkg };
 
     if system_pkg.is_none() && !xdg.any_exists() {
         match &foreign_pkg {
@@ -390,6 +409,22 @@ pub fn uninstall(args: &[String]) -> i32 {
         println!("    system package '{pkg}' — /usr/bin/podctl and its services");
         println!("    remove it with: sudo pacman -R {pkg}");
     }
+    let personal = xdg.personal_paths();
+    if !personal.is_empty() {
+        // The keys resolve the buds' rotating LE address, so they are
+        // worth naming rather than leaving quietly behind.
+        println!(
+            "  {}:",
+            if purge {
+                "settings and keys (--purge)"
+            } else {
+                "left in place (pass --purge to remove)"
+            }
+        );
+        for p in &personal {
+            println!("    {}", p.display());
+        }
+    }
     println!();
 
     if !yes && !confirm("Proceed?", true) {
@@ -418,6 +453,9 @@ pub fn uninstall(args: &[String]) -> i32 {
     // run `podctl install` on top, leaving stray binaries / units / docs
     // in ~/.local and ~/.config.
     xdg.purge();
+    if purge {
+        xdg.purge_personal();
+    }
 
     if have_systemctl() {
         let _ = run("systemctl", &["--user", "daemon-reload"]);
@@ -429,42 +467,117 @@ pub fn uninstall(args: &[String]) -> i32 {
     rc
 }
 
+/// The directories podctl writes into. `XDG_CONFIG_HOME` and friends
+/// are honoured here rather than assumed to be under `$HOME`: the
+/// installer used to write the no-daemon marker to `~/.config` while
+/// the CLI looked for it under `XDG_CONFIG_HOME`.
+struct Dirs {
+    bin: PathBuf,
+    unit: PathBuf,
+    man: PathBuf,
+    config: PathBuf,
+    state: PathBuf,
+    data: PathBuf,
+    config_home: PathBuf,
+}
+
+impl Dirs {
+    fn current() -> Self {
+        let home = podctl::xdg::home();
+        let config_home = podctl::xdg::config_home();
+        let data = podctl::xdg::data_home();
+        Self {
+            // ~/.local/bin is a convention, not an XDG variable.
+            bin: home.join(".local").join("bin"),
+            unit: config_home.join("systemd").join("user"),
+            man: data.join("man").join("man1"),
+            config: podctl::xdg::config_dir(),
+            state: podctl::xdg::state_dir(),
+            data,
+            config_home,
+        }
+    }
+
+    /// Everything under one directory, for tests.
+    #[cfg(test)]
+    fn under(home: &Path) -> Self {
+        let config_home = home.join(".config");
+        let data = home.join(".local").join("share");
+        Self {
+            bin: home.join(".local").join("bin"),
+            unit: config_home.join("systemd").join("user"),
+            man: data.join("man").join("man1"),
+            config: config_home.join("podctl"),
+            state: home.join(".local").join("state").join("podctl"),
+            data,
+            config_home,
+        }
+    }
+
+    fn completion(&self, shell: &str) -> PathBuf {
+        match shell {
+            "fish" => self
+                .config_home
+                .join("fish")
+                .join("completions")
+                .join("podctl.fish"),
+            "zsh" => self.data.join("zsh").join("site-functions").join("_podctl"),
+            _ => self
+                .data
+                .join("bash-completion")
+                .join("completions")
+                .join("podctl"),
+        }
+    }
+}
+
 struct XdgPaths {
     bin: Vec<PathBuf>,
     unit: Vec<PathBuf>,
     man: Vec<PathBuf>,
     completion: Vec<PathBuf>,
-    marker_dir: PathBuf,
+    config_dir: PathBuf,
+    state_dir: PathBuf,
 }
 
 impl XdgPaths {
+    fn current() -> Self {
+        Self::new(&Dirs::current())
+    }
+
+    #[cfg(test)]
     fn from_home(home: &Path) -> Self {
-        let bin_dir = home.join(".local").join("bin");
-        let unit_dir = home.join(".config").join("systemd").join("user");
-        let man_dir = home.join(".local").join("share").join("man").join("man1");
-        let marker_dir = home.join(".config").join("podctl");
+        Self::new(&Dirs::under(home))
+    }
+
+    fn new(d: &Dirs) -> Self {
         Self {
             bin: vec![
-                bin_dir.join("podctl"),
-                bin_dir.join("podctld"),
-                bin_dir.join("podctl-tray"),
-                bin_dir.join("podctl-popup"),
+                d.bin.join("podctl"),
+                d.bin.join("podctld"),
+                d.bin.join("podctl-tray"),
+                d.bin.join("podctl-popup"),
             ],
             unit: vec![
-                unit_dir.join("podctld.service"),
-                unit_dir.join("podctl-tray.service"),
-                unit_dir.join("podctl-popup.service"),
+                d.unit.join("podctld.service"),
+                d.unit.join("podctl-tray.service"),
+                d.unit.join("podctl-popup.service"),
             ],
-            man: vec![man_dir.join("podctl.1"), man_dir.join("podctld.1")],
+            man: vec![d.man.join("podctl.1"), d.man.join("podctld.1")],
             // Every shell's path, not just this shell's: install
             // writes the one for $SHELL, but a user who later
             // uninstalls from a different shell would otherwise leave
-            // the first one behind for good.
+            // the first one behind for good. `_pods` is where releases
+            // up to 0.3 put the zsh file.
             completion: ["bash", "zsh", "fish"]
                 .iter()
-                .map(|sh| completion_path(sh, home))
+                .map(|sh| d.completion(sh))
+                .chain(std::iter::once(
+                    d.data.join("zsh").join("site-functions").join("_pods"),
+                ))
                 .collect(),
-            marker_dir,
+            config_dir: d.config.clone(),
+            state_dir: d.state.clone(),
         }
     }
 
@@ -473,7 +586,7 @@ impl XdgPaths {
         v.extend(self.unit.iter().cloned());
         v.extend(self.man.iter().cloned());
         v.extend(self.completion.iter().cloned());
-        v.push(self.marker_dir.join("no-daemon"));
+        v.push(self.config_dir.join("no-daemon"));
         v
     }
 
@@ -483,6 +596,16 @@ impl XdgPaths {
 
     fn any_exists(&self) -> bool {
         self.all().iter().any(|p| p.exists())
+    }
+
+    /// The settings and the proximity keys: written by podctl, but not
+    /// by the installer, so they are only removed when asked for.
+    fn personal_paths(&self) -> Vec<PathBuf> {
+        [&self.config_dir, &self.state_dir]
+            .iter()
+            .filter(|p| p.exists())
+            .map(|p| p.to_path_buf())
+            .collect()
     }
 
     /// Service names whose unit files this run removes: the per-user ones
@@ -509,16 +632,29 @@ impl XdgPaths {
         for p in self.all() {
             let _ = std::fs::remove_file(&p);
         }
-        let _ = std::fs::remove_dir(&self.marker_dir);
+        // Only if the settings are gone too, which `--purge` does.
+        let _ = std::fs::remove_dir(&self.config_dir);
+    }
+
+    /// The settings and the keys, on `--purge`.
+    fn purge_personal(&self) {
+        for dir in [&self.config_dir, &self.state_dir] {
+            if let Err(e) = std::fs::remove_dir_all(dir)
+                && e.kind() != std::io::ErrorKind::NotFound
+            {
+                eprintln!("podctl: could not remove {}: {e}", dir.display());
+            }
+        }
     }
 }
 
 /// Whether the running binary is the packaged one, and `uninstall` may
 /// therefore hand the package to the package manager.
-fn running_from_system_bin() -> bool {
-    std::env::current_exe()
-        .map(|p| p.starts_with("/usr/bin") || p.starts_with("/usr/local/bin"))
-        .unwrap_or(false)
+/// The package that owns the binary running right now, if any — then
+/// `uninstall` may hand it to the package manager.
+fn owning_package_of_running_copy() -> Option<String> {
+    let exe = std::env::current_exe().ok()?;
+    pacman_owner(&exe.to_string_lossy())
 }
 
 fn pacman_remove(pkg: &str) -> i32 {
@@ -539,11 +675,14 @@ fn pacman_remove(pkg: &str) -> i32 {
     }
 }
 
+/// Whether a distro package provides podctl at all, whichever copy is
+/// running.
 fn owning_package() -> Option<String> {
-    let out = Command::new("pacman")
-        .args(["-Qoq", "/usr/bin/podctl"])
-        .output()
-        .ok()?;
+    pacman_owner("/usr/bin/podctl")
+}
+
+fn pacman_owner(path: &str) -> Option<String> {
+    let out = Command::new("pacman").args(["-Qoq", path]).output().ok()?;
     if !out.status.success() {
         return None;
     }
@@ -588,28 +727,11 @@ fn detect_shell() -> String {
     "bash".into()
 }
 
-fn completion_path(shell: &str, home: &Path) -> PathBuf {
-    match shell {
-        "fish" => home
-            .join(".config")
-            .join("fish")
-            .join("completions")
-            .join("podctl.fish"),
-        "zsh" => home
-            .join(".local")
-            .join("share")
-            .join("zsh")
-            .join("site-functions")
-            .join("_podctl"),
-        _ => home
-            .join(".local")
-            .join("share")
-            .join("bash-completion")
-            .join("completions")
-            .join("podctl"),
-    }
-}
-
+/// Write beside the target and rename over it. Deleting first and
+/// writing again left no binary at all if the copy was interrupted —
+/// a disk running full, a Ctrl-C — and an enabled unit then restarted
+/// into nothing. A rename is atomic, and replacing a file that is
+/// currently executing is fine on Linux.
 fn copy_replace(src: &Path, dst: &Path) -> io::Result<()> {
     use std::io::{Read, Write};
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -618,26 +740,55 @@ fn copy_replace(src: &Path, dst: &Path) -> io::Result<()> {
         std::fs::set_permissions(dst, std::fs::Permissions::from_mode(0o755))?;
         return Ok(());
     }
-    if dst.exists() {
-        std::fs::remove_file(dst)?;
-    }
-    // Open with the final mode set at create time so the file is never
-    // briefly visible under the user's umask before the chmod lands.
+    let tmp = dst.with_extension("new");
+    let _ = std::fs::remove_file(&tmp);
     let mut input = std::fs::File::open(src)?;
+    // The final mode is set at create time so the file is never briefly
+    // visible under the user's umask before a chmod lands.
     let mut output = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .mode(0o755)
-        .open(dst)?;
+        .open(&tmp)?;
     let mut buf = [0u8; 64 * 1024];
     loop {
         let n = input.read(&mut buf)?;
         if n == 0 {
             break;
         }
-        output.write_all(&buf[..n])?;
+        if let Err(e) = output.write_all(&buf[..n]) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e);
+        }
+    }
+    if let Err(e) = output.sync_all() {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    drop(output);
+    if let Err(e) = std::fs::rename(&tmp, dst) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
     }
     Ok(())
+}
+
+fn write_no_daemon_marker(config_dir: &Path) {
+    let marker = config_dir.join("no-daemon");
+    let _ = std::fs::create_dir_all(config_dir);
+    match std::fs::write(&marker, "") {
+        Ok(()) => println!("  daemon skipped (marker written, no banner shown)"),
+        Err(e) => eprintln!("podctl: write {}: {e}", marker.display()),
+    }
+}
+
+/// `enable --now` leaves a unit that is already running alone, so after
+/// an upgrade the old binary — by then deleted — kept running until
+/// someone found `podctl reboot`. `restart` starts a stopped unit and
+/// restarts a running one.
+fn enable_and_restart(unit: &str) -> io::Result<()> {
+    run("systemctl", &["--user", "enable", unit])?;
+    run("systemctl", &["--user", "restart", unit])
 }
 
 fn same_file(a: &Path, b: &Path) -> bool {
@@ -653,6 +804,25 @@ fn in_path(target: &Path) -> bool {
         return false;
     };
     path.split(':').any(|p| Path::new(p) == target)
+}
+
+/// Whether zsh would already look in this directory. `$fpath` is a zsh
+/// array, not an exported variable, so ask zsh itself.
+fn zsh_fpath_has(file: &Path) -> bool {
+    let Some(dir) = file.parent() else {
+        return false;
+    };
+    let Ok(out) = Command::new("zsh")
+        .args(["-c", "print -l $fpath"])
+        .env("LC_ALL", "C")
+        .output()
+    else {
+        // No zsh to ask: say nothing rather than guess.
+        return true;
+    };
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .any(|l| Path::new(l.trim()) == dir)
 }
 
 fn is_in_default_manpath(dir: &Path) -> bool {

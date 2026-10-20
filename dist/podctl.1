@@ -206,7 +206,7 @@ Restart the installed systemd user services
 .RB ( podctld ", " podctl-tray ", " podctl-popup ).
 No root required; units that are not installed are skipped.
 .TP
-.BR "install " [ --yes "] [" --no-daemon "] [" --no-completion "] [" --no-manpages "] [" --no-tray "] [" --no-popup "] [" --with-tray "] [" --with-popup ]
+.BR "install " [ --yes "] [" --force "] [" --no-daemon "] [" --no-completion "] [" --no-manpages "] [" --no-tray "] [" --no-popup "] [" --with-tray "] [" --with-popup ]
 Install binaries, completion, man pages and systemd user services to
 .IR ~/.local .
 No root required. The tray icon and the case-open popup are offered
@@ -223,20 +223,27 @@ flags take them without asking and
 skip the questions. The tray's left-click asks
 .B podctl-popup
 to draw, so a tray installed without it has nothing to show.
+.IP
+Units that are already running are restarted, so an upgrade takes
+effect. If a distro package already provides podctl, install stops:
+.I ~/.local/bin
+would shadow it and the per-user units would take precedence, leaving
+every later package upgrade without effect. Pass
+.B --force
+to install anyway.
 .TP
-.BR "uninstall " [ --yes ]
+.BR "uninstall " [ --yes "] [" --purge ]
 Remove everything
 .B install
 put in place. Idempotent.
 .IP
-If the running binary lives in a system bin dir (i.e. it was installed
-via the AUR
+If a distro package owns the binary that is running (the AUR
 .B podctl-bin
 or
-.B podctl-git
-package), this verb delegates to
+.BR podctl-git ),
+this verb delegates to
 .B sudo pacman -R <pkg>
-instead and stops the user services first. Use
+and stops the user services first. Use
 .B --yes
 to skip the prompt; the sudo password prompt still appears.
 .IP
@@ -244,6 +251,15 @@ Run from
 .I ~/.local/bin
 while such a package is also installed, only the per-user files go. The
 package and its running services are reported and left alone.
+.IP
+Your settings
+.RI ( $XDG_CONFIG_HOME/podctl )
+and the proximity keys
+.RI ( $XDG_STATE_HOME/podctl )
+are not created by the installer, so they stay and are named in the
+listing.
+.B --purge
+removes them as well.
 .SH OPTIONS
 .TP
 .B --json

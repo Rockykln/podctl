@@ -14,6 +14,7 @@ pub mod json;
 pub mod keys;
 pub mod l2cap;
 pub mod model;
+pub mod xdg;
 
 pub use caps::{Capabilities, Model};
 pub use ipc::{OkPayload, PressSide, Request, Response, WatchRole, socket_path};

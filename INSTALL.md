@@ -86,13 +86,23 @@ cargo build --release
 to `~/.local/bin/`, installs shell completion (bash/zsh/fish, picked
 from `$SHELL`), man pages, and — if you accept — a systemd **user**
 service for the daemon (and tray/popup with the flags). It is
-idempotent; re-running it is safe. `podctl uninstall` removes everything
-it created.
+idempotent; re-running it is safe, and services that are already
+running are restarted so an upgrade takes effect. `podctl uninstall`
+removes everything it created; `--purge` also removes your settings in
+`~/.config/podctl` and the proximity keys in `~/.local/state/podctl`.
 
 If `~/.local/bin` is not on `$PATH`, the installer prints the exact
-line for your shell rc.
+line for your shell rc. Same for `MANPATH` and, for zsh, `fpath`.
 
-`podctl reboot` restarts the installed user services after an update.
+**With a distro package installed** (`podctl-bin`, `podctl-git`),
+`podctl install` stops: the copies in `~/.local/bin` would shadow
+`/usr/bin/podctl` and the units in `~/.config/systemd/user` would take
+precedence over the package's, so later `pacman -Syu` upgrades would
+have no effect. Enable the packaged services instead —
+`systemctl --user enable --now podctld` — or pass `--force`.
+
+`podctl reboot` restarts the installed user services by hand, for
+instance after replacing the binaries yourself.
 
 ## Optional components
 

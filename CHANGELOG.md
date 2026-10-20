@@ -20,6 +20,38 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
   cannot keep up, it sends the state again instead of leaving a gap.
 
 ### Fixed
+- **`podctl install` left the old version running.** `enable --now`
+  does nothing to a unit that is already up, so after an upgrade
+  `podctld`, the tray and the bubble kept running from the binary that
+  had just been deleted until someone found `podctl reboot`. The
+  installer restarts what is running.
+- **`podctl install` shadowed a distro package without a word.** With
+  `podctl-bin` or `podctl-git` installed, the copies in `~/.local/bin`
+  take precedence in `$PATH` and the per-user units take precedence
+  over the package's, so every later `pacman -Syu` had no effect. It
+  stops now and points at the packaged services, or installs anyway
+  with `--force`.
+- **Replacing a binary was not atomic**: the old one was deleted and
+  the new one written in its place, so an interrupted copy left no
+  binary at all and an enabled unit restarting into nothing. It is
+  written beside the target and renamed over it.
+- **`podctl uninstall` could hand the wrong package to pacman.** It
+  asked who owns `/usr/bin/podctl` while allowing itself to run from
+  `/usr/local/bin`; it asks who owns the copy that is running.
+- **`podctl uninstall` left the proximity keys and the settings
+  behind** without mentioning them. Both are named in the listing, and
+  `--purge` removes them.
+- **The no-daemon marker was written where the CLI does not look for
+  it** (always `~/.config`, never `XDG_CONFIG_HOME`), so the
+  "running without daemon" banner kept appearing. All of podctl's paths
+  come from one place now, and `--no-daemon` writes the marker as
+  declining the question does.
+- The zsh completion went to a directory that is not in a default
+  `fpath`, under the old name `_pods`, with no hint. It is `_podctl`,
+  the installer prints the `fpath` line when it is needed, and
+  `uninstall` still removes the old file.
+- `podctl install` claimed to have installed man pages even when
+  writing them failed.
 - **Every failure from the daemon exited 69**, so a script could not
   tell "no daemon, try again later" from "this model will never do
   that". Errors carry a kind now — `unavailable`, `unsupported`,

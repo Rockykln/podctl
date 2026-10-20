@@ -466,11 +466,7 @@ struct Ducked {
 }
 
 fn duck_path() -> std::path::PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    let state = std::env::var("XDG_STATE_HOME").unwrap_or_else(|_| format!("{home}/.local/state"));
-    std::path::PathBuf::from(state)
-        .join("podctl")
-        .join("duck.json")
+    podctl::xdg::state_dir().join("duck.json")
 }
 
 fn write_duck(d: &Ducked) {

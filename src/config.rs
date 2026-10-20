@@ -41,9 +41,7 @@ impl Config {
 }
 
 pub fn path() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    let xdg = std::env::var("XDG_CONFIG_HOME").unwrap_or_else(|_| format!("{home}/.config"));
-    PathBuf::from(xdg).join("podctl").join("daemon.toml")
+    crate::xdg::config_dir().join("daemon.toml")
 }
 
 /// Read fresh every time it is needed: the file is small, and a change

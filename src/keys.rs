@@ -14,11 +14,7 @@ pub struct Keys {
 }
 
 pub fn path(mac: &str) -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    let state = std::env::var("XDG_STATE_HOME").unwrap_or_else(|_| format!("{home}/.local/state"));
-    PathBuf::from(state)
-        .join("podctl")
-        .join(format!("keys-{}", mac.replace(':', "")))
+    crate::xdg::state_dir().join(format!("keys-{}", mac.replace(':', "")))
 }
 
 pub fn load(mac: &str) -> Option<Keys> {

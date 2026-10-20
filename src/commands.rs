@@ -208,7 +208,7 @@ pub const COMMANDS: &[Cmd] = &[
     cmd!("debug", &[], MISC, &[], "[--no-redact]", &["--no-redact"],
         "diagnostic report", Ready),
     cmd!("install", &[], MISC, &[], "[options]",
-        &["--yes", "-y", "--no-daemon", "--no-completion", "--no-manpages",
+        &["--yes", "-y", "--force", "--no-daemon", "--no-completion", "--no-manpages",
           "--no-tray", "--no-popup", "--with-tray", "--with-popup"],
         "install into ~/.local", Ready),
     cmd!("uninstall", &[], MISC, &[], "[--yes]", &["--yes", "-y", "--purge"],

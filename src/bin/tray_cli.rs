@@ -140,9 +140,7 @@ fn watcher_present() -> Option<bool> {
 }
 
 fn tray_config_path() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    let xdg = std::env::var("XDG_CONFIG_HOME").unwrap_or_else(|_| format!("{home}/.config"));
-    PathBuf::from(xdg).join("podctl").join("tray.toml")
+    podctl::xdg::config_dir().join("tray.toml")
 }
 
 fn read_config_summary(path: &PathBuf) -> Option<String> {
