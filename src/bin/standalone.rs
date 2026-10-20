@@ -55,6 +55,10 @@ pub fn dispatch(req: &Request) -> Response {
             Response::err("watch needs the daemon — install it with 'podctl install'.")
         }
 
+        // There is no daemon on this side, so there is nobody to
+        // introduce. Saying so beats answering with our own version.
+        Request::Hello => Response::err("no daemon is running."),
+
         Request::DebugEmitCaseLid { .. } => {
             Response::err("debug emit-case-lid needs the daemon (it broadcasts on the event bus).")
         }

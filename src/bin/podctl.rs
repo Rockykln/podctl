@@ -1,11 +1,8 @@
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
 use std::process::ExitCode;
 use std::str::FromStr;
-use std::time::Duration;
 
 use podctl::{
-    PressSide, Response, WatchRole, commands, exitcode,
+    PressSide, Response, WatchRole, client, commands, exitcode,
     ipc::Request,
     model::{ConvAwareness, MicSelection, Mode, PressAction, Profile, SpatialAudio},
 };
@@ -518,65 +515,32 @@ fn require_arg<'a>(rest: &'a [String], verb: &str) -> Result<&'a str, CliError> 
         .ok_or_else(|| missing_value(verb, 0))
 }
 
-/// How long to wait for the daemon's answer. Ten seconds is plenty for
-/// everything that only reads cached state, but `pair` scans for twelve
-/// of them before it even answers, and BlueZ takes its time over a
-/// connect to buds that are still waking up.
-fn answer_timeout(req: &Request) -> Duration {
-    let secs = match req {
-        Request::Pair { .. } => 45,
-        Request::Connect | Request::Disconnect | Request::Unpair => 30,
-        _ => 10,
-    };
-    Duration::from_secs(secs)
-}
-
 fn try_daemon(req: &Request) -> Result<Option<Response>, CliError> {
-    let path = podctl::socket_path();
-    let stream = match UnixStream::connect(&path) {
-        Ok(s) => s,
-        Err(_) => return Ok(None),
+    let Some(mut client) = client::Client::connect() else {
+        return Ok(None);
     };
-    let wait = answer_timeout(req);
-    stream
-        .set_read_timeout(Some(wait))
-        .map_err(|e| CliError::oserr(format!("socket read timeout: {e}")))?;
-    stream
-        .set_write_timeout(Some(Duration::from_secs(5)))
-        .map_err(|e| CliError::oserr(format!("socket write timeout: {e}")))?;
-
-    let mut writer = &stream;
-    writeln!(
-        writer,
-        "{}",
-        serde_json::to_string(req).expect("request serialises")
-    )
-    .map_err(|e| CliError::oserr(format!("write to daemon: {e}")))?;
-    writer
-        .flush()
-        .map_err(|e| CliError::oserr(format!("flush: {e}")))?;
-
-    let mut reader = BufReader::new(&stream);
-    let mut line = String::new();
-    // A timeout on this socket surfaces as EAGAIN, which printed as
-    // "Resource temporarily unavailable (os error 11)".
-    let read = reader.read_line(&mut line).map_err(|e| match e.kind() {
-        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut => {
-            CliError::unavailable(format!(
-                "no answer from the daemon within {}s — it may still be working on it.",
-                wait.as_secs()
-            ))
+    match client.request(req, client::timeout_for(req)) {
+        Ok(Response::Err(message)) if message.starts_with("malformed request") => {
+            // The daemon could not read what we sent: almost always a
+            // daemon of another version, not a bug in the request.
+            let mut err = CliError::unavailable(message);
+            if let Some(note) = client::version_mismatch() {
+                err = err.with_hint(note);
+            }
+            Err(err)
         }
-        _ => CliError::oserr(format!("read from daemon: {e}")),
-    })?;
-    if read == 0 {
-        return Err(CliError::unavailable(
-            "the daemon closed the connection without answering.",
-        ));
+        Ok(resp) => Ok(Some(resp)),
+        Err(e @ client::Error::Timeout(_)) => Err(CliError::unavailable(e.to_string())),
+        Err(e @ client::Error::Closed) => Err(CliError::unavailable(e.to_string())),
+        Err(client::Error::Malformed(detail)) => {
+            let mut err = CliError::dataerr(format!("malformed answer: {detail}"));
+            if let Some(note) = client::version_mismatch() {
+                err = err.with_hint(note);
+            }
+            Err(err)
+        }
+        Err(client::Error::Io(e)) => Err(CliError::oserr(format!("talking to the daemon: {e}"))),
     }
-    let resp: Response = serde_json::from_str(line.trim())
-        .map_err(|e| CliError::dataerr(format!("malformed response: {e}")))?;
-    Ok(Some(resp))
 }
 
 fn handle_response(verb: &str, resp: Response, out: Output) -> Result<i32, CliError> {
@@ -603,6 +567,10 @@ fn handle_response(verb: &str, resp: Response, out: Output) -> Result<i32, CliEr
         }
         Response::Pong => {
             println!("pong");
+            Ok(exitcode::OK)
+        }
+        Response::Hello(hello) => {
+            println!("podctld {} (protocol {})", hello.version, hello.proto);
             Ok(exitcode::OK)
         }
         Response::Done => {
@@ -637,6 +605,7 @@ fn print_json(verb: &str, resp: &Response, pretty: bool) {
         Response::List(items) => Envelope::ok("list", items).print(pretty),
         Response::Event(e) => Envelope::ok("event", e).print(pretty),
         Response::Pong => Envelope::ok("pong", serde_json::json!({})).print(pretty),
+        Response::Hello(hello) => Envelope::ok("hello", hello).print(pretty),
         Response::Done => Envelope::ok("done", serde_json::json!({})).print(pretty),
         Response::Pending(reason) => {
             Envelope::ok("pending", serde_json::json!({ "reason": reason })).print(pretty)
@@ -646,101 +615,95 @@ fn print_json(verb: &str, resp: &Response, pretty: bool) {
 }
 
 fn print_version(out: Output) {
-    let mut running = false;
-    if let Ok(stream) = UnixStream::connect(podctl::socket_path()) {
-        let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
-        let mut w = &stream;
-        if writeln!(
-            w,
-            "{}",
-            serde_json::to_string(&Request::Ping).unwrap_or_default()
-        )
-        .is_ok()
-        {
-            let mut line = String::new();
-            let mut r = BufReader::new(&stream);
-            if r.read_line(&mut line).is_ok() {
-                running = matches!(
-                    serde_json::from_str::<Response>(line.trim()),
-                    Ok(Response::Pong)
-                );
-            }
-        }
-    }
+    // The daemon's own version, not ours: running a new CLI against an
+    // old daemon is the first thing to check when a setter fails.
+    let daemon = client::hello();
+    let (state, version) = match &daemon {
+        None => ("not-running", None),
+        Some(None) => ("running", None),
+        Some(Some(h)) => ("running", Some(h)),
+    };
     if out.json {
         podctl::json::Envelope::ok(
             "version",
             serde_json::json!({
-                "name":    env!("CARGO_PKG_NAME"),
-                "version": env!("CARGO_PKG_VERSION"),
-                "license": "MIT OR Apache-2.0",
-                "daemon":  if running { "running" } else { "not-running" },
+                "name":           env!("CARGO_PKG_NAME"),
+                "version":        env!("CARGO_PKG_VERSION"),
+                "license":        "MIT OR Apache-2.0",
+                "daemon":         state,
+                "daemon_version": version.map(|h| h.version.clone()),
+                "daemon_proto":   version.map(|h| h.proto),
+                "proto":          podctl::ipc::PROTO,
             }),
         )
         .print(out.pretty);
         return;
     }
-    println!("podctl {}", env!("CARGO_PKG_VERSION"));
-    println!("  license  MIT OR Apache-2.0");
     println!(
-        "  daemon   {}",
-        if running {
-            "running"
-        } else {
-            "not running (standalone mode)"
-        }
+        "podctl {} (protocol {})",
+        env!("CARGO_PKG_VERSION"),
+        podctl::ipc::PROTO
     );
+    println!("  license  MIT OR Apache-2.0");
+    match version {
+        Some(h) => println!("  daemon   {} (protocol {})", h.version, h.proto),
+        None if daemon.is_some() => {
+            println!("  daemon   running, version unknown (older than the handshake)")
+        }
+        None => println!("  daemon   not running (standalone mode)"),
+    }
+    if let Some(note) = client::version_mismatch() {
+        eprintln!("{PROG}: {note}");
+    }
 }
 
 fn stream_events(out: Output) -> Result<i32, CliError> {
     let path = podctl::socket_path();
-    let stream = UnixStream::connect(&path).map_err(|_| {
+    let mut client = client::Client::connect().ok_or_else(|| {
         CliError::unavailable(format!(
             "watch needs the daemon (no socket at {}). install it with 'podctl install'.",
             path.display()
         ))
     })?;
-    let mut writer = &stream;
-    writeln!(
-        writer,
-        "{}",
-        serde_json::to_string(&Request::Watch {
-            role: WatchRole::Observer,
-        })
-        .expect("serialise")
-    )
-    .map_err(|e| CliError::oserr(format!("write: {e}")))?;
-    writer
-        .flush()
-        .map_err(|e| CliError::oserr(format!("flush: {e}")))?;
-
-    let reader = BufReader::new(&stream);
-    for line in reader.lines() {
-        let line = line.map_err(|e| CliError::oserr(format!("read: {e}")))?;
-        if out.json {
-            // The subscription ack is protocol, not an event, and the
-            // raw line is the socket's shape, not ours: wrap it.
-            match serde_json::from_str::<Response>(&line) {
-                Ok(Response::Done) => {}
-                Ok(resp) => print_json("watch", &resp, out.pretty),
-                Err(e) => eprintln!("{PROG}: malformed event: {e}"),
+    // The subscription is a normal request; everything after it is the
+    // stream, which this reads line by line without a deadline.
+    let req = Request::Watch {
+        role: WatchRole::Observer,
+    };
+    match client.request(&req, client::timeout_for(&req)) {
+        Ok(Response::Err(message)) => return Err(CliError::unavailable(message)),
+        Ok(_) => {}
+        Err(e) => return Err(CliError::unavailable(e.to_string())),
+    }
+    if !out.json {
+        eprintln!("{PROG}: watching for events (Ctrl-C to stop)…");
+    }
+    loop {
+        // No deadline: a stream may be quiet for hours.
+        let resp = match client.next_line(None) {
+            Ok(resp) => resp,
+            // The daemon went away, which ends the stream rather than
+            // being an error of its own.
+            Err(client::Error::Closed) => return Ok(exitcode::OK),
+            Err(client::Error::Malformed(detail)) => {
+                eprintln!("{PROG}: malformed event: {detail}");
+                continue;
             }
+            Err(e) => return Err(CliError::oserr(e.to_string())),
+        };
+        if out.json {
+            print_json("watch", &resp, out.pretty);
             continue;
         }
-        match serde_json::from_str::<Response>(&line) {
-            Ok(Response::Event(e)) => fmt::print_event(&e),
-            Ok(Response::Done) => {
-                eprintln!("{PROG}: watching for events (Ctrl-C to stop)…");
-            }
-            Ok(Response::Err(error)) => {
+        match resp {
+            Response::Event(e) => fmt::print_event(&e),
+            Response::Err(error) => {
                 eprintln!("{PROG}: {error}");
                 return Ok(exitcode::UNAVAILABLE);
             }
-            Ok(_) => {}
-            Err(e) => eprintln!("{PROG}: malformed event: {e}"),
+            _ => {}
         }
     }
-    Ok(exitcode::OK)
 }
 
 // Restore default SIGPIPE so `podctl watch | head` exits cleanly.
@@ -755,22 +718,4 @@ const SIG_DFL: usize = 0;
 unsafe extern "C" {
     #[link_name = "signal"]
     fn libc_signal(sig: i32, handler: usize) -> usize;
-}
-
-#[cfg(test)]
-mod tests {
-    use super::answer_timeout;
-    use podctl::Request;
-
-    /// `pair` scans for twelve seconds before it answers at all, so the
-    /// ten-second wait every other verb gets ran out every single time.
-    #[test]
-    fn slow_verbs_wait_longer() {
-        let pair = answer_timeout(&Request::Pair {
-            address: None,
-            yes: false,
-        });
-        assert!(pair.as_secs() > 12, "{pair:?}");
-        assert!(answer_timeout(&Request::Connect) > answer_timeout(&Request::Status));
-    }
 }

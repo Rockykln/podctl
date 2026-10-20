@@ -320,6 +320,7 @@ impl Daemon {
             Request::Status => Response::ok_state(self.snapshot_fresh().await),
             Request::Battery => Response::ok_state(self.snapshot_fresh().await),
             Request::Ping => Response::ok_pong(),
+            Request::Hello => Response::ok_hello(self.state.read().await.address.clone()),
 
             Request::SetMode { mode } => self.set_mode(mode).await,
             Request::SetConv { conv } => self.set_conv(conv).await,

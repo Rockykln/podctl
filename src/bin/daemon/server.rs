@@ -5,14 +5,30 @@
 //! daemon's umask so it's owned-and-readable only by the user.
 
 use std::sync::Arc;
+use std::time::Duration;
 
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
+use tokio::sync::Semaphore;
+use tokio::time::timeout;
 use tracing::{debug, info, warn};
 
 use podctl::{Request, Response, WatchRole};
 
 use super::Daemon;
+
+/// A request is one JSON line. Without a cap, a client that never sends
+/// a newline makes the daemon buffer until it is killed.
+const MAX_REQUEST_BYTES: u64 = 64 * 1024;
+
+/// How long a connection may stay silent after opening. A socket that
+/// connects and says nothing used to hold its task for good.
+const FIRST_LINE: Duration = Duration::from_secs(5);
+
+/// Connections handled at once. `watch` streams are long-lived, so this
+/// is what stops a loop of clients from using up the daemon's memory
+/// and file descriptors.
+const MAX_CONNECTIONS: usize = 64;
 
 pub async fn serve(daemon: Arc<Daemon>) -> anyhow::Result<()> {
     let path = podctl::socket_path();
@@ -51,6 +67,7 @@ pub async fn serve(daemon: Arc<Daemon>) -> anyhow::Result<()> {
         let _ = std::fs::set_permissions(&path, perm);
     }
 
+    let gate = Arc::new(Semaphore::new(MAX_CONNECTIONS));
     loop {
         let (sock, _addr) = match listener.accept().await {
             Ok(s) => s,
@@ -62,22 +79,45 @@ pub async fn serve(daemon: Arc<Daemon>) -> anyhow::Result<()> {
                 continue;
             }
         };
+        let Ok(permit) = Arc::clone(&gate).try_acquire_owned() else {
+            warn!(
+                limit = MAX_CONNECTIONS,
+                "too many connections — turning one away"
+            );
+            let mut sock = sock;
+            let resp = Response::err("the daemon is handling too many connections right now.");
+            let _ = write_line(&mut sock, &resp).await;
+            continue;
+        };
         let d = Arc::clone(&daemon);
         tokio::spawn(async move {
             if let Err(e) = handle_connection(sock, d).await {
                 warn!(error = %e, "connection ended with error");
             }
+            drop(permit);
         });
     }
 }
 
 async fn handle_connection(sock: UnixStream, daemon: Arc<Daemon>) -> anyhow::Result<()> {
     let (rx, mut tx) = sock.into_split();
-    let mut lines = BufReader::new(rx).lines();
+    let mut lines = BufReader::new(rx.take(MAX_REQUEST_BYTES)).lines();
 
-    let Some(first) = lines.next_line().await? else {
-        return Ok(());
+    let first = match timeout(FIRST_LINE, lines.next_line()).await {
+        Ok(Ok(Some(line))) => line,
+        Ok(Ok(None)) => return Ok(()),
+        Ok(Err(e)) => return Err(e.into()),
+        Err(_) => {
+            let resp = Response::err("no request within five seconds.");
+            let _ = write_line(&mut tx, &resp).await;
+            return Ok(());
+        }
     };
+    if first.len() as u64 >= MAX_REQUEST_BYTES {
+        let resp = Response::err(format!("request longer than {MAX_REQUEST_BYTES} bytes."));
+        write_line(&mut tx, &resp).await?;
+        return Ok(());
+    }
     let req: Request = match serde_json::from_str(first.trim()) {
         Ok(r) => r,
         Err(e) => {
@@ -97,18 +137,47 @@ async fn handle_connection(sock: UnixStream, daemon: Arc<Daemon>) -> anyhow::Res
             WatchRole::Observer => None,
         };
         let mut events = daemon.subscribe();
+        // The state as it is right now, so a subscriber does not have to
+        // ask on a second connection — between those two an event could
+        // slip through unseen. The cached one: polling BlueZ here would
+        // hold up the subscription.
+        write_line(&mut tx, &Response::ok_state(daemon.snapshot().await)).await?;
         loop {
-            match events.recv().await {
-                Ok(evt) => {
-                    let frame = Response::ok_event(evt);
-                    if write_line(&mut tx, &frame).await.is_err() {
-                        break;
+            tokio::select! {
+                evt = events.recv() => match evt {
+                    Ok(evt) => {
+                        let frame = Response::ok_event(evt);
+                        if write_line(&mut tx, &frame).await.is_err() {
+                            break;
+                        }
                     }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        // Events were dropped, so the client's picture is
+                        // incomplete: send the whole state instead of
+                        // leaving it to guess.
+                        warn!(dropped = n, "watch client lagged — resending the state");
+                        if write_line(&mut tx, &Response::ok_state(daemon.snapshot().await))
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                },
+                // A hangup, or anything the client says on a stream that
+                // takes no requests. Without this the task and, worse, a
+                // popup registration outlived the client that left, so
+                // `show-popup` kept reporting success with nobody there
+                // to draw.
+                end = lines.next_line() => {
+                    match end {
+                        Ok(None) => debug!("watch client hung up"),
+                        Ok(Some(_)) => debug!("watch client sent a request on a stream"),
+                        Err(e) => debug!(error = %e, "watch client read ended"),
+                    }
+                    break;
                 }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                    warn!(dropped = n, "watch client lagged — events skipped");
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
         }
         return Ok(());

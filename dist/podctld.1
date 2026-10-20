@@ -69,6 +69,28 @@ shows.
 .I $XDG_STATE_HOME/podctl/keys-<address>
 The proximity keys the buds hand out, mode 0600. Needed to tell their
 announcement from every other Apple device nearby.
+.SH PROTOCOL
+The socket speaks newline-delimited JSON, one request per connection
+except
+.BR watch ,
+which stays open and streams events.
+.PP
+.EX
+{"op":"hello"}
+.EE
+.PP
+answers with the daemon's own version and the protocol version it
+speaks. A client whose version differs can say so instead of failing
+later with
+.IR "malformed request" ;
+.BR podctl (1)
+does exactly that.
+.PP
+A connection has five seconds to send its request, a request may be
+64\~KB, and 64 connections are served at once. A
+.B watch
+stream opens with the current state and is sent the state again whenever
+events had to be dropped for it.
 .SH SEE ALSO
 .BR podctl (1),
 .BR systemd.unit (5).

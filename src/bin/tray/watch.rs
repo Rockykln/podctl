@@ -1,14 +1,12 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::UnixStream;
 use tokio::time::sleep;
 use tracing::{debug, warn};
 use zbus::Connection;
 
 use podctl::model::{Battery, DeviceState, Event};
-use podctl::{Request, Response, WatchRole, socket_path};
+use podctl::{Request, Response, WatchRole, client};
 
 use crate::ipc;
 use crate::menu::{self, Menu};
@@ -55,18 +53,7 @@ async fn serve(
 ) -> anyhow::Result<()> {
     refresh_status(state, conn, notifier).await;
 
-    let path = socket_path();
-    let stream = UnixStream::connect(&path).await?;
-    let (rx, mut tx) = stream.into_split();
-    let mut line = serde_json::to_vec(&Request::Watch {
-        role: WatchRole::Observer,
-    })?;
-    line.push(b'\n');
-    tx.write_all(&line).await?;
-    tx.flush().await?;
-    drop(tx);
-
-    let mut reader = BufReader::new(rx).lines();
+    let mut reader = client::async_io::watch(WatchRole::Observer).await?;
     while let Some(l) = reader.next_line().await? {
         if l.is_empty() {
             continue;
@@ -83,6 +70,12 @@ async fn serve(
                 } else {
                     notify_changed(state, conn, notifier).await;
                 }
+            }
+            // The daemon sends the current state right after the
+            // subscription, and again when it had to drop events.
+            Ok(Response::State(ds)) => {
+                apply_status(state, ds).await;
+                notify_changed(state, conn, notifier).await;
             }
             Ok(Response::Done) => {}
             Ok(_) => {}

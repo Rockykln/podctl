@@ -82,6 +82,18 @@ async fn run() -> anyhow::Result<()> {
         }
     };
 
+    // podctld and podctl-tray share the socket's shapes, so a tray
+    // left running across an upgrade can fail at everything without a
+    // word. Say it out loud, once.
+    if let Ok(Some(note)) = tokio::task::spawn_blocking(podctl::client::version_mismatch).await {
+        warn!("{note}");
+        if let Some(n) = &notifier
+            && let Err(e) = n.version_mismatch(&note).await
+        {
+            warn!(error = %e, "could not show the version mismatch");
+        }
+    }
+
     watch::spawn(Arc::clone(&state), conn.clone(), notifier);
 
     wait_for_shutdown(&quit).await;

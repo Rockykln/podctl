@@ -5,6 +5,30 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased] — for 0.4
 
+### Added
+- **The daemon introduces itself.** `podctl version` and `podctl debug`
+  show which `podctld` is on the socket and which protocol it speaks,
+  and when that is not the one the binary belongs to, every command
+  that runs into it says so: *"podctld is 0.3.0 (protocol 1), this is
+  0.4.0 (protocol 1) — restart the services with 'podctl reboot'"*. The
+  tray says it as a notification, the bubble in its log. Before this, a
+  tray or CLI left running across an upgrade simply stopped working,
+  with "malformed request" as the only clue.
+- **A `watch` stream opens with the current state**, so a subscriber no
+  longer needs a second connection for it — an event could slip through
+  between the two. If the daemon has to drop events for a client that
+  cannot keep up, it sends the state again instead of leaving a gap.
+
+### Fixed
+- **The daemon could be held open by a client that said nothing.** A
+  connection now has five seconds to send its request, a request may be
+  64 KB (an endless line used to buffer until the daemon was killed),
+  and sixty-four connections are served at once — the sixty-fifth is
+  turned away with a message instead of adding to the pile.
+- **A `watch` client that went away left its task behind**, and with it
+  its registration: `podctl popup` kept reporting success although
+  nobody was there to draw the bubble. A hangup ends the stream now.
+
 ### Changed
 - **`--json` has one shape for every command**:
   `{"schema":1,"ok":true,"kind":"state","data":{…}}`, one object on one
@@ -27,9 +51,14 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
   package loaded; without it, it reads `COMP_WORDS` itself.
 - **`podctl` and `podctld` have to be the same version** for the
   settings commands: the socket carries the same spellings, so a 0.3
-  daemon answers a 0.4 `podctl mode anc` with "malformed request". Run
-  `podctl reboot` after an upgrade; a version handshake that says so
-  itself is still to come.
+  daemon answers a 0.4 `podctl mode anc` with "malformed request". The
+  handshake above now says so in as many words; run `podctl reboot`
+  after an upgrade.
+- Connecting to the daemon, writing a line and reading one back was
+  spelled out in nine places — three in the CLI, two each in the tray,
+  the bubble and the debug report — every one with its own timeouts and
+  its own idea of what an error is. One client in the library does it
+  now, blocking or async, single answer or event stream.
 - **The command line comes from one table now** (`src/commands.rs`).
   Help, the completion scripts and the argument checks were six
   hand-kept copies of the same list, and they had drifted: `podctl m

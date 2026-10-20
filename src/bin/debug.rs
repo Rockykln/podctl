@@ -73,6 +73,20 @@ pub fn run(no_redact: bool) -> String {
     );
     let _ = writeln!(out, "  socket exists {}", yesno(sock_present));
     let _ = writeln!(out, "  reachable     {}", yesno(daemon_pong()));
+    // Different versions of podctl and podctld is the usual cause of
+    // "the setter does nothing" after an update without a restart.
+    match podctl::client::hello() {
+        Some(Some(h)) => {
+            let _ = writeln!(out, "  podctld       {} (protocol {})", h.version, h.proto);
+        }
+        Some(None) => {
+            let _ = writeln!(out, "  podctld       ?  (older than the handshake)");
+        }
+        None => {}
+    }
+    if let Some(note) = podctl::client::version_mismatch() {
+        let _ = writeln!(out, "  mismatch      {note}");
+    }
     let mut key_stored = None;
     match daemon_status() {
         Some(st) => {
@@ -353,39 +367,24 @@ fn systemd_env_has(var: &str) -> bool {
 /// One-shot `status` against the daemon. `None` if it isn't answering —
 /// the caller already reports reachability separately.
 fn daemon_status() -> Option<podctl::DeviceState> {
-    use std::io::{BufRead, BufReader, Write};
-    use std::os::unix::net::UnixStream;
-    use std::time::Duration;
-
-    let s = UnixStream::connect(podctl::socket_path()).ok()?;
+    let mut client = podctl::client::Client::connect()?;
     // Generous: `status` may nudge the device for a battery dump first.
-    let _ = s.set_read_timeout(Some(Duration::from_millis(2500)));
-    let mut w = &s;
-    writeln!(w, r#"{{"op":"status"}}"#).ok()?;
-    let mut line = String::new();
-    BufReader::new(&s).read_line(&mut line).ok()?;
-    match serde_json::from_str::<podctl::Response>(line.trim()).ok()? {
+    let wait = std::time::Duration::from_millis(2500);
+    match client.request(&podctl::Request::Status, wait).ok()? {
         podctl::Response::State(st) => Some(st),
         _ => None,
     }
 }
 
 fn daemon_pong() -> bool {
-    use std::io::{BufRead, BufReader, Write};
-    use std::os::unix::net::UnixStream;
-    use std::time::Duration;
-
-    let Ok(s) = UnixStream::connect(podctl::socket_path()) else {
+    let Some(mut client) = podctl::client::Client::connect() else {
         return false;
     };
-    let _ = s.set_read_timeout(Some(Duration::from_millis(500)));
-    let mut w = &s;
-    if writeln!(w, r#"{{"op":"ping"}}"#).is_err() {
-        return false;
-    }
-    let mut line = String::new();
-    let mut r = BufReader::new(&s);
-    r.read_line(&mut line).is_ok() && line.contains("\"kind\":\"pong\"")
+    let wait = std::time::Duration::from_millis(500);
+    matches!(
+        client.request(&podctl::Request::Ping, wait),
+        Ok(podctl::Response::Pong)
+    )
 }
 
 // MAC: AA:BB:CC:DD:EE:FF -> AA:BB:CC:**:**:**  (Apple OUI stays, NIC bytes masked)

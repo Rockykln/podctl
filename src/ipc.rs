@@ -7,6 +7,11 @@ use crate::model::{
     SpatialAudio,
 };
 
+/// Version of the socket protocol: raised when a request or a response
+/// changes shape, not for a new command. A client that gets a different
+/// one knows the two halves do not fit before anything goes wrong.
+pub const PROTO: u32 = 1;
+
 pub fn socket_path() -> PathBuf {
     if let Ok(dir) = std::env::var("XDG_RUNTIME_DIR") {
         return PathBuf::from(dir).join("podctl.sock");
@@ -40,6 +45,9 @@ pub enum Request {
     Status,
     Battery,
     Ping,
+    /// Who is on the other end. A daemon too old to know this answers
+    /// "malformed request", which is an answer as well.
+    Hello,
 
     SetMode {
         mode: Mode,
@@ -145,9 +153,20 @@ pub enum Response {
     List(Vec<PairedDevice>),
     Event(Event),
     Pong,
+    Hello(Hello),
     Done,
     Pending(String),
     Err(String),
+}
+
+/// The daemon's half of the handshake.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Hello {
+    /// The daemon's own crate version, not the client's.
+    pub version: String,
+    pub proto: u32,
+    /// The AirPods it is acting on.
+    pub device: Option<String>,
 }
 
 // Legacy alias so existing call sites keep compiling.
@@ -168,6 +187,13 @@ impl Response {
     }
     pub fn ok_pong() -> Self {
         Response::Pong
+    }
+    pub fn ok_hello(device: Option<String>) -> Self {
+        Response::Hello(Hello {
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            proto: PROTO,
+            device,
+        })
     }
     pub fn ok_event(e: Event) -> Self {
         Response::Event(e)

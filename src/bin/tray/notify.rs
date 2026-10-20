@@ -67,6 +67,24 @@ impl Notifier {
         }
     }
 
+    /// A daemon of another version makes everything here fail silently,
+    /// so it is worth a notification.
+    pub async fn version_mismatch(&self, note: &str) -> zbus::Result<()> {
+        self.proxy
+            .notify(
+                "podctl-tray",
+                0,
+                "dialog-warning-symbolic",
+                "podctl needs a restart",
+                note,
+                &[],
+                HashMap::new(),
+                10_000,
+            )
+            .await?;
+        Ok(())
+    }
+
     async fn fire(&self, state: &TrayState, pct: u8) -> zbus::Result<()> {
         let title = state.title();
         let summary = format!("{title} battery low");

@@ -9,16 +9,14 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::thread::{self, sleep};
 use std::time::{Duration, Instant};
 
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::UnixStream;
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::time::sleep_until;
 
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use podctl::exitcode;
 use podctl::model::{Battery, DeviceState, Event};
-use podctl::{Request, Response, WatchRole, socket_path};
+use podctl::{Request, Response, WatchRole};
 
 use anim::{FRAME, Slide};
 use backend::{Backend, Frame};
@@ -103,6 +101,13 @@ async fn run() -> ExitCode {
         visible_ms = visible.as_millis() as u64,
         "podctl-popup ready"
     );
+
+    // Left running across an upgrade, the bubble reads a state it may
+    // not understand. The tray shows this as a notification; here it
+    // goes in the log, which is where 'podctl debug' points.
+    if let Ok(Some(note)) = tokio::task::spawn_blocking(podctl::client::version_mismatch).await {
+        warn!("{note}");
+    }
 
     let (tx, rx) = mpsc::channel::<Cmd>();
     let render = thread::spawn(move || render_loop(rx, &pick, theme, anim_ms, hold));
@@ -450,23 +455,9 @@ async fn serve(
         apply_status(snap, ds);
     }
 
-    let stream = match UnixStream::connect(socket_path()).await {
-        Ok(s) => s,
-        Err(_) => return false,
-    };
-    let (rx, mut wx) = stream.into_split();
-    let Ok(mut hello) = serde_json::to_vec(&Request::Watch {
-        role: WatchRole::Popup,
-    }) else {
+    let Ok(mut lines) = podctl::client::async_io::watch(WatchRole::Popup).await else {
         return false;
     };
-    hello.push(b'\n');
-    if wx.write_all(&hello).await.is_err() || wx.flush().await.is_err() {
-        return false;
-    }
-    drop(wx);
-
-    let mut lines = BufReader::new(rx).lines();
     let mut pending_open: Option<Instant> = None;
     let mut ear_changed: Option<Instant> = None;
     let mut locked = LockState::default();
@@ -653,15 +644,7 @@ fn apply_battery(snap: &mut Snapshot, b: &Battery) {
 }
 
 async fn oneshot(req: &Request) -> anyhow::Result<Response> {
-    let stream = UnixStream::connect(socket_path()).await?;
-    let (rx, mut wx) = stream.into_split();
-    let mut line = serde_json::to_vec(req)?;
-    line.push(b'\n');
-    wx.write_all(&line).await?;
-    wx.flush().await?;
-    let mut buf = String::new();
-    BufReader::new(rx).read_line(&mut buf).await?;
-    Ok(serde_json::from_str(buf.trim())?)
+    Ok(podctl::client::async_io::send(req).await?)
 }
 
 /// Without this podctl-popup wrote nothing at all — not a startup line,
