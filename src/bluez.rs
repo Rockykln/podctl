@@ -252,6 +252,12 @@ pub fn have_bluetoothctl() -> bool {
         .unwrap_or(false)
 }
 
+/// Address of the AirPods to act on, for the audio helpers that need
+/// one to tell their sink from every other Bluetooth device's.
+pub fn primary_airpods_address() -> Option<String> {
+    primary_airpods().map(|d| d.address)
+}
+
 pub fn primary_airpods() -> Option<DeviceSummary> {
     let all = paired_airpods().ok()?;
     all.iter()

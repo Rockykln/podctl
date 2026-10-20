@@ -144,7 +144,7 @@ pub fn run(no_redact: bool) -> String {
     let _ = writeln!(out, "  paired count  {total}");
 
     section(&mut out, "audio");
-    match audio::primary_sink() {
+    match airpods_sink() {
         Some(s) => {
             let _ = writeln!(out, "  sink          {}", redact_node(&s.name, no_redact));
             let _ = writeln!(out, "  default sink  {}", yesno(s.is_default));
@@ -153,7 +153,7 @@ pub fn run(no_redact: bool) -> String {
             let _ = writeln!(out, "  (no AirPods sink found in PipeWire)");
         }
     }
-    if let Some(c) = audio::primary_card() {
+    if let Some(c) = airpods_card() {
         let _ = writeln!(out, "  card          {}", redact_node(&c.name, no_redact));
         let _ = writeln!(out, "  profile       {}", c.active_profile);
         let _ = writeln!(out, "  codec         {}", c.codec.as_deref().unwrap_or("-"));
@@ -164,7 +164,7 @@ pub fn run(no_redact: bool) -> String {
             audio::available_codecs(&c).join(", ")
         );
     }
-    let state = audio::snapshot();
+    let state = airpods_audio_state();
     if let Some(v) = state.volume_percent {
         let _ = writeln!(
             out,
@@ -232,6 +232,23 @@ pub fn run(no_redact: bool) -> String {
 fn section(out: &mut String, name: &str) {
     let _ = writeln!(out);
     let _ = writeln!(out, "[{name}]");
+}
+
+/// The sink, card and audio state of the paired AirPods; another
+/// Bluetooth device's would say nothing about them.
+fn airpods_sink() -> Option<audio::SinkInfo> {
+    audio::sink_for(&bluez::primary_airpods_address()?)
+}
+
+fn airpods_card() -> Option<audio::CardInfo> {
+    audio::card_for(&bluez::primary_airpods_address()?)
+}
+
+fn airpods_audio_state() -> podctl::model::AudioState {
+    match bluez::primary_airpods_address() {
+        Some(addr) => audio::snapshot(&addr),
+        None => Default::default(),
+    }
 }
 
 fn yesno(b: bool) -> &'static str {

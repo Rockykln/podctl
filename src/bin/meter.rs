@@ -4,7 +4,7 @@
 //! computes RMS + peak per window, and prints dBFS.
 
 use std::io::{Read, Write};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use podctl::{audio, exitcode};
 
@@ -140,23 +140,11 @@ fn bar(db: f64, width: usize) -> String {
     s
 }
 
+/// The sink of the paired AirPods. Any other Bluetooth sink — a
+/// speaker, a headset — is somebody else's audio.
 fn find_airpods_sink() -> Option<String> {
-    let out = Command::new("pactl")
-        .env("LC_ALL", "C")
-        .args(["list", "short", "sinks"])
-        .output()
-        .ok()?;
-    let s = String::from_utf8_lossy(&out.stdout);
-    for line in s.lines() {
-        // tab-separated: id<TAB>name<TAB>...
-        let mut parts = line.split('\t');
-        let _id = parts.next()?;
-        let name = parts.next()?;
-        if name.starts_with("bluez_output.") {
-            return Some(name.to_string());
-        }
-    }
-    None
+    let addr = podctl::bluez::primary_airpods_address()?;
+    audio::sink_for(&addr).map(|s| s.name)
 }
 
 unsafe extern "C" {

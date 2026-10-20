@@ -59,6 +59,9 @@ pub struct Media {
 #[derive(Default)]
 struct Inner {
     conn: Option<Connection>,
+    /// Address of the buds. Every audio call needs it; without one the
+    /// first Bluetooth sink on the system would be taken for theirs.
+    addr: Option<String>,
     /// Players we paused, and how many buds were in ear right before.
     paused: Vec<String>,
     paused_at: Option<Instant>,
@@ -73,6 +76,12 @@ struct Inner {
 }
 
 impl Media {
+    /// Told by the link task on every poll, so the audio calls act on
+    /// the right device even across a reconnect.
+    pub async fn set_address(&self, addr: Option<String>) {
+        self.inner.lock().await.addr = addr;
+    }
+
     pub async fn on_in_ear(&self, prev: InEar, now: InEar, enabled: bool) {
         let before = prev.count_in_ear();
         let after = now.count_in_ear();
@@ -88,7 +97,10 @@ impl Media {
         if after < before {
             // Second bud out after the first: already paused, and the
             // resume target stays what it was before the first removal.
-            if !inner.paused.is_empty() || !airpods_are_output().await {
+            let Some(addr) = inner.addr.clone() else {
+                return;
+            };
+            if !inner.paused.is_empty() || !airpods_are_output(&addr).await {
                 return;
             }
             let paused = inner.pause_playing().await;
@@ -116,11 +128,14 @@ impl Media {
             debug!("buds back after the resume window — leaving playback paused");
             return;
         }
+        let Some(addr) = inner.addr.clone() else {
+            return;
+        };
         // The sink can take seconds to appear. Everything else that
         // touches the player list — a bud coming back out, the ducking
         // on speech — waits behind this lock, so let go of it first.
         drop(inner);
-        if !wait_for_airpods_output().await {
+        if !wait_for_airpods_output(&addr).await {
             warn!("AirPods sink never became the default — not resuming");
             return;
         }
@@ -146,13 +161,16 @@ impl Media {
             1..=3 if enabled => {
                 // Cancels a restore still waiting out the pause between sentences.
                 inner.speech_gen += 1;
+                let Some(addr) = inner.addr.clone() else {
+                    return;
+                };
                 if inner.ducked_from.is_some() || !inner.music_playing().await {
                     return;
                 }
-                let Some(vol) = current_volume().await else {
+                let Some(vol) = current_volume(&addr).await else {
                     return;
                 };
-                let Some(level) = measure_db().await else {
+                let Some(level) = measure_db(&addr).await else {
                     return;
                 };
                 if level < SILENCE_DB {
@@ -162,7 +180,7 @@ impl Media {
                 if target >= vol {
                     return;
                 }
-                if fade(vol, target, FADE_TICK).await {
+                if fade(&addr, vol, target, FADE_TICK).await {
                     info!(
                         from = vol,
                         to = target,
@@ -196,11 +214,14 @@ impl Media {
 
 impl Inner {
     async fn restore_volume(&mut self) {
+        let Some(addr) = self.addr.clone() else {
+            return;
+        };
         let Some(vol) = self.ducked_from.take() else {
             return;
         };
-        let from = current_volume().await.unwrap_or(vol);
-        if fade(from, vol, RESTORE_TICK).await {
+        let from = current_volume(&addr).await.unwrap_or(vol);
+        if fade(&addr, from, vol, RESTORE_TICK).await {
             info!(to = vol, "speech ended — volume restored");
         }
     }
@@ -221,7 +242,10 @@ impl Inner {
     /// Ducking silence only makes the volume jump in the OSD and mixer.
     /// Both must agree: the sink carries audio and a player says Playing.
     async fn music_playing(&mut self) -> bool {
-        let running = tokio::task::spawn_blocking(audio::primary_sink_running)
+        let Some(addr) = self.addr.clone() else {
+            return false;
+        };
+        let running = tokio::task::spawn_blocking(move || audio::sink_running_for(&addr))
             .await
             .unwrap_or(false);
         if !running {
@@ -355,16 +379,17 @@ fn parked_to_charge(now: InEar) -> bool {
     matches!((now.primary, now.secondary), (InCase, In) | (In, InCase))
 }
 
-async fn airpods_are_output() -> bool {
-    tokio::task::spawn_blocking(|| audio::primary_sink().is_some_and(|s| s.is_default))
+async fn airpods_are_output(addr: &str) -> bool {
+    let addr = addr.to_string();
+    tokio::task::spawn_blocking(move || audio::sink_for(&addr).is_some_and(|s| s.is_default))
         .await
         .unwrap_or(false)
 }
 
-async fn wait_for_airpods_output() -> bool {
+async fn wait_for_airpods_output(addr: &str) -> bool {
     let deadline = Instant::now() + SINK_WAIT;
     loop {
-        if airpods_are_output().await {
+        if airpods_are_output(addr).await {
             return true;
         }
         if Instant::now() >= deadline {
@@ -374,8 +399,9 @@ async fn wait_for_airpods_output() -> bool {
     }
 }
 
-async fn current_volume() -> Option<u8> {
-    tokio::task::spawn_blocking(|| audio::snapshot().volume_percent)
+async fn current_volume(addr: &str) -> Option<u8> {
+    let addr = addr.to_string();
+    tokio::task::spawn_blocking(move || audio::snapshot(&addr).volume_percent)
         .await
         .ok()
         .flatten()
@@ -390,9 +416,10 @@ fn duck_target(vol: u8, level_db: f64) -> u8 {
 }
 
 /// RMS level of what is playing to the AirPods, before the sink volume.
-async fn measure_db() -> Option<f64> {
-    tokio::task::spawn_blocking(|| {
-        let sink = audio::primary_sink()?;
+async fn measure_db(addr: &str) -> Option<f64> {
+    let addr = addr.to_string();
+    tokio::task::spawn_blocking(move || {
+        let sink = audio::sink_for(&addr)?;
         let mut child = audio::capture_cmd(&sink.name, 44_100, 2)?
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
@@ -438,9 +465,10 @@ fn loud_db(samples: &[[u8; 2]]) -> Option<f64> {
     Some(20.0 * (rms / 32768.0).log10())
 }
 
-async fn fade(from: u8, to: u8, tick: Duration) -> bool {
+async fn fade(addr: &str, from: u8, to: u8, tick: Duration) -> bool {
+    let addr = addr.to_string();
     tokio::task::spawn_blocking(move || {
-        let Some(sink) = audio::primary_sink() else {
+        let Some(sink) = audio::sink_for(&addr) else {
             return false;
         };
         let (mut v, end) = (i32::from(from) * 10, i32::from(to) * 10);

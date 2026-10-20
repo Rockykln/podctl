@@ -118,13 +118,30 @@ fn status() -> Response {
     } else {
         state.capabilities = Capabilities::default();
     }
-    state.audio = audio::snapshot();
+    state.audio = airpods_audio_state();
     state.updated_at = now_secs();
     Response::ok_state(state)
 }
 
+/// The sink, card and audio state of the paired AirPods. Anything else
+/// on `bluez_output.*` belongs to another device.
+fn airpods_sink() -> Option<audio::SinkInfo> {
+    audio::sink_for(&bluez::primary_airpods_address()?)
+}
+
+fn airpods_card() -> Option<audio::CardInfo> {
+    audio::card_for(&bluez::primary_airpods_address()?)
+}
+
+fn airpods_audio_state() -> podctl::model::AudioState {
+    match bluez::primary_airpods_address() {
+        Some(addr) => audio::snapshot(&addr),
+        None => Default::default(),
+    }
+}
+
 fn audio_volume(pct: u8) -> Response {
-    let Some(sink) = audio::primary_sink() else {
+    let Some(sink) = airpods_sink() else {
         return Response::err("no AirPods audio sink found — connect them first.");
     };
     match audio::set_volume(&sink, pct) {
@@ -134,7 +151,7 @@ fn audio_volume(pct: u8) -> Response {
 }
 
 fn audio_mute(muted: bool) -> Response {
-    let Some(sink) = audio::primary_sink() else {
+    let Some(sink) = airpods_sink() else {
         return Response::err("no AirPods audio sink found.");
     };
     match audio::set_muted(&sink, muted) {
@@ -144,7 +161,7 @@ fn audio_mute(muted: bool) -> Response {
 }
 
 fn audio_profile(profile: Profile) -> Response {
-    let Some(card) = audio::primary_card() else {
+    let Some(card) = airpods_card() else {
         return Response::err("no AirPods card found.");
     };
     match audio::set_profile(&card, profile) {
@@ -154,7 +171,7 @@ fn audio_profile(profile: Profile) -> Response {
 }
 
 fn audio_codec(codec: &str) -> Response {
-    let Some(card) = audio::primary_card() else {
+    let Some(card) = airpods_card() else {
         return Response::err("no AirPods card found.");
     };
     match audio::set_codec(&card, codec) {
@@ -164,7 +181,7 @@ fn audio_codec(codec: &str) -> Response {
 }
 
 fn audio_default() -> Response {
-    let Some(sink) = audio::primary_sink() else {
+    let Some(sink) = airpods_sink() else {
         return Response::err("no AirPods audio sink found.");
     };
     match audio::set_default(&sink) {
@@ -174,7 +191,7 @@ fn audio_default() -> Response {
 }
 
 fn audio_latency(ms: i32) -> Response {
-    let Some(card) = audio::primary_card() else {
+    let Some(card) = airpods_card() else {
         return Response::err("no AirPods card found.");
     };
     match audio::set_latency_offset(&card, ms) {

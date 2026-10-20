@@ -116,6 +116,7 @@ pub async fn run(daemon: Arc<Daemon>) {
             }
             first_poll = false;
             let _ = scan_tx.send(snap_addr.is_some() && !snap_connected);
+            daemon.media.set_address(snap_addr.clone()).await;
             // Spawn, restart or stop the AAP loop.
             aap.sync(&daemon, &snap_addr, snap_connected).await;
             aap.watchdog(&daemon).await;
@@ -331,7 +332,10 @@ fn snapshot_now() -> podctl::DeviceState {
     } else {
         s.capabilities = Capabilities::default();
     }
-    s.audio = audio::snapshot();
+    s.audio = match s.address.clone() {
+        Some(addr) => audio::snapshot(&addr),
+        None => Default::default(),
+    };
     s.updated_at = now_secs();
     debug!(
         connected = s.connected,

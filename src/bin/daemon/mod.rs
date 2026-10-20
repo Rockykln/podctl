@@ -550,9 +550,21 @@ impl Daemon {
 // Audio handlers wrap the sync `podctl::audio` helpers on a blocking task
 // and update cached state on success.
 
+/// Every audio helper needs the address of the buds: without one, the
+/// sink of the first Bluetooth device on the system would be taken for
+/// theirs.
+const NO_ADDRESS: &str = "no AirPods address known — none paired, or not seen yet";
+
+async fn audio_address(d: &Daemon) -> Option<String> {
+    d.state.read().await.address.clone()
+}
+
 async fn audio_set_volume(d: &Daemon, percent: u8) -> Response {
+    let Some(addr) = audio_address(d).await else {
+        return Response::err(NO_ADDRESS);
+    };
     let res = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-        let sink = podctl::audio::primary_sink()
+        let sink = podctl::audio::sink_for(&addr)
             .ok_or_else(|| anyhow::anyhow!("no AirPods audio sink found"))?;
         podctl::audio::set_volume(&sink, percent)
     })
@@ -570,8 +582,11 @@ async fn audio_set_volume(d: &Daemon, percent: u8) -> Response {
 }
 
 async fn audio_set_muted(d: &Daemon, muted: bool) -> Response {
+    let Some(addr) = audio_address(d).await else {
+        return Response::err(NO_ADDRESS);
+    };
     let res = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-        let sink = podctl::audio::primary_sink()
+        let sink = podctl::audio::sink_for(&addr)
             .ok_or_else(|| anyhow::anyhow!("no AirPods audio sink found"))?;
         podctl::audio::set_muted(&sink, muted)
     })
@@ -589,8 +604,11 @@ async fn audio_set_muted(d: &Daemon, muted: bool) -> Response {
 }
 
 async fn audio_set_profile(d: &Daemon, profile: podctl::Profile) -> Response {
+    let Some(addr) = audio_address(d).await else {
+        return Response::err(NO_ADDRESS);
+    };
     let res = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-        let card = podctl::audio::primary_card()
+        let card = podctl::audio::card_for(&addr)
             .ok_or_else(|| anyhow::anyhow!("no AirPods card found"))?;
         podctl::audio::set_profile(&card, profile)
     })
@@ -609,8 +627,11 @@ async fn audio_set_profile(d: &Daemon, profile: podctl::Profile) -> Response {
 
 async fn audio_set_codec(d: &Daemon, codec: String) -> Response {
     let codec_for_task = codec.clone();
+    let Some(addr) = audio_address(d).await else {
+        return Response::err(NO_ADDRESS);
+    };
     let res = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-        let card = podctl::audio::primary_card()
+        let card = podctl::audio::card_for(&addr)
             .ok_or_else(|| anyhow::anyhow!("no AirPods card found"))?;
         podctl::audio::set_codec(&card, &codec_for_task)
     })
@@ -628,8 +649,11 @@ async fn audio_set_codec(d: &Daemon, codec: String) -> Response {
 }
 
 async fn audio_make_default(d: &Daemon) -> Response {
-    let res = tokio::task::spawn_blocking(|| -> anyhow::Result<()> {
-        let sink = podctl::audio::primary_sink()
+    let Some(addr) = audio_address(d).await else {
+        return Response::err(NO_ADDRESS);
+    };
+    let res = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        let sink = podctl::audio::sink_for(&addr)
             .ok_or_else(|| anyhow::anyhow!("no AirPods audio sink found"))?;
         podctl::audio::set_default(&sink)
     })
@@ -647,8 +671,11 @@ async fn audio_make_default(d: &Daemon) -> Response {
 }
 
 async fn audio_set_latency(d: &Daemon, ms: i32) -> Response {
+    let Some(addr) = audio_address(d).await else {
+        return Response::err(NO_ADDRESS);
+    };
     let res = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-        let card = podctl::audio::primary_card()
+        let card = podctl::audio::card_for(&addr)
             .ok_or_else(|| anyhow::anyhow!("no AirPods card found"))?;
         podctl::audio::set_latency_offset(&card, ms)
     })

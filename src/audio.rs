@@ -19,21 +19,36 @@ pub struct CardInfo {
     pub codec: Option<String>,
 }
 
-pub fn primary_sink() -> Option<SinkInfo> {
+/// PipeWire and PulseAudio name a device's sink and card after its
+/// address: `bluez_output.AA_BB_CC_DD_EE_01.1` (the suffix differs
+/// between WirePlumber versions), `bluez_card.AA_BB_CC_DD_EE_01`.
+fn bluez_prefix(kind: &str, addr: &str) -> String {
+    format!("{kind}.{}.", addr.replace(':', "_"))
+}
+
+/// The sink of the device at `addr`, or `None` when it has none — it is
+/// disconnected, or its card sits in the `off` profile.
+pub fn sink_for(addr: &str) -> Option<SinkInfo> {
     let default = default_sink_name().ok();
     let out = pactl(&["list", "sinks", "short"]).ok()?;
+    pick_sink(&out, addr, default.as_deref())
+}
+
+fn pick_sink(out: &str, addr: &str, default: Option<&str>) -> Option<SinkInfo> {
+    let want = bluez_prefix("bluez_output", addr);
     for line in out.lines() {
         let mut cols = line.split('\t');
-        let id: u32 = cols.next()?.parse().ok()?;
+        let Some(id) = cols.next().and_then(|c| c.parse::<u32>().ok()) else {
+            continue;
+        };
         let name = cols.next()?.to_string();
-        if !name.starts_with("bluez_output.") {
+        if !name.starts_with(&want) {
             continue;
         }
-        let address = extract_address(&name)?;
-        let is_default = default.as_deref() == Some(name.as_str());
+        let is_default = default == Some(name.as_str());
         return Some(SinkInfo {
             name,
-            address,
+            address: addr.to_string(),
             id,
             is_default,
         });
@@ -41,22 +56,29 @@ pub fn primary_sink() -> Option<SinkInfo> {
     None
 }
 
-/// Whether the AirPods sink is actually playing something right now
+/// Whether that device's sink is actually playing something right now
 /// (PipeWire reports `RUNNING`; idle and suspended sinks carry no audio).
-pub fn primary_sink_running() -> bool {
+pub fn sink_running_for(addr: &str) -> bool {
     let Ok(out) = pactl(&["list", "sinks", "short"]) else {
         return false;
     };
+    sink_is_running(&out, addr)
+}
+
+fn sink_is_running(out: &str, addr: &str) -> bool {
+    let want = bluez_prefix("bluez_output", addr);
     out.lines().any(|l| {
         let cols: Vec<&str> = l.split('\t').collect();
-        cols.get(1).is_some_and(|n| n.starts_with("bluez_output."))
-            && cols.last() == Some(&"RUNNING")
+        cols.get(1).is_some_and(|n| n.starts_with(&want)) && cols.last() == Some(&"RUNNING")
     })
 }
 
-pub fn primary_card() -> Option<CardInfo> {
-    let sink = primary_sink()?;
-    let target = format!("bluez_card.{}", sink.address.replace(':', "_"));
+/// The card of the device at `addr`. Looked up by name rather than
+/// through its sink: in the `off` profile there is no sink, and deriving
+/// one from the other left `profile`, `codec` and `latency` with
+/// "no AirPods card found" and no way back.
+pub fn card_for(addr: &str) -> Option<CardInfo> {
+    let target = format!("bluez_card.{}", addr.replace(':', "_"));
     let out = pactl(&["list", "cards"]).ok()?;
     parse_card_block(&out, &target)
 }
@@ -258,11 +280,11 @@ pub fn set_latency_offset(card: &CardInfo, ms: i32) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn snapshot() -> AudioState {
-    let Some(sink) = primary_sink() else {
+pub fn snapshot(addr: &str) -> AudioState {
+    let Some(sink) = sink_for(addr) else {
         return AudioState::default();
     };
-    let card = primary_card();
+    let card = card_for(addr);
     let volume_percent = parse_sink_volume_percent(&sink.name);
     let muted = parse_sink_mute(&sink.name);
     let (profile, codec, available) = match &card {
@@ -371,4 +393,52 @@ pub fn have_pactl() -> bool {
         .status()
         .map(|s| s.success())
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{pick_sink, sink_is_running};
+
+    /// A Bluetooth speaker and the AirPods, in that order — which is
+    /// what made taking the first `bluez_output.*` send the volume,
+    /// the profile and the ducking to the speaker.
+    const SINKS: &str = "\
+42\tbluez_output.FF_EE_DD_CC_BB_AA.1\tPipeWire\ts16le 2ch 44100Hz\tRUNNING
+43\tbluez_output.AA_BB_CC_DD_EE_01.1\tPipeWire\ts16le 2ch 44100Hz\tIDLE
+44\talsa_output.pci-0000_00_1f.3.analog-stereo\tPipeWire\ts32le 2ch 48000Hz\tSUSPENDED";
+
+    #[test]
+    fn picks_the_sink_of_one_device() {
+        let s = pick_sink(SINKS, "AA:BB:CC:DD:EE:01", None).expect("AirPods sink");
+        assert_eq!(s.name, "bluez_output.AA_BB_CC_DD_EE_01.1");
+        assert_eq!(s.id, 43);
+        assert!(!s.is_default);
+        assert!(pick_sink(SINKS, "11:22:33:44:55:66", None).is_none());
+    }
+
+    #[test]
+    fn marks_the_default_sink() {
+        let default = Some("bluez_output.AA_BB_CC_DD_EE_01.1");
+        let s = pick_sink(SINKS, "AA:BB:CC:DD:EE:01", default).expect("AirPods sink");
+        assert!(s.is_default);
+        let other = pick_sink(SINKS, "FF:EE:DD:CC:BB:AA", default).expect("speaker sink");
+        assert!(!other.is_default);
+    }
+
+    /// The speaker is the one playing here; the ducking used to measure
+    /// and lower whatever it found first.
+    #[test]
+    fn running_is_per_device() {
+        assert!(sink_is_running(SINKS, "FF:EE:DD:CC:BB:AA"));
+        assert!(!sink_is_running(SINKS, "AA:BB:CC:DD:EE:01"));
+    }
+
+    /// WirePlumber has named the sink `.a2dp-sink` and `.1` over the
+    /// years; neither suffix may be matched on.
+    #[test]
+    fn suffix_does_not_matter() {
+        let older = "7\tbluez_output.AA_BB_CC_DD_EE_01.a2dp-sink\tPipeWire\ts16le\tIDLE";
+        let s = pick_sink(older, "AA:BB:CC:DD:EE:01", None).expect("AirPods sink");
+        assert_eq!(s.id, 7);
+    }
 }
