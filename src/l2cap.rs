@@ -105,6 +105,15 @@ impl AsRawFd for L2capStream {
     }
 }
 
+impl FromRawFd for L2capStream {
+    /// Takes ownership of `fd`, which must be a connected socket.
+    unsafe fn from_raw_fd(fd: RawFd) -> Self {
+        Self {
+            fd: unsafe { OwnedFd::from_raw_fd(fd) },
+        }
+    }
+}
+
 impl IntoRawFd for L2capStream {
     fn into_raw_fd(self) -> RawFd {
         self.fd.into_raw_fd()

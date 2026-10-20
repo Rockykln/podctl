@@ -5,8 +5,8 @@
 //! on 2026-05-11.
 
 use std::os::unix::io::AsRawFd;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock, Weak};
 
 use tracing::{debug, info, warn};
 
@@ -39,7 +39,11 @@ pub const SUBSCRIBE_NOTIFICATIONS: &[u8] = &[
 
 pub struct AapTask {
     cancelled: Arc<AtomicBool>,
-    fd: Arc<AtomicI32>,
+    /// The worker's socket, weakly. A raw fd number would outlive the
+    /// socket: the worker closes it on its way out, the kernel hands the
+    /// number to the next connection the daemon opens, and a late
+    /// shutdown would cut that one instead.
+    stream: Arc<OnceLock<Weak<L2capStream>>>,
     frames: Arc<AtomicU64>,
     join: Option<std::thread::JoinHandle<()>>,
 }
@@ -62,11 +66,9 @@ impl AapTask {
 
     pub fn shutdown(mut self) {
         self.cancelled.store(true, Ordering::SeqCst);
-        let fd = self.fd.load(Ordering::SeqCst);
-        if fd >= 0 {
-            unsafe {
-                libc_shutdown(fd, 2);
-            }
+        // Nothing to shut down once the worker has dropped the socket.
+        if let Some(stream) = self.stream.get().and_then(Weak::upgrade) {
+            let _ = stream.shutdown_both();
         }
         if let Some(j) = self.join.take() {
             let _ = j.join();
@@ -76,21 +78,21 @@ impl AapTask {
 
 pub fn spawn(daemon: Arc<Daemon>, mac: String) -> AapTask {
     let cancelled = Arc::new(AtomicBool::new(false));
-    let fd = Arc::new(AtomicI32::new(-1));
+    let stream = Arc::new(OnceLock::new());
     let frames = Arc::new(AtomicU64::new(0));
     let handle = tokio::runtime::Handle::current();
     let join = {
         let cancelled = cancelled.clone();
-        let fd = fd.clone();
+        let stream = stream.clone();
         let frames = frames.clone();
         std::thread::Builder::new()
             .name(format!("aap-{}", short_mac(&mac)))
-            .spawn(move || run(daemon, mac, cancelled, fd, frames, handle))
+            .spawn(move || run(daemon, mac, cancelled, stream, frames, handle))
             .expect("spawn aap thread")
     };
     AapTask {
         cancelled,
-        fd,
+        stream,
         frames,
         join: Some(join),
     }
@@ -100,7 +102,7 @@ fn run(
     daemon: Arc<Daemon>,
     mac: String,
     cancelled: Arc<AtomicBool>,
-    fd_slot: Arc<AtomicI32>,
+    stream_slot: Arc<OnceLock<Weak<L2capStream>>>,
     frames: Arc<AtomicU64>,
     rt: tokio::runtime::Handle,
 ) {
@@ -109,7 +111,7 @@ fn run(
         Some(s) => Arc::new(s),
         None => return,
     };
-    fd_slot.store(stream.as_raw_fd(), Ordering::SeqCst);
+    let _ = stream_slot.set(Arc::downgrade(&stream));
 
     if let Err(e) = stream.send(HANDSHAKE) {
         warn!(error = %e, "AAP handshake write failed");
@@ -428,7 +430,69 @@ fn short_mac(mac: &str) -> String {
     mac.replace(':', "").chars().take(6).collect()
 }
 
-unsafe extern "C" {
-    #[link_name = "shutdown"]
-    fn libc_shutdown(fd: i32, how: i32) -> i32;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::io::FromRawFd;
+
+    unsafe extern "C" {
+        fn socketpair(domain: i32, ty: i32, protocol: i32, sv: *mut i32) -> i32;
+        fn dup2(oldfd: i32, newfd: i32) -> i32;
+        fn close(fd: i32) -> i32;
+        fn shutdown(fd: i32, how: i32) -> i32;
+        #[link_name = "write"]
+        fn libc_write(fd: i32, buf: *const std::ffi::c_void, count: usize) -> isize;
+    }
+
+    const AF_UNIX: i32 = 1;
+    const SOCK_STREAM: i32 = 1;
+
+    fn connected_pair() -> (i32, i32) {
+        let mut fds = [0i32; 2];
+        let rc = unsafe { socketpair(AF_UNIX, SOCK_STREAM, 0, fds.as_mut_ptr()) };
+        assert_eq!(rc, 0, "socketpair");
+        (fds[0], fds[1])
+    }
+
+    /// The worker closes its socket on the way out and `reap()` calls
+    /// `shutdown` afterwards. Holding the fd *number* meant cutting
+    /// whatever connection the kernel handed that number to next — an
+    /// IPC client, a zbus connection — at random.
+    #[test]
+    fn shutdown_leaves_a_recycled_fd_alone() {
+        let (aap, peer) = connected_pair();
+        let stream = Arc::new(unsafe { L2capStream::from_raw_fd(aap) });
+        let slot: Arc<OnceLock<Weak<L2capStream>>> = Arc::new(OnceLock::new());
+        slot.set(Arc::downgrade(&stream)).expect("slot is empty");
+        drop(stream);
+        unsafe { close(peer) };
+
+        // Put an unrelated connection on the number the AAP socket just
+        // gave up — the kernel hands out the lowest free one, so this is
+        // what happens by itself. `dup2` only to be sure of it.
+        let (other, other_peer) = connected_pair();
+        if other != aap {
+            assert_eq!(unsafe { dup2(other, aap) }, aap, "dup2 onto the number");
+            unsafe { close(other) };
+        }
+
+        let task = AapTask {
+            cancelled: Arc::new(AtomicBool::new(false)),
+            stream: slot,
+            frames: Arc::new(AtomicU64::new(0)),
+            join: None,
+        };
+        task.shutdown();
+
+        let ping = |fd: i32| unsafe { libc_write(fd, b"ping".as_ptr().cast(), 4) };
+        assert_eq!(ping(aap), 4, "the recycled socket is still open");
+
+        // What the old code did, to show the line above would have
+        // caught it: a shutdown by number hits whoever holds it now.
+        unsafe { shutdown(aap, 2) };
+        assert_eq!(ping(aap), -1, "a shutdown does break this socket");
+
+        unsafe { close(aap) };
+        unsafe { close(other_peer) };
+    }
 }
