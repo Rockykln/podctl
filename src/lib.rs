@@ -9,6 +9,7 @@ pub mod completions;
 pub mod config;
 pub mod exitcode;
 pub mod ipc;
+pub mod json;
 pub mod keys;
 pub mod l2cap;
 pub mod model;

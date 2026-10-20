@@ -6,6 +6,30 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased] — for 0.4
 
 ### Changed
+- **`--json` has one shape for every command**:
+  `{"schema":1,"ok":true,"kind":"state","data":{…}}`, one object on one
+  line, so a stream of them (`watch`, `meter`) is newline-delimited
+  JSON. There were three shapes before — `{"kind":…,"data":…}` for most,
+  `{"daemon":…}` for `version`, `{"ble":true}` for `ble` — some printed
+  over forty lines, and `debug --json` ignored the flag. `--pretty`
+  indents it for reading. The shape is in the man page under
+  JSON OUTPUT and held by tests.
+- **JSON spells values the way the command line takes them**, so
+  `podctl mode "$(podctl status --json | jq -r .data.settings.mode)"`
+  works. It used to print `noise_cancellation`, `high_quality` and
+  `always_left`, none of which the CLI accepts. The old spellings are
+  still read back.
+- An error in JSON mode is an envelope with `ok: false`, the message and
+  the hint, on standard output.
+- `pending` answers print `pending: <reason>` instead of `ok (pending:
+  …)` — it has not happened yet.
+- The generated bash completion no longer needs the bash-completion
+  package loaded; without it, it reads `COMP_WORDS` itself.
+- **`podctl` and `podctld` have to be the same version** for the
+  settings commands: the socket carries the same spellings, so a 0.3
+  daemon answers a 0.4 `podctl mode anc` with "malformed request". Run
+  `podctl reboot` after an upgrade; a version handshake that says so
+  itself is still to come.
 - **The command line comes from one table now** (`src/commands.rs`).
   Help, the completion scripts and the argument checks were six
   hand-kept copies of the same list, and they had drifted: `podctl m

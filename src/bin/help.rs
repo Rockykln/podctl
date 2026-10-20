@@ -129,6 +129,10 @@ podctl — control AirPods from the Linux terminal
 USAGE
     podctl <command> [args]
     podctl help [command]
+
+OPTIONS
+    --json          answer as one JSON object per line
+    --pretty        with --json, indent it over several lines
 ";
 
 const TAIL: &str = "\

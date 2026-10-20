@@ -19,7 +19,7 @@ const MIN_INTERVAL_MS: u64 = 10;
 /// -1.3 dBFS peak on a silent sink.
 const WARMUP_MS: u64 = 100;
 
-pub fn run(args: &[String], json: bool) -> i32 {
+pub fn run(args: &[String], json: bool, pretty: bool) -> i32 {
     let json = json || args.iter().any(|a| a == "--json");
     let plain = args.iter().any(|a| a == "--plain");
     let one_shot = args.iter().any(|a| a == "--once");
@@ -78,7 +78,15 @@ pub fn run(args: &[String], json: bool) -> i32 {
         let rms_db = to_dbfs(rms);
         let peak_db = to_dbfs(peak);
         if json {
-            println!("{{\"rms_dbfs\":{rms_db:.1},\"peak_dbfs\":{peak_db:.1}}}");
+            // One envelope per window: a meter is NDJSON by nature.
+            podctl::json::Envelope::ok(
+                "meter",
+                serde_json::json!({
+                    "rms_dbfs": round1(rms_db),
+                    "peak_dbfs": round1(peak_db),
+                }),
+            )
+            .print(pretty);
             let _ = std::io::stdout().flush();
         } else if plain || !isatty {
             println!("RMS {rms_db:6.1} dBFS  peak {peak_db:6.1} dBFS");
@@ -102,6 +110,11 @@ pub fn run(args: &[String], json: bool) -> i32 {
         println!();
     }
     exitcode::OK
+}
+
+/// One decimal, as the plain output prints it.
+fn round1(v: f64) -> f64 {
+    (v * 10.0).round() / 10.0
 }
 
 fn arg_value(args: &[String], key: &str) -> Option<String> {

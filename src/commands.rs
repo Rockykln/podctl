@@ -219,7 +219,7 @@ pub const COMMANDS: &[Cmd] = &[
 ];
 
 /// Flags every verb takes.
-pub const GLOBAL_FLAGS: &[&str] = &["--json", "--help", "-h"];
+pub const GLOBAL_FLAGS: &[&str] = &["--json", "--pretty", "--help", "-h"];
 
 pub fn find(word: &str) -> Option<&'static Cmd> {
     COMMANDS.iter().find(|c| c.matches(word))

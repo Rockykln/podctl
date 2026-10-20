@@ -247,7 +247,15 @@ package and its running services are reported and left alone.
 .SH OPTIONS
 .TP
 .B --json
-Emit responses as JSON instead of human-readable text. Useful in scripts.
+Answer in JSON instead of text; see
+.B JSON OUTPUT
+below.
+.TP
+.B --pretty
+With
+.BR --json ,
+indent the object over several lines. For reading it yourself; scripts
+want the single line.
 .TP
 .B --help, -h
 Print help (top-level or, after a verb, the verb's detailed page).
@@ -292,6 +300,50 @@ when a required service is unavailable,
 for an internal software error,
 .B 71
 for an OS error.
+.SH JSON OUTPUT
+With
+.BR --json ,
+every command answers with one object on one line:
+.PP
+.EX
+{"schema":1,"ok":true,"kind":"state","data":{...}}
+{"schema":1,"ok":false,"kind":"err","data":{"message":"...","hint":"..."}}
+.EE
+.PP
+.B schema
+is the version of this contract. It is raised only when a field changes
+meaning or disappears, never for a new one, so a reader may refuse
+anything it does not know.
+.B ok
+mirrors the exit status.
+.B kind
+says what
+.B data
+holds:
+.IR state ", " battery ", " list ", " event ", " pong ", " done ", "
+.IR pending ", " version ", " ble ", " meter ", " debug " or " err .
+.PP
+A stream is newline-delimited JSON, one object per line:
+.B watch
+emits a
+.I event
+object per event and
+.B meter
+a
+.I meter
+object per window. Errors go to standard output as an
+.I err
+object, not to standard error.
+.PP
+Values are spelled the way the command line takes them
+.RB ( \(dqanc\(dq ", not " \(dqnoise_cancellation\(dq ),
+so a value read out of
+.B --json
+can be passed straight back in:
+.PP
+.EX
+podctl mode "$(podctl status --json | jq -r .data.settings.mode)"
+.EE
 .SH FILES
 .TP
 .I $XDG_RUNTIME_DIR/podctl.sock

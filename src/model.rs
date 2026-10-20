@@ -20,12 +20,18 @@ impl Battery {
     }
 }
 
+/// JSON spells these the way the command line takes them, so a value
+/// read out of `--json` can be passed straight back in. The old
+/// snake_case spellings are still accepted when reading.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
 pub enum Mode {
+    #[serde(rename = "off")]
     Off,
+    #[serde(rename = "anc", alias = "noise_cancellation")]
     NoiseCancellation,
+    #[serde(rename = "transparency")]
     Transparency,
+    #[serde(rename = "adaptive")]
     Adaptive,
 }
 
@@ -78,10 +84,12 @@ impl std::str::FromStr for ConvAwareness {
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
 pub enum Profile {
+    #[serde(rename = "high", alias = "high_quality")]
     HighQuality,
+    #[serde(rename = "headset")]
     Headset,
+    #[serde(rename = "off")]
     Off,
 }
 
@@ -114,10 +122,12 @@ impl std::str::FromStr for Profile {
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
 pub enum SpatialAudio {
+    #[serde(rename = "off")]
     Off,
+    #[serde(rename = "fixed")]
     Fixed,
+    #[serde(rename = "head-tracked", alias = "head_tracked")]
     HeadTracked,
 }
 
@@ -150,10 +160,12 @@ impl std::str::FromStr for SpatialAudio {
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
 pub enum MicSelection {
+    #[serde(rename = "auto")]
     Auto,
+    #[serde(rename = "left", alias = "always_left")]
     AlwaysLeft,
+    #[serde(rename = "right", alias = "always_right")]
     AlwaysRight,
 }
 
@@ -180,10 +192,12 @@ impl std::str::FromStr for MicSelection {
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
 pub enum PressAction {
+    #[serde(rename = "mode-cycle", alias = "mode_cycle")]
     ModeCycle,
+    #[serde(rename = "siri")]
     Siri,
+    #[serde(rename = "none")]
     None,
 }
 
@@ -410,6 +424,68 @@ pub enum PressKind {
 
 #[cfg(test)]
 mod tests {
+    /// What JSON says and what the command line takes have to be the
+    /// same word: `podctl mode "$(podctl status --json | jq -r …)"`
+    /// used to fail because JSON said "noise_cancellation".
+    #[test]
+    fn json_spells_values_the_way_the_cli_does() {
+        use super::{MicSelection, Mode, PressAction, Profile, SpatialAudio};
+        fn same<T: serde::Serialize>(value: T, as_str: &str) {
+            let json = serde_json::to_string(&value).expect("serialises");
+            assert_eq!(json, format!("\"{as_str}\""));
+        }
+        for m in [
+            Mode::Off,
+            Mode::NoiseCancellation,
+            Mode::Transparency,
+            Mode::Adaptive,
+        ] {
+            same(m, m.as_str());
+            assert_eq!(m.as_str().parse::<Mode>(), Ok(m));
+        }
+        for p in [Profile::HighQuality, Profile::Headset, Profile::Off] {
+            same(p, p.as_str());
+            assert_eq!(p.as_str().parse::<Profile>(), Ok(p));
+        }
+        for s in [
+            SpatialAudio::Off,
+            SpatialAudio::Fixed,
+            SpatialAudio::HeadTracked,
+        ] {
+            same(s, s.as_str());
+            assert_eq!(s.as_str().parse::<SpatialAudio>(), Ok(s));
+        }
+        for m in [
+            MicSelection::Auto,
+            MicSelection::AlwaysLeft,
+            MicSelection::AlwaysRight,
+        ] {
+            same(m, m.as_str());
+            assert_eq!(m.as_str().parse::<MicSelection>(), Ok(m));
+        }
+        for a in [PressAction::ModeCycle, PressAction::Siri, PressAction::None] {
+            same(a, a.as_str());
+        }
+    }
+
+    /// Anything written by an older podctl still reads back.
+    #[test]
+    fn the_old_spellings_still_parse() {
+        use super::{MicSelection, Mode, Profile};
+        assert_eq!(
+            serde_json::from_str::<Mode>("\"noise_cancellation\"").expect("old spelling"),
+            Mode::NoiseCancellation
+        );
+        assert_eq!(
+            serde_json::from_str::<Profile>("\"high_quality\"").expect("old spelling"),
+            Profile::HighQuality
+        );
+        assert_eq!(
+            serde_json::from_str::<MicSelection>("\"always_left\"").expect("old spelling"),
+            MicSelection::AlwaysLeft
+        );
+    }
+
     use super::{Battery, ConvAwareness, Event, Mode, sanitize_display_name};
 
     #[test]

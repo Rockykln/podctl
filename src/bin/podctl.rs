@@ -21,17 +21,28 @@ mod tray_cli;
 
 const PROG: &str = "podctl";
 
+/// How to print an answer: for a machine or for a person, and in the
+/// machine case on one line or indented.
+#[derive(Clone, Copy)]
+struct Output {
+    json: bool,
+    pretty: bool,
+}
+
 fn main() -> ExitCode {
     install_default_sigpipe();
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let json = args.iter().any(|a| a == "--json");
+    let out = Output {
+        json: args.iter().any(|a| a == "--json"),
+        pretty: args.iter().any(|a| a == "--pretty"),
+    };
     let code = run(args).unwrap_or_else(|e| {
-        if json {
-            let payload = serde_json::json!({
-                "kind": "err",
-                "data": e.msg.clone(),
-            });
-            println!("{payload}");
+        if out.json {
+            // An error is an envelope too, so one reader handles both.
+            match &e.hint {
+                Some(hint) => podctl::json::error_with_hint(&e.msg, hint).print(out.pretty),
+                None => podctl::json::error(&e.msg).print(out.pretty),
+            }
         } else {
             eprintln!("{PROG}: {e}");
             if let Some(hint) = &e.hint {
@@ -100,7 +111,10 @@ impl std::fmt::Display for CliError {
 impl std::error::Error for CliError {}
 
 fn run(mut args: Vec<String>) -> Result<i32, CliError> {
-    let json = pop_flag(&mut args, "--json");
+    let out = Output {
+        json: pop_flag(&mut args, "--json"),
+        pretty: pop_flag(&mut args, "--pretty"),
+    };
 
     // Asked for before anything is dispatched: `debug --help` used to
     // print a whole diagnostic report, `meter --help` went looking for
@@ -117,7 +131,7 @@ fn run(mut args: Vec<String>) -> Result<i32, CliError> {
             return Ok(help::print_top(args.get(1).map(String::as_str)));
         }
         Some("version") | Some("--version") | Some("-V") => {
-            print_version(json);
+            print_version(out);
             return Ok(exitcode::OK);
         }
         Some("completion") => {
@@ -142,17 +156,29 @@ fn run(mut args: Vec<String>) -> Result<i32, CliError> {
                         "debug emit-case-lid needs the daemon (podctld not running)",
                     )
                 })?;
-                return handle_response("debug", resp, json);
+                return handle_response("debug", resp, out);
             }
             let no_redact = args.iter().any(|a| a == "--no-redact");
-            print!("{}", debug::run(no_redact));
+            let report = debug::run(no_redact);
+            if out.json {
+                // The report is one text block by design — it is meant
+                // to be pasted into an issue. `--json` wraps it so a
+                // script can collect it alongside everything else.
+                podctl::json::Envelope::ok(
+                    "debug",
+                    serde_json::json!({ "report": report, "redacted": !no_redact }),
+                )
+                .print(out.pretty);
+            } else {
+                print!("{report}");
+            }
             return Ok(exitcode::OK);
         }
         Some("meter") => {
-            return Ok(meter::run(&args[1..], json));
+            return Ok(meter::run(&args[1..], out.json, out.pretty));
         }
         Some("ble") => {
-            return ble_switch(args.get(1).map(String::as_str), json);
+            return ble_switch(args.get(1).map(String::as_str), out);
         }
         Some("install") => {
             return Ok(install::install(&args[1..]));
@@ -164,7 +190,7 @@ fn run(mut args: Vec<String>) -> Result<i32, CliError> {
             let resp = try_daemon(&Request::ShowPopup)?.ok_or_else(|| {
                 CliError::unavailable("popup needs the daemon (podctld not running)")
             })?;
-            return handle_response("popup", resp, json);
+            return handle_response("popup", resp, out);
         }
         Some("reboot") => {
             return Ok(reboot());
@@ -176,7 +202,7 @@ fn run(mut args: Vec<String>) -> Result<i32, CliError> {
     };
 
     if matches!(verb.as_str(), "watch" | "w") {
-        return stream_events(json);
+        return stream_events(out);
     }
 
     let request = parse_verb(&verb, &args[1..])?;
@@ -189,32 +215,31 @@ fn run(mut args: Vec<String>) -> Result<i32, CliError> {
         Some(resp) => resp,
         None => standalone::dispatch(&request),
     };
-    handle_response(&verb, response, json)
+    handle_response(&verb, response, out)
 }
 
 /// `podctl ble [on|off]` — the daemon reads the file itself, so this
 /// works without it running.
-fn ble_switch(arg: Option<&str>, json: bool) -> Result<i32, CliError> {
+fn ble_switch(arg: Option<&str>, out: Output) -> Result<i32, CliError> {
     let on = match arg {
         None => {
-            let cfg = podctl::config::load();
-            if json {
-                println!("{{\"ble\":{}}}", cfg.ble);
-            } else {
-                println!("ble  {}", if cfg.ble { "on" } else { "off" });
-            }
+            print_ble(podctl::config::load().ble, out);
             return Ok(exitcode::OK);
         }
         Some(raw) => on_off("ble", raw)?,
     };
     podctl::config::set_ble(on)
         .map_err(|e| CliError::unavailable(format!("could not write the settings file: {e}")))?;
-    if json {
-        println!("{{\"ble\":{on}}}");
+    print_ble(on, out);
+    Ok(exitcode::OK)
+}
+
+fn print_ble(on: bool, out: Output) {
+    if out.json {
+        podctl::json::Envelope::ok("ble", serde_json::json!({ "enabled": on })).print(out.pretty);
     } else {
         println!("ble  {}", if on { "on" } else { "off" });
     }
-    Ok(exitcode::OK)
 }
 
 fn reboot() -> i32 {
@@ -554,10 +579,9 @@ fn try_daemon(req: &Request) -> Result<Option<Response>, CliError> {
     Ok(Some(resp))
 }
 
-fn handle_response(verb: &str, resp: Response, json: bool) -> Result<i32, CliError> {
-    if json {
-        let v = json_view(verb, &resp);
-        println!("{v}");
+fn handle_response(verb: &str, resp: Response, out: Output) -> Result<i32, CliError> {
+    if out.json {
+        print_json(verb, &resp, out.pretty);
         return Ok(if resp.is_err() {
             exitcode::UNAVAILABLE
         } else {
@@ -586,7 +610,8 @@ fn handle_response(verb: &str, resp: Response, json: bool) -> Result<i32, CliErr
             Ok(exitcode::OK)
         }
         Response::Pending(reason) => {
-            println!("ok (pending: {reason})");
+            // Not "ok": the thing has not happened yet.
+            println!("pending: {reason}");
             Ok(exitcode::OK)
         }
         Response::Err(error) => {
@@ -596,23 +621,31 @@ fn handle_response(verb: &str, resp: Response, json: bool) -> Result<i32, CliErr
     }
 }
 
-fn json_view(verb: &str, resp: &Response) -> String {
-    if let Response::State(s) = resp {
-        let projected = match verb {
-            "battery" | "bat" | "b" => Some(serde_json::json!({
-                "kind": "battery",
-                "data": &s.battery,
-            })),
-            _ => None,
-        };
-        if let Some(v) = projected {
-            return serde_json::to_string_pretty(&v).unwrap_or_else(|_| "null".to_string());
+/// `--json` for one answer: the same envelope for every command, on one
+/// line unless `--pretty` is asked for. There used to be three shapes
+/// and a mix of pretty and compact.
+fn print_json(verb: &str, resp: &Response, pretty: bool) {
+    use podctl::json::{Envelope, error};
+    match resp {
+        Response::State(state) => {
+            if commands::find(verb).map(|c| c.name) == Some("battery") {
+                Envelope::ok("battery", &state.battery).print(pretty);
+            } else {
+                Envelope::ok("state", state).print(pretty);
+            }
         }
+        Response::List(items) => Envelope::ok("list", items).print(pretty),
+        Response::Event(e) => Envelope::ok("event", e).print(pretty),
+        Response::Pong => Envelope::ok("pong", serde_json::json!({})).print(pretty),
+        Response::Done => Envelope::ok("done", serde_json::json!({})).print(pretty),
+        Response::Pending(reason) => {
+            Envelope::ok("pending", serde_json::json!({ "reason": reason })).print(pretty)
+        }
+        Response::Err(message) => error(message).print(pretty),
     }
-    serde_json::to_string_pretty(resp).unwrap_or_else(|_| "null".to_string())
 }
 
-fn print_version(json: bool) {
+fn print_version(out: Output) {
     let mut running = false;
     if let Ok(stream) = UnixStream::connect(podctl::socket_path()) {
         let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
@@ -634,14 +667,17 @@ fn print_version(json: bool) {
             }
         }
     }
-    if json {
-        let v = serde_json::json!({
-            "name":    env!("CARGO_PKG_NAME"),
-            "version": env!("CARGO_PKG_VERSION"),
-            "license": "MIT OR Apache-2.0",
-            "daemon":  if running { "running" } else { "not_running" },
-        });
-        println!("{v}");
+    if out.json {
+        podctl::json::Envelope::ok(
+            "version",
+            serde_json::json!({
+                "name":    env!("CARGO_PKG_NAME"),
+                "version": env!("CARGO_PKG_VERSION"),
+                "license": "MIT OR Apache-2.0",
+                "daemon":  if running { "running" } else { "not_running" },
+            }),
+        )
+        .print(out.pretty);
         return;
     }
     println!("podctl {}", env!("CARGO_PKG_VERSION"));
@@ -656,7 +692,7 @@ fn print_version(json: bool) {
     );
 }
 
-fn stream_events(json: bool) -> Result<i32, CliError> {
+fn stream_events(out: Output) -> Result<i32, CliError> {
     let path = podctl::socket_path();
     let stream = UnixStream::connect(&path).map_err(|_| {
         CliError::unavailable(format!(
@@ -681,10 +717,13 @@ fn stream_events(json: bool) -> Result<i32, CliError> {
     let reader = BufReader::new(&stream);
     for line in reader.lines() {
         let line = line.map_err(|e| CliError::oserr(format!("read: {e}")))?;
-        if json {
-            // The subscription ack is protocol, not an event.
-            if !matches!(serde_json::from_str::<Response>(&line), Ok(Response::Done)) {
-                println!("{line}");
+        if out.json {
+            // The subscription ack is protocol, not an event, and the
+            // raw line is the socket's shape, not ours: wrap it.
+            match serde_json::from_str::<Response>(&line) {
+                Ok(Response::Done) => {}
+                Ok(resp) => print_json("watch", &resp, out.pretty),
+                Err(e) => eprintln!("{PROG}: malformed event: {e}"),
             }
             continue;
         }
