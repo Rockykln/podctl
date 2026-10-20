@@ -264,7 +264,11 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
   of printing the raw error.
 - **The notification fallback never appeared as a banner on GNOME.** It
   was sent as low urgency, which GNOME delivers straight into the
-  message tray without showing it.
+  message tray without showing it. It no longer sends the rendered card
+  along either: a notification server lays that out as it likes, and
+  GNOME squeezed the wide card into a small cropped square. The
+  fallback is the device name, the levels as text and the headphones
+  icon.
 - **`podctl status` named the wrong codec.** The plain `a2dp-sink`
   profile was read as AAC, and a PipeWire built without AAC runs SBC in
   it — the sink itself is asked now. `podctl codec` lists what is really

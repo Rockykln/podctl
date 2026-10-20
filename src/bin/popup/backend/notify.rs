@@ -1,21 +1,16 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use zbus::zvariant::Value;
 
 use super::{Backend, Frame, fingerprint};
-use crate::render;
 
 const SVC: &str = "org.freedesktop.Notifications";
 const PATH: &str = "/org/freedesktop/Notifications";
 const DEFAULT_EXPIRE_MS: i32 = 6_500;
 
 pub struct Notify {
-    w: u32,
-    h: u32,
-    img: PathBuf,
     id: u32,
     fp: u64,
     expire_ms: i32,
@@ -27,11 +22,7 @@ pub struct Notify {
 
 impl Notify {
     pub fn new() -> Self {
-        let dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".into());
         Notify {
-            w: 0,
-            h: 0,
-            img: PathBuf::from(dir).join("podctl-popup.png"),
             id: 0,
             fp: 0,
             expire_ms: DEFAULT_EXPIRE_MS,
@@ -85,23 +76,18 @@ impl Backend for Notify {
         self.body = body.to_string();
     }
 
-    fn open(&mut self, w: u32, h: u32) -> Result<()> {
-        self.w = w;
-        self.h = h;
+    fn open(&mut self, _w: u32, _h: u32) -> Result<()> {
         Ok(())
     }
 
+    /// Text only: a notification server lays out an image as it likes,
+    /// and GNOME squeezed the wide card into a cropped square.
     fn push_frame(&mut self, f: &Frame) -> Result<()> {
         let fp = fingerprint(f.bgra);
         if self.id != 0 && fp == self.fp {
             return Ok(());
         }
 
-        let png =
-            render::png_from_bgra(f.bgra, self.w, self.h).context("re-encode frame as PNG")?;
-        std::fs::write(&self.img, &png).context("write notification image")?;
-
-        let uri = format!("file://{}", self.img.display());
         let replaces = self.id;
         let expire_ms = self.expire_ms;
         let title = self.title.clone();
@@ -113,7 +99,6 @@ impl Backend for Notify {
             // without ever showing it as a banner — it only appeared as a
             // dot in the message tray, which is not a bubble.
             hints.insert("urgency", Value::U8(1));
-            hints.insert("image-path", Value::from(uri.as_str()));
             hints.insert("category", Value::from("device"));
             hints.insert("desktop-entry", Value::from("podctl"));
             // Not worth keeping in a notification centre: the bubble is
@@ -157,8 +142,6 @@ impl Backend for Notify {
             });
             self.id = 0;
         }
-        // The picture stays: the server may still be reading it while
-        // the notification fades out.
         Ok(())
     }
 }
