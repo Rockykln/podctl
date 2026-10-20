@@ -186,6 +186,10 @@ fn run(
                 let opcode = if n >= 5 { buf[4] } else { 0xFF };
                 let preview = rx_preview(&buf[..n], opcode);
                 debug!(frame_count, n, opcode = format!("{opcode:02x}"), %preview, "AAP rx");
+                if ends_session(&buf[..n]) {
+                    warn!(frame_count, "AirPods ended the AAP session — reopening");
+                    break;
+                }
                 if let Some(frame) = Frame::parse(&buf[..n]) {
                     rt.block_on(handle_frame(&daemon, &frame));
                 }
@@ -470,6 +474,13 @@ async fn apply_conv_level(daemon: &Arc<Daemon>, payload: &[u8]) {
     tokio::spawn(async move { d.media.on_conv_level(level, enabled).await });
 }
 
+/// Seen mid-session on a Pro 2, right after a handshake reply nobody
+/// asked for: the buds start over, and nothing more comes on this
+/// socket until it is opened again.
+fn ends_session(frame: &[u8]) -> bool {
+    frame.starts_with(&[0x02, 0x00, 0x04, 0x00])
+}
+
 /// Hex dump of a received frame for the debug log, cut off at 24
 /// bytes. The reply to the key request is the identity resolving key
 /// itself: that one never goes to the log.
@@ -563,5 +574,15 @@ mod tests {
 
         unsafe { close(aap) };
         unsafe { close(other_peer) };
+    }
+
+    #[test]
+    fn only_the_close_packet_ends_a_session() {
+        assert!(ends_session(&[0x02, 0x00, 0x04, 0x00, 0x00, 0x00]));
+        let reply = [0x01, 0x00, 0x04, 0x00, 0x00, 0x00, 0x01, 0x00, 0x03, 0x00];
+        assert!(!ends_session(&reply));
+        let in_ear = [0x04, 0x00, 0x04, 0x00, 0x06, 0x00, 0x02, 0x02];
+        assert!(!ends_session(&in_ear));
+        assert!(!ends_session(&[0x02, 0x00]));
     }
 }

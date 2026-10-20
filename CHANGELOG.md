@@ -51,6 +51,10 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 - The buds send nothing while someone keeps talking, so the watchdog
   for a missing end of speech now waits 30 s instead of 10 — it brought
   the music back up during a long sentence.
+- **Battery, in-ear and the ear detection went quiet after using the
+  iPhone.** Every so often the AirPods end the AAP session from their
+  side and wait for a new handshake; podctl kept listening on the dead
+  socket until the next reconnect. It opens a new one now.
 - `podctl connect` and the other BlueZ commands failed with an empty
   reason; `bluetoothctl` prints it on stdout.
 - `podctl status` without a daemon ran `bluetoothctl` twice, once for
