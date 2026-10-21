@@ -203,18 +203,70 @@ pub fn render_card(snap: &Snapshot, pal: &Theme, scale: f32) -> Drawn {
     set_scale(s);
     let (bw, bh) = buf_px(BUF_W, BUF_H, s);
     let mut pm = Pixmap::new(bw, bh).expect("non-zero card");
+    let (under, at) = plate(&mut pm, snap, pal, s);
+    for part in Part::products(snap) {
+        draw_part(&mut pm, snap, pal, s, part);
+    }
+    draw_part(&mut pm, snap, pal, s, Part::Readouts);
+    Drawn { pm, under, at }
+}
+
+/// The pieces the card is drawn from, in drawing order after the plate.
+/// The motion draws each into a layer of its own.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Part {
+    ShadowR,
+    ShadowL,
+    BudR,
+    BudL,
+    Case { led: bool },
+    MaxShadow,
+    MaxBody,
+    Readouts,
+}
+
+impl Part {
+    pub fn products(snap: &Snapshot) -> Vec<Part> {
+        if snap.art.is_max() {
+            vec![Part::MaxShadow, Part::MaxBody]
+        } else {
+            vec![
+                Part::ShadowR,
+                Part::ShadowL,
+                Part::BudR,
+                Part::BudL,
+                Part::Case {
+                    led: snap.case.charging,
+                },
+            ]
+        }
+    }
+}
+
+/// The card without products and readouts, for the layers of the motion.
+pub fn render_plate(snap: &Snapshot, pal: &Pal, s: f32) -> Pixmap {
+    set_scale(s);
+    let (bw, bh) = buf_px(BUF_W, BUF_H, s);
+    let mut pm = Pixmap::new(bw, bh).expect("non-zero card");
+    plate(&mut pm, snap, pal, s);
+    pm
+}
+
+/// Shadow, card, edge, title, status line and close button; returns what
+/// lies under the close button and where.
+fn plate(pm: &mut Pixmap, snap: &Snapshot, pal: &Pal, s: f32) -> (Pixmap, (u32, u32)) {
     let t = Transform::from_scale(s, s);
     let (x0, y0) = (MARGIN, MARGIN);
     let body = rrect(x0, y0, CARD_W, CARD_H, RADIUS);
-    soft_shadow(&mut pm, s, &body, 1.0, 3.0, pal.shadow * 0.5, t);
-    soft_shadow(&mut pm, s, &body, 8.0, 18.0, pal.shadow, t);
-    fill(&mut pm, &body, pal.card, t);
+    soft_shadow(pm, s, &body, 1.0, 3.0, pal.shadow * 0.5, t);
+    soft_shadow(pm, s, &body, 8.0, 18.0, pal.shadow, t);
+    fill(pm, &body, pal.card, t);
     let edge = rrect(x0 + 0.5, y0 + 0.5, CARD_W - 1.0, CARD_H - 1.0, RADIUS - 0.5);
-    stroke(&mut pm, &edge, pal.border, 1.0, LineCap::Butt, t);
+    stroke(pm, &edge, pal.border, 1.0, LineCap::Butt, t);
 
     let title = ellipsize(&snap.name, 17.0, -0.1, TITLE_MAX_W);
     text(
-        &mut pm,
+        pm,
         t,
         &title,
         x0 + 20.0,
@@ -225,7 +277,7 @@ pub fn render_card(snap: &Snapshot, pal: &Theme, scale: f32) -> Drawn {
         -0.1,
     );
     text(
-        &mut pm,
+        pm,
         t,
         snap.status(),
         x0 + 20.0,
@@ -244,47 +296,51 @@ pub fn render_card(snap: &Snapshot, pal: &Theme, scale: f32) -> Drawn {
     let under = pm
         .clone_rect(IntRect::from_xywh(at.0 as i32, at.1 as i32, side, side).expect("non-empty"))
         .expect("inside the card");
-    close_btn(&mut pm, pal, t, false);
+    close_btn(pm, pal, t, false);
+    (under, at)
+}
 
+/// Draw `part` of the card into `pm` at scale `s`.
+pub fn draw_part(pm: &mut Pixmap, snap: &Snapshot, pal: &Pal, s: f32, part: Part) {
+    set_scale(s);
+    let (x0, y0) = (MARGIN, MARGIN);
     let base = y0 + CARD_H - 18.0;
-    if snap.art.is_max() {
-        draw_max(&mut pm, pal, s, x0 + CARD_W / 2.0, y0 + FLOOR, K_MAX);
-        readout(&mut pm, pal, s, x0 + CARD_W / 2.0, base, None, snap.left);
-        return Drawn { pm, under, at };
+    let (ca, cb) = (x0 + 104.0, x0 + 266.0);
+    let pair = |pm: &mut Pixmap, sel: u8| {
+        let lift = snap.art.bud_lift() * K_BUDS;
+        draw_pair(
+            pm,
+            pal,
+            s,
+            snap.art.bud(),
+            ca,
+            y0 + FLOOR - lift,
+            K_BUDS,
+            sel,
+        );
+    };
+    match part {
+        Part::ShadowR => pair(pm, 2),
+        Part::ShadowL => pair(pm, 1),
+        Part::BudR => pair(pm, 8),
+        Part::BudL => pair(pm, 4),
+        Part::Case { led } => draw_case(pm, pal, s, &snap.art.case(), cb, y0 + FLOOR, K_BUDS, led),
+        Part::MaxShadow => draw_max(pm, pal, s, x0 + CARD_W / 2.0, y0 + FLOOR, K_MAX, 1),
+        Part::MaxBody => draw_max(pm, pal, s, x0 + CARD_W / 2.0, y0 + FLOOR, K_MAX, 2),
+        Part::Readouts if snap.art.is_max() => {
+            readout(pm, pal, s, x0 + CARD_W / 2.0, base, None, snap.left);
+        }
+        Part::Readouts => {
+            let (l, r) = (snap.left, snap.right);
+            if let Some(both) = merged(l, r) {
+                readout(pm, pal, s, ca, base, None, both);
+            } else {
+                readout(pm, pal, s, ca - 40.0, base, Some("L"), l);
+                readout(pm, pal, s, ca + 40.0, base, Some("R"), r);
+            }
+            readout(pm, pal, s, cb, base, None, snap.case);
+        }
     }
-    let ca = x0 + 104.0;
-    let cb = x0 + 266.0;
-    let lift = snap.art.bud_lift() * K_BUDS;
-    draw_pair(
-        &mut pm,
-        pal,
-        s,
-        snap.art.bud(),
-        ca,
-        y0 + FLOOR - lift,
-        K_BUDS,
-        15,
-    );
-    draw_case(
-        &mut pm,
-        pal,
-        s,
-        &snap.art.case(),
-        cb,
-        y0 + FLOOR,
-        K_BUDS,
-        snap.case.charging,
-    );
-
-    let (l, r) = (snap.left, snap.right);
-    if let Some(both) = merged(l, r) {
-        readout(&mut pm, pal, s, ca, base, None, both);
-    } else {
-        readout(&mut pm, pal, s, ca - 40.0, base, Some("L"), l);
-        readout(&mut pm, pal, s, ca + 40.0, base, Some("R"), r);
-    }
-    readout(&mut pm, pal, s, cb, base, None, snap.case);
-    Drawn { pm, under, at }
 }
 
 /// One value for both buds when they are within 5 points and charge

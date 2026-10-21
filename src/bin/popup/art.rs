@@ -1692,7 +1692,8 @@ pub fn draw_case(
 
 // AirPods Max (front view, mm: 168.6 x 187.3).
 
-pub fn draw_max(pm: &mut Pixmap, pal: &Pal, s: f32, cx: f32, floor: f32, k: f32) {
+/// sel bits: 1 floor shadows, 2 the headphones.
+pub fn draw_max(pm: &mut Pixmap, pal: &Pal, s: f32, cx: f32, floor: f32, k: f32, sel: u8) {
     let (w, h) = (168.6f32, 187.3f32);
     let ox = cx - w * k / 2.0;
     let oy = floor - h * k;
@@ -1700,8 +1701,13 @@ pub fn draw_max(pm: &mut Pixmap, pal: &Pal, s: f32, cx: f32, floor: f32, k: f32)
         .pre_scale(k, k)
         .post_scale(s, s);
     let kdev = k * s;
-    floor_shadow(pm, pal, s, cx - (w / 2.0 - 24.0) * k, floor, 23.0 * k);
-    floor_shadow(pm, pal, s, cx + (w / 2.0 - 24.0) * k, floor, 23.0 * k);
+    if sel & 1 != 0 {
+        floor_shadow(pm, pal, s, cx - (w / 2.0 - 24.0) * k, floor, 23.0 * k);
+        floor_shadow(pm, pal, s, cx + (w / 2.0 - 24.0) * k, floor, 23.0 * k);
+    }
+    if sel & 2 == 0 {
+        return;
+    }
 
     let alu = if pal.dark {
         Mat {

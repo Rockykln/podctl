@@ -195,7 +195,7 @@ duration_ms = 3000
     #[test]
     fn visible_covers_entry_and_exit() {
         let c = Config::default();
-        assert_eq!(visible_ms(&c), c.duration_ms + 920);
+        assert_eq!(visible_ms(&c), c.duration_ms + 980);
     }
 
     #[test]

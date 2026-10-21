@@ -250,7 +250,7 @@ pub fn fill_sh(pm: &mut Pixmap, p: &Path, sh: Shader, t: Transform) {
 }
 
 /// Columns and rows that hold any ink, as half-open ranges.
-fn inked(pm: &Pixmap) -> Option<((usize, usize), (usize, usize))> {
+pub fn inked(pm: &Pixmap) -> Option<((usize, usize), (usize, usize))> {
     let w = pm.width() as usize;
     let (mut x0, mut x1, mut y0, mut y1) = (usize::MAX, 0, usize::MAX, 0);
     for (y, row) in pm.data().chunks_exact(w * 4).enumerate() {

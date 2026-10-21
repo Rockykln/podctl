@@ -158,7 +158,7 @@ duration_ms = 5500      # time on screen, 500 … 60000
 output      = ""        # monitor to show on, e.g. "eDP-1"
 ```
 
-`duration_ms` counts the hold only; the bubble rises in over 0.7 s and
+`duration_ms` counts the hold only; the bubble rises in over 0.76 s and
 fades out over 0.22 s on top. Out-of-range values are clamped rather than
 rejected.
 

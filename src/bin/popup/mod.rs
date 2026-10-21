@@ -3,6 +3,7 @@ mod art;
 mod assets;
 mod backend;
 mod config;
+mod layers;
 mod paint;
 mod render;
 mod scheme;
@@ -27,6 +28,7 @@ use anim::{Pose, RISE};
 use art::Art;
 use backend::{Backend, Frame, Input};
 use config::{Pick, ThemePick};
+use layers::Layers;
 use render::{BUF_H, BUF_W, Pod, Snapshot, Theme};
 
 const DEMO_HOLD_MS: u64 = 5_000;
@@ -39,6 +41,9 @@ const BACKOFF_MAX_MS: u64 = 30_000;
 const AFTER_HOVER: Duration = Duration::from_millis(1500);
 /// How often the hold loop looks at pointer input.
 const INPUT_SLICE: Duration = Duration::from_millis(30);
+/// The entry waits at most this long for its layers, else it shows the
+/// card standing still.
+const LAYER_WAIT: Duration = Duration::from_millis(200);
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
@@ -303,6 +308,10 @@ struct Card {
     h: u32,
     frame: Vec<u8>,
     frame_h: u32,
+    /// The parts the entry moves, built on a thread of their own; until
+    /// they are there the entry shows the card standing still.
+    layers: Option<Layers>,
+    pending: Option<Receiver<Layers>>,
 }
 
 impl Card {
@@ -318,15 +327,54 @@ impl Card {
             h: 0,
             frame: Vec::new(),
             frame_h: 0,
+            layers: None,
+            pending: None,
         };
         c.draw();
         c
     }
 
-    /// Place the card in the frame as `pose` has it. Offset and opacity
+    fn start_layers(&mut self) {
+        let (snap, theme, scale) = (self.snap.clone(), self.theme, self.scale);
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            let t0 = Instant::now();
+            let l = Layers::build(&snap, &theme, scale);
+            debug!(ms = ms_since(t0), scale, "layers built");
+            let _ = tx.send(l);
+        });
+        self.layers = None;
+        self.pending = Some(rx);
+    }
+
+    /// Block until the layers are there or `wait` is over.
+    fn wait_layers(&mut self, wait: Duration) {
+        if let Some(rx) = &self.pending
+            && let Ok(l) = rx.recv_timeout(wait)
+        {
+            self.layers = Some(l);
+            self.pending = None;
+        }
+    }
+
+    fn layers(&mut self) -> Option<&Layers> {
+        if let Some(rx) = &self.pending
+            && let Ok(l) = rx.try_recv()
+        {
+            self.layers = Some(l);
+            self.pending = None;
+        }
+        self.layers.as_ref()
+    }
+
+    /// Place the card in the frame as `pose` has it, with the products
+    /// as `art` has them while the layers are there. Offset and opacity
     /// are row copies and a multiply; only the shrink of a dismissal
     /// needs a real transform.
-    fn compose(&mut self, pose: Pose) {
+    fn compose(&mut self, pose: Pose, art: Option<anim::Art>) {
+        let moving = art.and_then(|a| self.layers().map(|l| l.compose(a)));
+        let moving = moving.map(|pm| render::to_bgra_premul(&pm));
+        let src = moving.as_deref().unwrap_or(&self.bgra);
         let (w, h) = (self.w as usize, self.h as usize);
         self.frame_h = render::buf_px(BUF_W, BUF_H + RISE as u32, self.scale).1;
         let fh = self.frame_h as usize;
@@ -334,7 +382,7 @@ impl Card {
         self.frame.resize(w * fh * 4, 0);
         if pose.scale != 1.0 {
             let (Some(src), Some(mut dst)) = (
-                tiny_skia::PixmapRef::from_bytes(&self.bgra, self.w, self.h),
+                tiny_skia::PixmapRef::from_bytes(src, self.w, self.h),
                 tiny_skia::PixmapMut::from_bytes(&mut self.frame, self.w, self.frame_h),
             ) else {
                 return;
@@ -354,7 +402,7 @@ impl Card {
         let dy = (pose.dy * self.scale).round().max(0.0) as usize;
         let rows = h.min(fh.saturating_sub(dy));
         let n = rows * w * 4;
-        self.frame[dy * w * 4..dy * w * 4 + n].copy_from_slice(&self.bgra[..n]);
+        self.frame[dy * w * 4..dy * w * 4 + n].copy_from_slice(&src[..n]);
         if pose.alpha < 1.0 {
             let a = (pose.alpha.clamp(0.0, 1.0) * 256.0) as u32;
             for b in &mut self.frame {
@@ -368,6 +416,9 @@ impl Card {
         (self.w, self.h) = (d.pm.width(), d.pm.height());
         self.bgra = render::to_bgra_premul(&d.pm);
         self.drawn = Some(d);
+        // Whatever the layers show is out of date now.
+        self.layers = None;
+        self.pending = None;
         if self.hover {
             self.patch_close();
         }
@@ -407,8 +458,12 @@ impl Card {
         let s = be.scale();
         if (s - self.scale).abs() > 0.001 {
             debug!(from = self.scale, to = s, "redraw for the output scale");
+            let had_layers = self.layers.is_some() || self.pending.is_some();
             self.scale = s;
             self.draw();
+            if had_layers {
+                self.start_layers();
+            }
         }
     }
 }
@@ -525,6 +580,8 @@ fn show_cycle(
     scale: &mut f32,
 ) -> Outcome {
     let mut card = Card::new(snap, theme, *scale);
+    // Built while the window opens; usually the scale stays the same.
+    card.start_layers();
     // Entry and exit included — the notification backend hands this to the server
     // as the expire timeout, and a bubble the server retires early is
     // exactly the "gone too soon" the hold is meant to prevent.
@@ -547,6 +604,9 @@ fn show_cycle(
     // A server that cannot blend (a notification, X without a
     // compositor) gets the card standing still.
     let moves = be.animates();
+    if moves {
+        card.wait_layers(LAYER_WAIT);
+    }
     let mut pose = Pose::REST;
     let mut stop = None;
     let t0 = Instant::now();
@@ -554,7 +614,8 @@ fn show_cycle(
     while let Some(p) = moves.then(|| anim::entry(ms_since(t0))).flatten() {
         frames += 1;
         pose = p;
-        if push(be.as_mut(), &mut card, pose).is_err() {
+        let art = anim::art(ms_since(t0));
+        if push_moving(be.as_mut(), &mut card, pose, Some(art)).is_err() {
             let _ = be.close();
             return Outcome::Done;
         }
@@ -990,7 +1051,14 @@ fn frame_at(art: Art, theme: &Theme, scale: f32, at: &str) -> Result<tiny_skia::
         },
     });
     let mut card = Card::new(Snapshot::sample_for(art), theme, scale);
-    card.compose(pose);
+    let moving = match phase {
+        "entry" => {
+            card.layers = Some(Layers::build(&card.snap, theme, scale));
+            Some(anim::art(ms))
+        }
+        _ => None,
+    };
+    card.compose(pose, moving);
     let mut rgba = std::mem::take(&mut card.frame);
     for px in rgba.as_chunks_mut::<4>().0 {
         px.swap(0, 2);
@@ -1049,8 +1117,17 @@ fn open_backend(
 }
 
 fn push(be: &mut dyn Backend, card: &mut Card, pose: Pose) -> anyhow::Result<()> {
+    push_moving(be, card, pose, None)
+}
+
+fn push_moving(
+    be: &mut dyn Backend,
+    card: &mut Card,
+    pose: Pose,
+    art: Option<anim::Art>,
+) -> anyhow::Result<()> {
     card.fit(be);
-    card.compose(pose);
+    card.compose(pose, art);
     be.push_frame(&Frame {
         bgra: &card.frame,
         w: card.w,

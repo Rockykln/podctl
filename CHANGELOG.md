@@ -258,6 +258,10 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
   Wayland. Where nothing can blend (the notification fallback, X without
   a compositor) the card simply appears. `anim_ms` in `popup.toml` is no
   longer read.
+- As the card rises the buds hop once, the left one first, and a
+  charging case's light comes on. The products are drawn once into
+  layers on a thread of their own and only put together per frame; once
+  the entry is over the card is the one drawn in one go again.
 - `output` in `popup.toml` works on Wayland too. On X11 the bubble now
   goes to the monitor under the pointer before the primary one.
 - The bubble draws about five times faster: shadows are blurred only
