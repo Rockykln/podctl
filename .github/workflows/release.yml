@@ -4,44 +4,89 @@ on:
   push:
     tags:
       - "v*"
+  # A dry run: builds and packs both targets, publishes nothing.
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
 
 jobs:
-  build:
-    name: musl static build
+  check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # rust-toolchain.toml pins 1.89; install that exact channel plus the
-      # musl target's rust-std component. Using @stable here would install
-      # a different channel and leave us without rust-std for 1.89.
-      - name: Install Rust 1.89 + musl target
+      - name: Tag matches Cargo.toml
+        if: github.ref_type == 'tag'
         run: |
-          rustup toolchain install 1.89 --component rust-src --no-self-update
-          rustup target add --toolchain 1.89 x86_64-unknown-linux-musl
-          rustup override set 1.89
+          have=$(cargo metadata --no-deps --locked --format-version 1 \
+            | jq -r '.packages[] | select(.name == "podctl") | .version')
+          if [ "${GITHUB_REF_NAME#v}" != "$have" ]; then
+            echo "::error::tag $GITHUB_REF_NAME, Cargo.toml says $have"
+            exit 1
+          fi
+
+      - name: Test
+        run: cargo test --locked --all-targets
+
+  build:
+    needs: check
+    name: build (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            target: x86_64-unknown-linux-musl
+            runner: ubuntu-24.04
+          - arch: aarch64
+            target: aarch64-unknown-linux-musl
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # rust-toolchain.toml pins the channel; the musl target's rust-std
+      # has to be added to that same channel. No cache here: a release
+      # is built from nothing another ref could have written.
+      - name: Install Rust + musl target
+        run: |
+          command -v rustup || curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.cargo/bin:$PATH"
+          channel=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)
+          rustup toolchain install "$channel" --profile minimal --no-self-update
+          rustup target add --toolchain "$channel" ${{ matrix.target }}
 
       - name: Install musl tools
         run: sudo apt-get update && sudo apt-get install -y musl-tools
 
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+        with:
+          tool: cargo-auditable,cargo-cyclonedx
 
+      # `cargo auditable` embeds the dependency list in each binary, so
+      # scanners see the crates inside a static build.
       - name: Build
-        run: cargo build --release --target x86_64-unknown-linux-musl
+        run: cargo auditable build --release --locked --target ${{ matrix.target }}
 
       - name: Package
         run: |
-          ver="${GITHUB_REF_NAME#v}"
-          out="podctl-${ver}-x86_64-linux-musl"
-          mkdir -p "dist-stage/${out}"
-          cp target/x86_64-unknown-linux-musl/release/podctl \
-             target/x86_64-unknown-linux-musl/release/podctld \
-             target/x86_64-unknown-linux-musl/release/podctl-tray \
-             target/x86_64-unknown-linux-musl/release/podctl-popup \
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            ver="${GITHUB_REF_NAME#v}"
+          else
+            ver="dev-${GITHUB_SHA::7}"
+          fi
+          out="podctl-${ver}-${{ matrix.arch }}-linux-musl"
+          bin="target/${{ matrix.target }}/release"
+          mkdir -p "dist-stage/${out}" upload
+          cp "$bin/podctl" "$bin/podctld" "$bin/podctl-tray" "$bin/podctl-popup" \
              "dist-stage/${out}/"
           cp README.md INSTALL.md CHANGELOG.md NOTICE.md \
              LICENSE-MIT LICENSE-APACHE \
@@ -49,13 +94,37 @@ jobs:
           cp -r dist/completion dist/podctl.1 dist/podctld.1 \
              dist/podctld.service dist/podctl-tray.service dist/podctl-popup.service \
              "dist-stage/${out}/"
-          tar -C dist-stage -czf "${out}.tar.gz" "${out}"
-          sha256sum "${out}.tar.gz" > "${out}.tar.gz.sha256"
+          tar -C dist-stage -czf "upload/${out}.tar.gz" "${out}"
+          (cd upload && sha256sum "${out}.tar.gz" > "${out}.tar.gz.sha256")
+          cargo cyclonedx --format json --target ${{ matrix.target }}
+          mv ./*.cdx.json "upload/${out}.cdx.json"
 
-      - name: Release
-        uses: softprops/action-gh-release@v3
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          files: |
-            podctl-*.tar.gz
-            podctl-*.tar.gz.sha256
+          name: dist-${{ matrix.arch }}
+          path: upload/
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: dist-*
+          path: upload
+          merge-multiple: true
+
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: upload/*.tar.gz
+
+      - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        with:
+          files: upload/*
           generate_release_notes: true

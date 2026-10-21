@@ -68,9 +68,10 @@ Plasma + Hyprland/waybar, but a clean capture isn't in the repo yet.
 
 ## Quick start
 
-Prebuilt, statically linked binaries for x86_64 are attached to every
-[release](https://github.com/Rockykln/podctl/releases) as a tarball with
-a `.sha256` next to it. From source:
+Prebuilt, statically linked binaries for x86_64 and aarch64 are attached
+to every [release](https://github.com/Rockykln/podctl/releases) as a
+tarball with a `.sha256`, a build attestation and an SBOM next to it
+(see [INSTALL.md](INSTALL.md#prebuilt-binaries)). From source:
 
 ```
 git clone https://github.com/Rockykln/podctl && cd podctl

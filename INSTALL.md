@@ -104,6 +104,21 @@ have no effect. Enable the packaged services instead —
 `podctl reboot` restarts the installed user services by hand, for
 instance after replacing the binaries yourself.
 
+### Prebuilt binaries
+
+Each release has `podctl-<version>-<arch>-linux-musl.tar.gz` for
+`x86_64` and `aarch64`, statically linked, with the same layout as the
+repository's `dist/`. Next to each tarball are its `.sha256` and an
+SBOM (`.cdx.json`, CycloneDX) of the crates built into it; the binaries
+carry that list too, for `cargo audit bin`. GitHub attests where each
+tarball was built — check it before unpacking:
+
+```
+gh attestation verify podctl-<version>-<arch>-linux-musl.tar.gz -R Rockykln/podctl
+```
+
+Unpacked, `./podctl install` sets it up as above.
+
 ## Optional components
 
 `--with-tray` installs `podctl-tray`, a StatusNotifierItem. It needs a

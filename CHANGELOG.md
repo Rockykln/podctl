@@ -6,6 +6,11 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **Release tarballs for aarch64** (Asahi Linux, ARM laptops) next to
+  x86_64, each with a build attestation from GitHub
+  (`gh attestation verify`), a CycloneDX SBOM, and the dependency list
+  embedded in the binaries by `cargo auditable`. A release is only built
+  once the tests pass and the tag matches `Cargo.toml`.
 - **Music that stopped with the link comes back with a bud.** When the
   AirPods disconnect while something plays through them, a bud in ear
   after the reconnect resumes it, as when one goes back in after being
