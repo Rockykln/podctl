@@ -170,7 +170,16 @@ pub fn render(snap: &Snapshot, pal: &Theme, scale: f32) -> Pixmap {
     let ca = x0 + 104.0;
     let cb = x0 + 266.0;
     let lift = snap.art.bud_lift() * K_BUDS;
-    draw_pair(&mut pm, pal, s, snap.art.bud(), ca, y0 + FLOOR - lift, K_BUDS, 15);
+    draw_pair(
+        &mut pm,
+        pal,
+        s,
+        snap.art.bud(),
+        ca,
+        y0 + FLOOR - lift,
+        K_BUDS,
+        15,
+    );
     draw_case(
         &mut pm,
         pal,
