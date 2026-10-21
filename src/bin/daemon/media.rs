@@ -1032,3 +1032,352 @@ mod tests {
     }
 }
 
+/// The timing of the media logic against a stand-in for the system, on a
+/// paused clock.
+#[cfg(test)]
+mod timing {
+    use super::*;
+    use podctl::model::EarStatus::{InCase, InEar as In, OutOfEar};
+    use std::sync::Mutex as StdMutex;
+
+    const ADDR: &str = "AA:BB:CC:DD:EE:01";
+
+    #[derive(Default)]
+    struct World {
+        sink: bool,
+        default: bool,
+        running: bool,
+        tenths: u16,
+        level: Option<f64>,
+        /// Name, status, title.
+        players: Vec<(String, String, Option<String>)>,
+        note: Option<Ducked>,
+    }
+
+    #[derive(Default)]
+    struct Fake(StdMutex<World>);
+
+    impl Fake {
+        fn w(&self) -> std::sync::MutexGuard<'_, World> {
+            self.0.lock().unwrap()
+        }
+    }
+
+    impl Host for Fake {
+        async fn sink(&self, addr: &str) -> Option<SinkInfo> {
+            let w = self.w();
+            w.sink.then(|| SinkInfo {
+                name: "bluez_output.AA_BB_CC_DD_EE_01.1".into(),
+                address: addr.into(),
+                id: 1,
+                is_default: w.default,
+            })
+        }
+
+        async fn sink_running(&self, _addr: &str) -> Option<bool> {
+            let w = self.w();
+            w.sink.then_some(w.running)
+        }
+
+        async fn volume(&self, _addr: &str) -> Option<u8> {
+            let w = self.w();
+            w.sink.then_some(((w.tenths + 5) / 10) as u8)
+        }
+
+        async fn set_volume_tenths(&self, _sink: &SinkInfo, tenths: u16) -> bool {
+            let mut w = self.w();
+            if w.sink {
+                w.tenths = tenths;
+            }
+            w.sink
+        }
+
+        async fn measure_db(&self, _addr: &str) -> Option<f64> {
+            tokio::time::sleep(MEASURE).await;
+            self.w().level
+        }
+
+        async fn players(&self) -> Vec<String> {
+            self.w().players.iter().map(|p| p.0.clone()).collect()
+        }
+
+        async fn status(&self, player: &str) -> Option<String> {
+            let w = self.w();
+            w.players
+                .iter()
+                .find(|p| p.0 == player)
+                .map(|p| p.1.clone())
+        }
+
+        async fn title(&self, player: &str) -> Option<String> {
+            let w = self.w();
+            w.players.iter().find(|p| p.0 == player)?.2.clone()
+        }
+
+        async fn call(&self, player: &str, method: &str) -> Result<(), String> {
+            let mut w = self.w();
+            let p = w.players.iter_mut().find(|p| p.0 == player).ok_or("gone")?;
+            p.1 = if method == "Pause" {
+                "Paused"
+            } else {
+                "Playing"
+            }
+            .into();
+            w.running = method == "Play";
+            Ok(())
+        }
+
+        fn read_note(&self) -> Option<Ducked> {
+            self.w().note.clone()
+        }
+
+        fn write_note(&self, d: &Ducked) {
+            self.w().note = Some(d.clone());
+        }
+
+        fn clear_note(&self) {
+            self.w().note = None;
+        }
+    }
+
+    /// Music at full volume through the buds, one player.
+    async fn playing() -> Arc<Media<Fake>> {
+        let m = Arc::new(Media::<Fake>::default());
+        {
+            let mut w = m.host.w();
+            w.sink = true;
+            w.default = true;
+            w.running = true;
+            w.tenths = 1000;
+            w.level = Some(-35.0);
+            w.players.push((
+                "org.mpris.MediaPlayer2.music".into(),
+                "Playing".into(),
+                Some("Song".into()),
+            ));
+        }
+        m.set_address(Some(ADDR.into())).await;
+        m
+    }
+
+    fn vol(m: &Media<Fake>) -> u16 {
+        (m.host.w().tenths + 5) / 10
+    }
+
+    fn status(m: &Media<Fake>) -> String {
+        m.host.w().players[0].1.clone()
+    }
+
+    async fn after(ms: u64) {
+        tokio::time::sleep(Duration::from_millis(ms)).await;
+    }
+
+    fn speech(m: &Arc<Media<Fake>>, level: u8) {
+        let m = Arc::clone(m);
+        tokio::spawn(async move { m.on_conv_level(level, true).await });
+    }
+
+    fn ears(m: &Arc<Media<Fake>>, prev: InEar, now: InEar) {
+        let m = Arc::clone(m);
+        tokio::spawn(async move { m.on_in_ear(prev, now, true).await });
+    }
+
+    fn ear(primary: podctl::model::EarStatus, secondary: podctl::model::EarStatus) -> InEar {
+        InEar { primary, secondary }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_duck_starts_with_the_speech_and_comes_back() {
+        let m = playing().await;
+        speech(&m, 1);
+        after(150).await;
+        assert!(
+            vol(&m) < 100,
+            "the first dip runs while the level is measured"
+        );
+        after(2000).await;
+        assert_eq!(vol(&m), 68);
+        assert!(m.host.w().note.is_some());
+        speech(&m, 7);
+        after(RESTORE_HOLD.as_millis() as u64 + 2000).await;
+        assert_eq!(vol(&m), 100);
+        assert!(m.host.w().note.is_none());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn speech_during_the_restore_goes_back_down_and_ends_where_it_was() {
+        let m = playing().await;
+        speech(&m, 1);
+        after(2000).await;
+        speech(&m, 7);
+        after(RESTORE_HOLD.as_millis() as u64 + 400).await;
+        let halfway = vol(&m);
+        assert!(halfway > 68 && halfway < 100, "restoring, at {halfway}");
+        speech(&m, 1);
+        after(1000).await;
+        assert_eq!(
+            vol(&m),
+            68,
+            "back down to the duck, not a new one from {halfway}"
+        );
+        speech(&m, 7);
+        after(RESTORE_HOLD.as_millis() as u64 + 2000).await;
+        assert_eq!(vol(&m), 100);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_volume_moved_during_the_duck_is_left_alone() {
+        let m = playing().await;
+        speech(&m, 1);
+        after(2000).await;
+        m.host.w().tenths = 700;
+        speech(&m, 7);
+        after(RESTORE_HOLD.as_millis() as u64 + 2000).await;
+        assert_eq!(vol(&m), 70);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_long_sentence_outlasts_the_watchdog() {
+        let m = playing().await;
+        speech(&m, 1);
+        after(2000).await;
+        after(18_000).await;
+        m.watchdog().await;
+        assert_eq!(vol(&m), 68, "20 s of talking without a frame");
+        after(12_000).await;
+        m.watchdog().await;
+        assert_eq!(vol(&m), 100, "no end of speech after 30 s");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_duck_survives_a_link_that_takes_the_sink_with_it() {
+        let m = playing().await;
+        speech(&m, 1);
+        after(2000).await;
+        m.host.w().sink = false;
+        m.link_dropped().await;
+        assert!(
+            m.host.w().note.is_some(),
+            "the note stays for the reconnect"
+        );
+        // PipeWire brings the sink back at the level it had.
+        m.host.w().sink = true;
+        m.recover_duck().await;
+        assert_eq!(vol(&m), 100);
+        assert!(m.host.w().note.is_none());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn speech_during_a_recovery_takes_the_duck_over() {
+        let m = playing().await;
+        {
+            let mut w = m.host.w();
+            w.tenths = 510;
+            w.note = Some(Ducked {
+                addr: ADDR.into(),
+                from: 100,
+                to: 51,
+            });
+        }
+        let r = Arc::clone(&m);
+        tokio::spawn(async move { r.recover_duck().await });
+        after(500).await;
+        assert!(vol(&m) > 51 && vol(&m) < 100);
+        speech(&m, 1);
+        after(1000).await;
+        assert_eq!(vol(&m), 51);
+        speech(&m, 7);
+        after(RESTORE_HOLD.as_millis() as u64 + 3000).await;
+        assert_eq!(vol(&m), 100, "not the level the recovery had reached");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_bud_flickering_on_its_way_out_does_not_resume() {
+        let m = playing().await;
+        let both = ear(In, In);
+        let one = ear(In, OutOfEar);
+        ears(&m, both, one);
+        after(600).await;
+        assert_eq!(status(&m), "Paused");
+        ears(&m, one, both);
+        after(1400).await;
+        let flicker = "\"in\" for 1.4 s right after the pause";
+        assert_eq!(status(&m), "Paused", "{flicker}");
+        ears(&m, both, one);
+        after(3000).await;
+        assert_eq!(status(&m), "Paused");
+        ears(&m, one, both);
+        after(RESUME_SETTLE.as_millis() as u64 + 600).await;
+        assert_eq!(status(&m), "Playing", "back in later resumes after 0.5 s");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn music_that_stopped_with_the_link_resumes_with_a_bud_in() {
+        let m = playing().await;
+        m.note_playback().await;
+        {
+            let mut w = m.host.w();
+            w.sink = false;
+            w.players[0].1 = "Paused".into();
+        }
+        // A poll between the sink going and BlueZ reporting the drop.
+        m.note_playback().await;
+        m.link_dropped().await;
+        after(10_000).await;
+        m.host.w().sink = true;
+        ears(&m, InEar::default(), ear(InCase, InCase));
+        after(3000).await;
+        assert_eq!(
+            status(&m),
+            "Paused",
+            "reconnecting in the case is not listening"
+        );
+        ears(&m, ear(InCase, InCase), ear(In, InCase));
+        after(3000).await;
+        assert_eq!(status(&m), "Playing");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn music_paused_by_hand_stays_paused_across_the_link() {
+        let m = playing().await;
+        {
+            let mut w = m.host.w();
+            w.players[0].1 = "Paused".into();
+            w.running = false;
+        }
+        m.note_playback().await;
+        m.host.w().sink = false;
+        m.link_dropped().await;
+        m.host.w().sink = true;
+        ears(&m, InEar::default(), ear(In, In));
+        after(5000).await;
+        assert_eq!(status(&m), "Paused");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_link_pause_runs_out_and_leaves_the_next_removal_working() {
+        let m = playing().await;
+        m.note_playback().await;
+        {
+            let mut w = m.host.w();
+            w.sink = false;
+            w.players[0].1 = "Paused".into();
+        }
+        m.link_dropped().await;
+        after(6 * 60 * 1000).await;
+        {
+            let mut w = m.host.w();
+            w.sink = true;
+            w.players[0].1 = "Playing".into();
+        }
+        // Ear detection was off meanwhile: the first change seen is a bud
+        // coming out.
+        ears(&m, ear(In, In), ear(In, OutOfEar));
+        after(1000).await;
+        assert_eq!(
+            status(&m),
+            "Paused",
+            "a stale list must not swallow the pause"
+        );
+    }
+}

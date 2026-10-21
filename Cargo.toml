@@ -64,6 +64,10 @@ x11rb = { version = "0.14", features = ["randr", "shape"] }
 # Alias property write, and a hand-rolled raw `AF_BLUETOOTH` socket for
 # the AAP channel on PSM 0x1001. No external bluetooth crate.
 
+[dev-dependencies]
+# A paused clock for the timing of the media logic.
+tokio = { version = "1", features = ["test-util"] }
+
 [profile.release]
 lto = "thin"
 codegen-units = 1
