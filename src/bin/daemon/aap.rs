@@ -206,6 +206,7 @@ fn run(
     }
     rt.block_on(daemon.set_aap_stream(None));
     info!(mac = %short_mac(&mac), frame_count, "AAP loop exited");
+    daemon.link_wake.notify_one();
 }
 
 /// Delays between L2CAP connect attempts. BlueZ reports "Connected" as

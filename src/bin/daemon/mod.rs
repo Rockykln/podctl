@@ -56,6 +56,9 @@ pub struct Daemon {
     /// that will actually draw a bubble for `Event::ShowPopup`.
     popup_listeners: AtomicUsize,
     media: media::Media,
+    /// Rung by the AAP thread when it exits, so the link task looks at
+    /// BlueZ right away instead of at its next poll.
+    link_wake: tokio::sync::Notify,
 }
 
 impl Daemon {
@@ -74,6 +77,7 @@ impl Daemon {
             last_resubscribe: Mutex::new(None),
             popup_listeners: AtomicUsize::new(0),
             media: media::Media::default(),
+            link_wake: tokio::sync::Notify::new(),
         }
     }
 

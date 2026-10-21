@@ -22,6 +22,9 @@ use podctl::{
 use super::{Daemon, aap::AapTask};
 
 const POLL_INTERVAL: Duration = Duration::from_secs(3);
+/// After the AAP link breaks, BlueZ usually reports the disconnect a
+/// moment later; until the next poll `status` would show the old state.
+const LINK_DROP_SETTLE: Duration = Duration::from_millis(300);
 
 /// Wait after a BlueZ connect edge before the first L2CAP attempt — the
 /// device is usually still bringing up its profiles.
@@ -130,7 +133,10 @@ pub async fn run(daemon: Arc<Daemon>) {
             aap.sync(&daemon, &snap_addr, snap_connected).await;
             aap.watchdog(&daemon).await;
         }
-        sleep(POLL_INTERVAL).await;
+        tokio::select! {
+            _ = sleep(POLL_INTERVAL) => {}
+            _ = daemon.link_wake.notified() => sleep(LINK_DROP_SETTLE).await,
+        }
     }
 }
 

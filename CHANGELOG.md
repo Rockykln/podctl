@@ -38,8 +38,10 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 - **`podctl status` kept showing battery, in-ear state, listening mode
   and settings after the AirPods disconnected.** The link to the buds
   breaks a moment before BlueZ reports the disconnect, and the clean-up
-  that follows only ran while the link task was still around. Now only
-  what podctl stores itself (ear detection, microphone) is left.
+  that follows only ran while the link task was still around, and it
+  waited for the next poll of BlueZ, up to 3 s. Now only what podctl
+  stores itself (ear detection, microphone) is left, a moment after the
+  link breaks.
 - **The duck for speech ended up at the wrong level.** Speaking again
   while the volume came back up started a second duck from that halfway
   level, so it never returned to where it was; the same happened during
