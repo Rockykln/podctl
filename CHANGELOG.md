@@ -3,7 +3,7 @@
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] — for 0.4
+## [Unreleased]
 
 ### Added
 - **`podctl debug` carries the logs.** The report ends with the last 40
@@ -133,82 +133,6 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 - **A `watch` client that went away left its task behind**, and with it
   its registration: `podctl popup` kept reporting success although
   nobody was there to draw the bubble. A hangup ends the stream now.
-
-### Changed
-- The duck for speech starts as soon as the AirPods report it, by the
-  smallest step, while the music's level is measured; it used to wait
-  for the measurement first. About 0.7 s earlier, down after 1.3 s.
-- **`podctl status` was rewritten.** One label column, labels that are
-  the command names (`ear`, `loud-reduction`, `auto-connect`), one line
-  per bud with a bar on a terminal and nothing but columns in a pipe,
-  and the charging state as a word — the lightning bolt was two cells
-  wide in most terminals, so the columns moved as soon as a bud
-  charged. `trusted` is gone: it is the same BlueZ flag as
-  `auto-connect` and read as two settings. Disconnected, `status`
-  showed the word "disconnected" and nothing else; it now shows the
-  levels the case last announced over bluetooth LE, with their age, and
-  with nothing paired it says that instead. `podctl battery` prints the
-  same rows, and `podctl list` cuts a long name to its column instead
-  of shifting every line after it.
-- `PODS_NO_LR` is now `PODCTL_NO_LR` (the old name still works) and is
-  documented.
-- **`--json` has one shape for every command**:
-  `{"schema":1,"ok":true,"kind":"state","data":{…}}`, one object on one
-  line, so a stream of them (`watch`, `meter`) is newline-delimited
-  JSON. There were three shapes before — `{"kind":…,"data":…}` for most,
-  `{"daemon":…}` for `version`, `{"ble":true}` for `ble` — some printed
-  over forty lines, and `debug --json` ignored the flag. `--pretty`
-  indents it for reading. The shape is in the man page under
-  JSON OUTPUT and held by tests.
-- **JSON spells values the way the command line takes them**, so
-  `podctl mode "$(podctl status --json | jq -r .data.settings.mode)"`
-  works. It used to print `noise_cancellation`, `high_quality` and
-  `always_left`, none of which the CLI accepts. The old spellings are
-  still read back.
-- An error in JSON mode is an envelope with `ok: false`, the message and
-  the hint, on standard output.
-- `pending` answers print `pending: <reason>` instead of `ok (pending:
-  …)` — it has not happened yet.
-- The generated bash completion no longer needs the bash-completion
-  package loaded; without it, it reads `COMP_WORDS` itself.
-- **`podctl` and `podctld` have to be the same version** for the
-  settings commands: the socket carries the same spellings, so a 0.3
-  daemon answers a 0.4 `podctl mode anc` with "malformed request". The
-  handshake above now says so in as many words; run `podctl reboot`
-  after an upgrade.
-- Connecting to the daemon, writing a line and reading one back was
-  spelled out in nine places — three in the CLI, two each in the tray,
-  the bubble and the debug report — every one with its own timeouts and
-  its own idea of what an error is. One client in the library does it
-  now, blocking or async, single answer or event stream.
-- **The command line comes from one table now** (`src/commands.rs`).
-  Help, the completion scripts and the argument checks were six
-  hand-kept copies of the same list, and they had drifted: `podctl m
-  <TAB>`, `podctl tone <TAB>` and `podctl --json mode <TAB>` completed
-  nothing, the internal `debug emit-case-lid` was offered to everyone,
-  and the zsh file installed itself as `_pods`. The overview has fixed
-  columns and an alias column, `podctl completion <shell>` writes the
-  script out from the table, and a test holds the files under `dist/`,
-  the man page and the parser to it.
-- **Surplus arguments are a usage error**, so `podctl rename Test
-  AirPods` says to quote the name instead of renaming to "Test". An
-  option a verb does not take is refused as well.
-- **A mistyped command names the one you meant** ("did you mean
-  'status'?"), and `podctl help nope` exits 64 instead of 0.
-- **One shape for value errors**: `podctl: mode: unknown value 'foo'
-  (expected off, anc, transparency, adaptive)`, with `hint:` on the
-  next line. There were three hint styles and two quoting styles.
-- `podctl meter --interval abc` fell back to 100 ms without a word and
-  `--interval 0` was a busy loop; both are usage errors now.
-- The four settings whose AAP ids are unknown (`spatial`,
-  `loud-reduction`, `press`, `tone-on-press`) are marked as not
-  implemented in the overview, their own help pages and the man page.
-- The man page lists the aliases, documents `PODS_NO_LR`, and says that
-  `uninstall` on a system install can run `sudo pacman -R`.
-
-## [Unreleased] — for 0.3.1
-
-### Fixed
 - **The daemon could cut its own connections.** It kept the number of
   the socket to the buds rather than the socket, and the kernel hands a
   closed number to whatever opens next — a `watch` stream or a BLE scan
@@ -283,6 +207,76 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
   never existed.
 
 ### Changed
+- The duck for speech starts as soon as the AirPods report it, by the
+  smallest step, while the music's level is measured; it used to wait
+  for the measurement first. About 0.7 s earlier, down after 1.3 s.
+- **`podctl status` was rewritten.** One label column, labels that are
+  the command names (`ear`, `loud-reduction`, `auto-connect`), one line
+  per bud with a bar on a terminal and nothing but columns in a pipe,
+  and the charging state as a word — the lightning bolt was two cells
+  wide in most terminals, so the columns moved as soon as a bud
+  charged. `trusted` is gone: it is the same BlueZ flag as
+  `auto-connect` and read as two settings. Disconnected, `status`
+  showed the word "disconnected" and nothing else; it now shows the
+  levels the case last announced over bluetooth LE, with their age, and
+  with nothing paired it says that instead. `podctl battery` prints the
+  same rows, and `podctl list` cuts a long name to its column instead
+  of shifting every line after it.
+- `PODS_NO_LR` is now `PODCTL_NO_LR` (the old name still works) and is
+  documented.
+- **`--json` has one shape for every command**:
+  `{"schema":1,"ok":true,"kind":"state","data":{…}}`, one object on one
+  line, so a stream of them (`watch`, `meter`) is newline-delimited
+  JSON. There were three shapes before — `{"kind":…,"data":…}` for most,
+  `{"daemon":…}` for `version`, `{"ble":true}` for `ble` — some printed
+  over forty lines, and `debug --json` ignored the flag. `--pretty`
+  indents it for reading. The shape is in the man page under
+  JSON OUTPUT and held by tests.
+- **JSON spells values the way the command line takes them**, so
+  `podctl mode "$(podctl status --json | jq -r .data.settings.mode)"`
+  works. It used to print `noise_cancellation`, `high_quality` and
+  `always_left`, none of which the CLI accepts. The old spellings are
+  still read back.
+- An error in JSON mode is an envelope with `ok: false`, the message and
+  the hint, on standard output.
+- `pending` answers print `pending: <reason>` instead of `ok (pending:
+  …)` — it has not happened yet.
+- The generated bash completion no longer needs the bash-completion
+  package loaded; without it, it reads `COMP_WORDS` itself.
+- **`podctl` and `podctld` have to be the same version** for the
+  settings commands: the socket carries the same spellings, so a 0.3
+  daemon answers a 0.4 `podctl mode anc` with "malformed request". The
+  handshake above now says so in as many words; run `podctl reboot`
+  after an upgrade.
+- Connecting to the daemon, writing a line and reading one back was
+  spelled out in nine places — three in the CLI, two each in the tray,
+  the bubble and the debug report — every one with its own timeouts and
+  its own idea of what an error is. One client in the library does it
+  now, blocking or async, single answer or event stream.
+- **The command line comes from one table now** (`src/commands.rs`).
+  Help, the completion scripts and the argument checks were six
+  hand-kept copies of the same list, and they had drifted: `podctl m
+  <TAB>`, `podctl tone <TAB>` and `podctl --json mode <TAB>` completed
+  nothing, the internal `debug emit-case-lid` was offered to everyone,
+  and the zsh file installed itself as `_pods`. The overview has fixed
+  columns and an alias column, `podctl completion <shell>` writes the
+  script out from the table, and a test holds the files under `dist/`,
+  the man page and the parser to it.
+- **Surplus arguments are a usage error**, so `podctl rename Test
+  AirPods` says to quote the name instead of renaming to "Test". An
+  option a verb does not take is refused as well.
+- **A mistyped command names the one you meant** ("did you mean
+  'status'?"), and `podctl help nope` exits 64 instead of 0.
+- **One shape for value errors**: `podctl: mode: unknown value 'foo'
+  (expected off, anc, transparency, adaptive)`, with `hint:` on the
+  next line. There were three hint styles and two quoting styles.
+- `podctl meter --interval abc` fell back to 100 ms without a word and
+  `--interval 0` was a busy loop; both are usage errors now.
+- The four settings whose AAP ids are unknown (`spatial`,
+  `loud-reduction`, `press`, `tone-on-press`) are marked as not
+  implemented in the overview, their own help pages and the man page.
+- The man page lists the aliases, documents `PODS_NO_LR`, and says that
+  `uninstall` on a system install can run `sudo pacman -R`.
 - **Release binaries are stripped**: 79 MB down to 13.5 MB for all four
   together. `thiserror` and tokio's `process` feature are gone; nothing
   used them.
