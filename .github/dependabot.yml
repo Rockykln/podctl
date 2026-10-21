@@ -1,20 +1,28 @@
 version: 2
 updates:
+  # Cargo.toml asks for semver ranges, so nearly every update only moves
+  # Cargo.lock; one pull request a month for all of them.
   - package-ecosystem: cargo
     directory: "/"
     schedule:
-      interval: weekly
-      day: monday
+      interval: monthly
+    groups:
+      cargo:
+        update-types: [minor, patch]
     open-pull-requests-limit: 5
     commit-message:
       prefix: "deps"
     labels:
       - dependencies
 
+  # Keeps the commit pins in .github/workflows current.
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
       interval: monthly
+    groups:
+      actions:
+        patterns: ["*"]
     commit-message:
       prefix: "ci"
     labels:
