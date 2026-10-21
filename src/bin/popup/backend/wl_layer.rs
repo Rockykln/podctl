@@ -13,10 +13,19 @@ use wayland_client::protocol::{
     wl_surface::WlSurface,
 };
 use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle, delegate_noop};
+use wayland_protocols::wp::fractional_scale::v1::client::{
+    wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1,
+    wp_fractional_scale_v1::{self, WpFractionalScaleV1},
+};
+use wayland_protocols::wp::viewporter::client::{
+    wp_viewport::WpViewport, wp_viewporter::WpViewporter,
+};
 use wayland_protocols_wlr::layer_shell::v1::client::{
     zwlr_layer_shell_v1::{self, ZwlrLayerShellV1},
     zwlr_layer_surface_v1::{self, Anchor, ZwlrLayerSurfaceV1},
 };
+
+use tracing::debug;
 
 use super::{Backend, Frame};
 
@@ -27,15 +36,29 @@ pub struct WlLayer {
 struct Win {
     conn: Connection,
     queue: EventQueue<State>,
+    qh: QueueHandle<State>,
     state: State,
+    shm: WlShm,
     surface: WlSurface,
     layer: ZwlrLayerSurfaceV1,
-    bufs: [Buf; 2],
+    /// Set when the compositor scales by fractions: buffers are drawn at
+    /// device size and the viewport maps them onto the logical surface.
+    viewport: Option<(WpViewport, WpFractionalScaleV1)>,
+    pool: Option<Pool>,
     cur: usize,
+    /// Logical size of the surface.
+    w: u32,
+    h: u32,
+}
+
+/// Two buffers of one device size in one shared mapping.
+struct Pool {
+    bufs: [Buf; 2],
     map: *mut u8,
     map_len: usize,
     w: u32,
     h: u32,
+    buffer_scale: i32,
 }
 
 struct Buf {
@@ -49,6 +72,10 @@ struct State {
     configured: bool,
     closed: bool,
     released: Vec<u32>,
+    /// `wp_fractional_scale_v1.preferred_scale`, in 120ths.
+    fractional: Option<u32>,
+    /// `wl_surface.preferred_buffer_scale` (wl_compositor 6).
+    integer: Option<i32>,
 }
 
 impl WlLayer {
@@ -77,7 +104,17 @@ impl Backend for WlLayer {
             .bind(&qh, 1..=4, ())
             .map_err(|_| anyhow!("compositor has no wlr-layer-shell"))?;
 
+        let fractional: Option<WpFractionalScaleManagerV1> = globals.bind(&qh, 1..=1, ()).ok();
+        let viewporter: Option<WpViewporter> = globals.bind(&qh, 1..=1, ()).ok();
+
         let surface = compositor.create_surface(&qh, ());
+        let viewport = match (fractional, viewporter) {
+            (Some(f), Some(v)) => Some((
+                v.get_viewport(&surface, &qh, ()),
+                f.get_fractional_scale(&surface, &qh, ()),
+            )),
+            _ => None,
+        };
         let layer = layer_shell.get_layer_surface(
             &surface,
             None,
@@ -107,49 +144,43 @@ impl Backend for WlLayer {
             bail!("compositor closed the layer surface");
         }
 
-        let stride = w as usize * 4;
-        let one = stride * h as usize;
-        let map_len = one * 2;
-        let (fd, map) = shm_alloc(map_len)?;
-        let pool = shm.create_pool(fd.as_fd(), map_len as i32, &qh, ());
-        let mk = |off: usize| {
-            pool.create_buffer(
-                off as i32,
-                w as i32,
-                h as i32,
-                stride as i32,
-                wl_shm::Format::Argb8888,
-                &qh,
-                off as u32,
-            )
-        };
-        let bufs = [
-            Buf {
-                wl: mk(0),
-                offset: 0,
-                busy: false,
-            },
-            Buf {
-                wl: mk(one),
-                offset: one,
-                busy: false,
-            },
-        ];
+        // The scale comes with the output the surface lands on, which
+        // the compositor may tell only after the configure.
+        let deadline = Instant::now() + SCALE_WAIT;
+        while state.fractional.is_none() && state.integer.is_none() && Instant::now() < deadline {
+            read_into(&conn, &mut queue, &mut state, READ_SLICE)?;
+        }
+        debug!(
+            fractional = ?state.fractional,
+            integer = ?state.integer,
+            viewport = viewport.is_some(),
+            "wl surface scale"
+        );
 
         self.win = Some(Win {
             conn,
             queue,
+            qh,
             state,
+            shm,
             surface,
             layer,
-            bufs,
+            viewport,
+            pool: None,
             cur: 0,
-            map,
-            map_len,
             w,
             h,
         });
         Ok(())
+    }
+
+    fn scale(&self) -> f32 {
+        let Some(win) = &self.win else { return 1.0 };
+        match (&win.viewport, win.state.fractional, win.state.integer) {
+            (Some(_), Some(f), _) => f as f32 / 120.0,
+            (_, _, Some(n)) if n > 0 => n as f32,
+            _ => 1.0,
+        }
     }
 
     fn push_frame(&mut self, f: &Frame) -> Result<()> {
@@ -157,10 +188,14 @@ impl Backend for WlLayer {
         if win.state.closed {
             bail!("layer surface was closed by the compositor");
         }
+        if win.pool.as_ref().is_none_or(|p| (p.w, p.h) != (f.w, f.h)) {
+            resize(win, f.w, f.h)?;
+        }
+        let pool = win.pool.as_mut().expect("sized above");
 
-        collect_releases(win);
+        collect_releases(&mut win.state, pool);
 
-        let slot = if !win.bufs[win.cur].busy {
+        let slot = if !pool.bufs[win.cur].busy {
             win.cur
         } else {
             1 - win.cur
@@ -169,28 +204,29 @@ impl Backend for WlLayer {
         // event ended the wait, and the frame was then written into a
         // buffer the compositor was still reading from.
         let deadline = Instant::now() + RELEASE_WAIT;
-        while win.bufs[slot].busy {
+        while pool.bufs[slot].busy {
             if Instant::now() >= deadline {
                 // Rather drop this frame than paint into a buffer that
                 // is not ours. The next one carries the same picture.
                 return Ok(());
             }
-            read_events(win, READ_SLICE)?;
-            collect_releases(win);
+            read_into(&win.conn, &mut win.queue, &mut win.state, READ_SLICE)?;
+            collect_releases(&mut win.state, pool);
         }
 
-        let off = win.bufs[slot].offset;
-        let len = win.w as usize * 4 * win.h as usize;
+        let off = pool.bufs[slot].offset;
+        let len = f.w as usize * 4 * f.h as usize;
         debug_assert_eq!(f.bgra.len(), len);
         unsafe {
-            ptr::copy_nonoverlapping(f.bgra.as_ptr(), win.map.add(off), len.min(f.bgra.len()));
+            ptr::copy_nonoverlapping(f.bgra.as_ptr(), pool.map.add(off), len.min(f.bgra.len()));
         }
 
         win.layer.set_margin(0, 0, f.margin_bottom, 0);
-        win.surface.attach(Some(&win.bufs[slot].wl), 0, 0);
-        win.surface.damage_buffer(0, 0, win.w as i32, win.h as i32);
+        win.surface.set_buffer_scale(pool.buffer_scale);
+        win.surface.attach(Some(&pool.bufs[slot].wl), 0, 0);
+        win.surface.damage_buffer(0, 0, f.w as i32, f.h as i32);
         win.surface.commit();
-        win.bufs[slot].busy = true;
+        pool.bufs[slot].busy = true;
         win.cur = 1 - slot;
 
         win.conn.flush().context("flush wayland")?;
@@ -201,18 +237,74 @@ impl Backend for WlLayer {
     }
 
     fn close(&mut self) -> Result<()> {
-        if let Some(win) = self.win.take() {
+        if let Some(mut win) = self.win.take() {
+            if let Some((viewport, fractional)) = win.viewport.take() {
+                viewport.destroy();
+                fractional.destroy();
+            }
             win.layer.destroy();
             win.surface.destroy();
-            for b in &win.bufs {
-                b.wl.destroy();
+            if let Some(pool) = win.pool.take() {
+                drop_pool(pool);
             }
             let _ = win.conn.flush();
-            unsafe {
-                munmap(win.map, win.map_len);
-            }
         }
         Ok(())
+    }
+}
+
+/// Buffers for frames of `w`×`h` device pixels. Ones the compositor
+/// still holds stay valid on its side after they are destroyed here.
+fn resize(win: &mut Win, w: u32, h: u32) -> Result<()> {
+    if let Some(old) = win.pool.take() {
+        drop_pool(old);
+    }
+    let stride = w as usize * 4;
+    let one = stride * h as usize;
+    let map_len = one * 2;
+    let (fd, map) = shm_alloc(map_len)?;
+    let pool = win.shm.create_pool(fd.as_fd(), map_len as i32, &win.qh, ());
+    let mk = |off: usize| Buf {
+        wl: pool.create_buffer(
+            off as i32,
+            w as i32,
+            h as i32,
+            stride as i32,
+            wl_shm::Format::Argb8888,
+            &win.qh,
+            off as u32,
+        ),
+        offset: off,
+        busy: false,
+    };
+    let bufs = [mk(0), mk(one)];
+    pool.destroy();
+    let buffer_scale = match &win.viewport {
+        Some((viewport, _)) => {
+            viewport.set_destination(win.w as i32, win.h as i32);
+            1
+        }
+        None if w.is_multiple_of(win.w) && w / win.w == h / win.h => (w / win.w) as i32,
+        None => 1,
+    };
+    win.pool = Some(Pool {
+        bufs,
+        map,
+        map_len,
+        w,
+        h,
+        buffer_scale,
+    });
+    win.cur = 0;
+    Ok(())
+}
+
+fn drop_pool(pool: Pool) {
+    for b in &pool.bufs {
+        b.wl.destroy();
+    }
+    unsafe {
+        munmap(pool.map, pool.map_len);
     }
 }
 
@@ -232,6 +324,9 @@ const READ_SLICE: Duration = Duration::from_millis(25);
 /// How long the surface may take to be configured before the bubble
 /// gives up and the next backend gets a turn.
 const CONFIGURE_WAIT: Duration = Duration::from_secs(2);
+/// How long to wait for the scale after the configure before drawing
+/// at the one the bubble had last time.
+const SCALE_WAIT: Duration = Duration::from_millis(100);
 const POLLIN: i16 = 0x001;
 
 #[repr(C)]
@@ -260,9 +355,9 @@ fn last_err() -> std::io::Error {
 }
 
 /// Mark every buffer the compositor handed back as free again.
-fn collect_releases(win: &mut Win) {
-    for released in win.state.released.drain(..) {
-        for b in &mut win.bufs {
+fn collect_releases(state: &mut State, pool: &mut Pool) {
+    for released in state.released.drain(..) {
+        for b in &mut pool.bufs {
             if b.offset as u32 == released {
                 b.busy = false;
             }
@@ -293,10 +388,6 @@ fn read_into(
     }
     queue.dispatch_pending(state).context("dispatch pending")?;
     Ok(())
-}
-
-fn read_events(win: &mut Win, wait: Duration) -> Result<()> {
-    read_into(&win.conn, &mut win.queue, &mut win.state, wait)
 }
 
 fn shm_alloc(len: usize) -> Result<(OwnedFd, *mut u8)> {
@@ -377,5 +468,37 @@ impl Dispatch<WlRegistry, GlobalListContents> for State {
 delegate_noop!(State: ignore WlCompositor);
 delegate_noop!(State: ignore WlShm);
 delegate_noop!(State: ignore WlShmPool);
-delegate_noop!(State: ignore WlSurface);
+delegate_noop!(State: ignore WpFractionalScaleManagerV1);
+delegate_noop!(State: ignore WpViewporter);
+delegate_noop!(State: ignore WpViewport);
+
+impl Dispatch<WlSurface, ()> for State {
+    fn event(
+        st: &mut Self,
+        _: &WlSurface,
+        ev: wayland_client::protocol::wl_surface::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wayland_client::protocol::wl_surface::Event::PreferredBufferScale { factor } = ev {
+            st.integer = Some(factor);
+        }
+    }
+}
+
+impl Dispatch<WpFractionalScaleV1, ()> for State {
+    fn event(
+        st: &mut Self,
+        _: &WpFractionalScaleV1,
+        ev: wp_fractional_scale_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wp_fractional_scale_v1::Event::PreferredScale { scale } = ev {
+            st.fractional = Some(scale);
+        }
+    }
+}
 delegate_noop!(State: ignore ZwlrLayerShellV1);

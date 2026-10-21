@@ -116,12 +116,20 @@ pub fn mode_label(m: Mode) -> &'static str {
     }
 }
 
+/// Device pixels of a `w`×`h` logical buffer at `scale`. Rounded, as the fractional
+/// scale protocol sizes buffers.
+pub fn buf_px(w: u32, h: u32, scale: f32) -> (u32, u32) {
+    (
+        (w as f32 * scale).round() as u32,
+        (h as f32 * scale).round() as u32,
+    )
+}
+
 /// The card with its shadow margin, `scale` device pixels per logical one.
 pub fn render(snap: &Snapshot, pal: &Theme, scale: f32) -> Pixmap {
     let s = scale;
     set_scale(s);
-    let bw = ((CARD_W + 2.0 * MARGIN) * s).ceil() as u32;
-    let bh = ((CARD_H + 2.0 * MARGIN) * s).ceil() as u32;
+    let (bw, bh) = buf_px(BUF_W, BUF_H, s);
     let mut pm = Pixmap::new(bw, bh).expect("non-zero card");
     let t = Transform::from_scale(s, s);
     let (x0, y0) = (MARGIN, MARGIN);
@@ -350,6 +358,17 @@ pub fn to_bgra_premul(pm: &Pixmap) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn buffer_sizes_round_like_the_compositor() {
+        assert_eq!(buf_px(BUF_W, BUF_H, 1.0), (408, 232));
+        assert_eq!(buf_px(BUF_W, BUF_H, 1.25), (510, 290));
+        assert_eq!(buf_px(BUF_W, BUF_H, 1.5), (612, 348));
+        assert_eq!(buf_px(BUF_W, BUF_H, 1.75), (714, 406));
+        assert_eq!(buf_px(BUF_W, BUF_H, 2.0), (816, 464));
+        let pm = render(&Snapshot::sample(), &dark(), 1.75);
+        assert_eq!((pm.width(), pm.height()), (714, 406));
+    }
 
     #[test]
     fn close_levels_show_as_one() {

@@ -240,6 +240,11 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
   `light`. It reads the setting from the desktop portal (KDE, GNOME and
   others) and picks up a change from the next bubble on. Without a
   portal it stays dark, as before.
+- **The bubble is sharp on scaled screens.** On Wayland it draws at the
+  scale of the output it lands on, fractional ones such as 1.25 or 1.75
+  included (`fractional-scale-v1` with `viewporter`, else the integer
+  buffer scale); on X11 at `Xft.dpi` / 96. It used to draw at 1× and
+  leave the stretching to the compositor.
 - The bubble draws about five times faster: shadows are blurred only
   where they fall, not across the whole buffer. A card at 2× took 1.7 s
   and now takes 0.3 s.

@@ -255,6 +255,9 @@ fn render_loop(
     anim_ms: u32,
     hold: Duration,
 ) {
+    // Drawn ahead at the last bubble's scale; usually the next one shows
+    // on the same screen and nothing has to be drawn twice.
+    let mut scale = 1.0;
     while let Ok(cmd) = rx.recv() {
         let snap = match cmd {
             Cmd::Show(s) => s,
@@ -266,7 +269,7 @@ fn render_loop(
         // A change of desktop scheme shows from the next bubble on.
         let theme = Theme::of(dark.load(Ordering::Relaxed));
         if matches!(
-            show_cycle(&rx, pick, &theme, anim_ms, hold, snap),
+            show_cycle(&rx, pick, &theme, anim_ms, hold, snap, &mut scale),
             Outcome::Quit
         ) {
             return;
@@ -293,7 +296,53 @@ enum Applied {
     Stop(Outcome),
 }
 
-fn apply(cmd: Cmd, bgra: &mut Vec<u8>, theme: &Theme, be: &mut dyn Backend) -> Applied {
+/// The card as backends take it, drawn for one scale.
+struct Card {
+    snap: Snapshot,
+    theme: Theme,
+    scale: f32,
+    bgra: Vec<u8>,
+    w: u32,
+    h: u32,
+}
+
+impl Card {
+    fn new(snap: Snapshot, theme: &Theme, scale: f32) -> Self {
+        let mut c = Card {
+            snap,
+            theme: *theme,
+            scale,
+            bgra: Vec::new(),
+            w: 0,
+            h: 0,
+        };
+        c.draw();
+        c
+    }
+
+    fn draw(&mut self) {
+        let pm = render::render(&self.snap, &self.theme, self.scale);
+        (self.w, self.h) = (pm.width(), pm.height());
+        self.bgra = render::to_bgra_premul(&pm);
+    }
+
+    fn set(&mut self, snap: Snapshot) {
+        self.snap = snap;
+        self.draw();
+    }
+
+    /// Draw again if the backend now shows at another scale.
+    fn fit(&mut self, be: &dyn Backend) {
+        let s = be.scale();
+        if (s - self.scale).abs() > 0.001 {
+            debug!(from = self.scale, to = s, "redraw for the output scale");
+            self.scale = s;
+            self.draw();
+        }
+    }
+}
+
+fn apply(cmd: Cmd, card: &mut Card, be: &mut dyn Backend) -> Applied {
     let (snap, reset) = match cmd {
         Cmd::Show(s) => (s, true),
         Cmd::Refresh(s) => (s, false),
@@ -302,7 +351,7 @@ fn apply(cmd: Cmd, bgra: &mut Vec<u8>, theme: &Theme, be: &mut dyn Backend) -> A
     };
     let (title, body) = labels(&snap);
     be.set_labels(&title, &body);
-    *bgra = render::to_bgra_premul(&render::render(&snap, theme, 1.0));
+    card.set(snap);
     Applied::Redrawn { reset }
 }
 
@@ -334,11 +383,11 @@ fn labels(snap: &Snapshot) -> (String, String) {
 /// Apply every queued command. `Show` redraws and asks the hold timer
 /// to restart (a fresh trigger); `Refresh` only redraws (battery tick);
 /// `Hide`/`Quit`/dropped-sender stop the cycle.
-fn drain(rx: &Receiver<Cmd>, bgra: &mut Vec<u8>, theme: &Theme, be: &mut dyn Backend) -> Drained {
+fn drain(rx: &Receiver<Cmd>, card: &mut Card, be: &mut dyn Backend) -> Drained {
     let mut reset = false;
     loop {
         match rx.try_recv() {
-            Ok(cmd) => match apply(cmd, bgra, theme, be) {
+            Ok(cmd) => match apply(cmd, card, be) {
                 Applied::Redrawn { reset: r } => reset |= r,
                 Applied::Stop(o) => return Drained::Stop(o),
             },
@@ -361,8 +410,9 @@ fn show_cycle(
     anim_ms: u32,
     hold: Duration,
     snap: Snapshot,
+    scale: &mut f32,
 ) -> Outcome {
-    let mut bgra = render::to_bgra_premul(&render::render(&snap, theme, 1.0));
+    let mut card = Card::new(snap, theme, *scale);
     // Slides included — the notification backend hands this to the server
     // as the expire timeout, and a bubble the server retires early is
     // exactly the "gone too soon" the hold is meant to prevent.
@@ -377,8 +427,10 @@ fn show_cycle(
     if short(be.kind()) != pick.name {
         info!(wanted = %pick.name, using = short(be.kind()), "backend fell back");
     }
-    let (title, body) = labels(&snap);
+    let (title, body) = labels(&card.snap);
     be.set_labels(&title, &body);
+    card.fit(be.as_ref());
+    *scale = card.scale;
 
     let hidden = -(BUF_H as f32);
     let rest = REST_MARGIN as f32;
@@ -387,11 +439,11 @@ fn show_cycle(
     let mut stop = None;
     for m in Slide::new(hidden, rest, anim_ms) {
         last = m;
-        if push(be.as_mut(), &bgra, m).is_err() {
+        if push(be.as_mut(), &mut card, m).is_err() {
             let _ = be.close();
             return Outcome::Done;
         }
-        if let Drained::Stop(o) = drain(rx, &mut bgra, theme, be.as_mut()) {
+        if let Drained::Stop(o) = drain(rx, &mut card, be.as_mut()) {
             stop = Some(o);
             break;
         }
@@ -422,7 +474,7 @@ fn show_cycle(
                         break;
                     }
                 };
-                let mut reset = match apply(cmd, &mut bgra, theme, be.as_mut()) {
+                let mut reset = match apply(cmd, &mut card, be.as_mut()) {
                     Applied::Redrawn { reset } => reset,
                     Applied::Stop(s) => {
                         o = s;
@@ -430,7 +482,7 @@ fn show_cycle(
                     }
                 };
                 // Whatever else is queued belongs to the same redraw.
-                match drain(rx, &mut bgra, theme, be.as_mut()) {
+                match drain(rx, &mut card, be.as_mut()) {
                     Drained::Stop(s) => {
                         o = s;
                         break;
@@ -441,7 +493,7 @@ fn show_cycle(
                 if reset {
                     deadline = Instant::now() + hold;
                 }
-                if push(be.as_mut(), &bgra, rest).is_err() {
+                if push(be.as_mut(), &mut card, rest).is_err() {
                     let _ = be.close();
                     return o;
                 }
@@ -451,7 +503,7 @@ fn show_cycle(
     };
 
     for m in Slide::new(last, hidden, anim_ms) {
-        if push(be.as_mut(), &bgra, m).is_err() {
+        if push(be.as_mut(), &mut card, m).is_err() {
             break;
         }
         sleep(FRAME);
@@ -767,15 +819,15 @@ fn dump(path: &str, theme: &Theme, args: &[String]) -> std::io::Result<()> {
 }
 
 fn demo(theme: &Theme, want: Option<String>, hold: Duration) -> anyhow::Result<()> {
-    let snap = Snapshot::sample();
-    let pm = render::render(&snap, theme, 1.0);
-    let bgra = render::to_bgra_premul(&pm);
+    let mut card = Card::new(Snapshot::sample(), theme, 1.0);
     let pick = want.as_deref().unwrap_or("wl");
     let mut be = open_backend(pick, want.is_some(), hold)?;
     eprintln!("podctl-popup: backend {}", short(be.kind()));
-    let (title, body) = labels(&snap);
+    let (title, body) = labels(&card.snap);
     be.set_labels(&title, &body);
-    present(be.as_mut(), &bgra, hold)?;
+    card.fit(be.as_ref());
+    eprintln!("podctl-popup: scale {}", card.scale);
+    present(be.as_mut(), &mut card, hold)?;
     be.close()?;
     Ok(())
 }
@@ -813,26 +865,29 @@ fn open_backend(
     Err(last)
 }
 
-fn present(be: &mut dyn Backend, bgra: &[u8], hold: Duration) -> anyhow::Result<()> {
+fn present(be: &mut dyn Backend, card: &mut Card, hold: Duration) -> anyhow::Result<()> {
     let hidden = -(BUF_H as f32);
     for m in Slide::new(hidden, REST_MARGIN as f32, DEMO_ANIM_MS) {
-        push(be, bgra, m)?;
+        push(be, card, m)?;
         sleep(FRAME);
     }
     for _ in 0..(hold.as_millis() / 100) {
-        push(be, bgra, REST_MARGIN as f32)?;
+        push(be, card, REST_MARGIN as f32)?;
         sleep(Duration::from_millis(100));
     }
     for m in Slide::new(REST_MARGIN as f32, hidden, DEMO_ANIM_MS) {
-        push(be, bgra, m)?;
+        push(be, card, m)?;
         sleep(FRAME);
     }
     Ok(())
 }
 
-fn push(be: &mut dyn Backend, bgra: &[u8], margin: f32) -> anyhow::Result<()> {
+fn push(be: &mut dyn Backend, card: &mut Card, margin: f32) -> anyhow::Result<()> {
+    card.fit(be);
     be.push_frame(&Frame {
-        bgra,
+        bgra: &card.bgra,
+        w: card.w,
+        h: card.h,
         margin_bottom: margin.round() as i32,
     })
 }

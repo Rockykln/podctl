@@ -3,8 +3,8 @@ use x11rb::connection::Connection;
 use x11rb::protocol::randr::ConnectionExt as _;
 use x11rb::protocol::shape::{ConnectionExt as _, SK as ShapeKind, SO as ShapeOp};
 use x11rb::protocol::xproto::{
-    ColormapAlloc, ConnectionExt, CreateGCAux, CreateWindowAux, EventMask, Gcontext, ImageFormat,
-    ImageOrder, Pixmap, PropMode, Rectangle, StackMode, Window, WindowClass,
+    AtomEnum, ColormapAlloc, ConnectionExt, CreateGCAux, CreateWindowAux, EventMask, Gcontext,
+    ImageFormat, ImageOrder, Pixmap, PropMode, Rectangle, StackMode, Window, WindowClass,
 };
 use x11rb::rust_connection::RustConnection;
 use x11rb::wrapper::ConnectionExt as _;
@@ -24,6 +24,9 @@ struct Win {
     gc: Gcontext,
     w: u16,
     h: u16,
+    /// From `Xft.dpi`; X has no scaling of its own, so everything here
+    /// is in device pixels.
+    scale: f32,
     mon: Rect,
     mapped: bool,
     /// Servers that want the other byte order need the pixels swapped.
@@ -62,11 +65,17 @@ impl Backend for X11Or {
         let (depth, visual) =
             argb_visual(screen).ok_or_else(|| anyhow!("no 32-bit ARGB visual on this screen"))?;
         let swap_bytes = conn.setup().image_byte_order == ImageOrder::MSB_FIRST;
+        let scale = resources(&conn, root)
+            .as_deref()
+            .and_then(xft_dpi)
+            .map_or(1.0, |dpi| (dpi / 96.0).clamp(1.0, 4.0));
+        let (w, h) = crate::render::buf_px(w, h, scale);
         let shape_to_card = !has_compositor(&conn, screen_num);
         debug!(
             swap_bytes,
             composited = !shape_to_card,
             monitor = ?(mon.x, mon.y, mon.w, mon.h),
+            scale,
             "x11 backend open"
         );
 
@@ -110,6 +119,7 @@ impl Backend for X11Or {
             gc,
             w: w as u16,
             h: h as u16,
+            scale,
             mon,
             mapped: false,
             swap_bytes,
@@ -119,8 +129,15 @@ impl Backend for X11Or {
         Ok(())
     }
 
+    fn scale(&self) -> f32 {
+        self.win.as_ref().map_or(1.0, |w| w.scale)
+    }
+
     fn push_frame(&mut self, f: &Frame) -> Result<()> {
         let win = self.win.as_mut().context("push_frame before open")?;
+        if (f.w, f.h) != (win.w as u32, win.h as u32) {
+            bail!("frame {}x{} for a {}x{} window", f.w, f.h, win.w, win.h);
+        }
 
         // While the bubble slides only its position changes. Sending
         // the whole 260 kB image and a fresh shape with every frame
@@ -136,7 +153,8 @@ impl Backend for X11Or {
 
         let m = win.mon;
         let x = (m.x + ((m.w - win.w as i32) / 2).max(0)) as i16;
-        let y = (m.y + (m.h - win.h as i32 - f.margin_bottom).clamp(-(win.h as i32), m.h)) as i16;
+        let margin = (f.margin_bottom as f32 * win.scale).round() as i32;
+        let y = (m.y + (m.h - win.h as i32 - margin).clamp(-(win.h as i32), m.h)) as i16;
 
         if !win.mapped {
             win.conn.map_window(win.window)?;
@@ -171,6 +189,30 @@ impl Drop for X11Or {
     fn drop(&mut self) {
         let _ = self.close();
     }
+}
+
+/// The root window's resource database, as `xrdb -query` shows it.
+fn resources(conn: &RustConnection, root: Window) -> Option<String> {
+    let reply = conn
+        .get_property(
+            false,
+            root,
+            AtomEnum::RESOURCE_MANAGER,
+            AtomEnum::STRING,
+            0,
+            u32::MAX / 4,
+        )
+        .ok()?
+        .reply()
+        .ok()?;
+    String::from_utf8(reply.value).ok()
+}
+
+fn xft_dpi(db: &str) -> Option<f32> {
+    db.lines()
+        .find_map(|l| l.strip_prefix("Xft.dpi:"))
+        .and_then(|v| v.trim().parse::<f32>().ok())
+        .filter(|d| *d > 0.0)
 }
 
 fn argb_visual(screen: &x11rb::protocol::xproto::Screen) -> Option<(u8, u32)> {
@@ -384,7 +426,16 @@ fn pick_monitor(conn: &RustConnection, root: Window, want: Option<&str>) -> Opti
 
 #[cfg(test)]
 mod tests {
-    use super::opaque_rects;
+    use super::{opaque_rects, xft_dpi};
+
+    #[test]
+    fn reads_xft_dpi() {
+        let db = "Xcursor.size:\t24\nXft.dpi:\t144\nXft.hinting:\t1\n";
+        assert_eq!(xft_dpi(db), Some(144.0));
+        assert_eq!(xft_dpi("Xft.dpi: 120.5"), Some(120.5));
+        assert_eq!(xft_dpi("Xft.dpi:\t0"), None);
+        assert_eq!(xft_dpi("Xcursor.size:\t24"), None);
+    }
 
     fn px(alpha: u8) -> [u8; 4] {
         [0, 0, 0, alpha]
