@@ -7,12 +7,20 @@ use wayland_client::globals::{GlobalListContents, registry_queue_init};
 use wayland_client::protocol::{
     wl_buffer::WlBuffer,
     wl_compositor::WlCompositor,
+    wl_output::{self, WlOutput},
+    wl_pointer::{self, WlPointer},
+    wl_region::WlRegion,
     wl_registry::WlRegistry,
+    wl_seat::{self, WlSeat},
     wl_shm::{self, WlShm},
     wl_shm_pool::WlShmPool,
     wl_surface::WlSurface,
 };
-use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle, delegate_noop};
+use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum, delegate_noop};
+use wayland_protocols::wp::cursor_shape::v1::client::{
+    wp_cursor_shape_device_v1::{Shape, WpCursorShapeDeviceV1},
+    wp_cursor_shape_manager_v1::WpCursorShapeManagerV1,
+};
 use wayland_protocols::wp::fractional_scale::v1::client::{
     wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1,
     wp_fractional_scale_v1::{self, WpFractionalScaleV1},
@@ -25,9 +33,10 @@ use wayland_protocols_wlr::layer_shell::v1::client::{
     zwlr_layer_surface_v1::{self, Anchor, ZwlrLayerSurfaceV1},
 };
 
-use tracing::debug;
+use tracing::{debug, warn};
 
-use super::{Backend, Frame};
+use super::{Backend, Frame, Input};
+use crate::render::{Hit, INPUT_RECT, hit};
 
 pub struct WlLayer {
     win: Option<Win>,
@@ -76,6 +85,38 @@ struct State {
     fractional: Option<u32>,
     /// `wl_surface.preferred_buffer_scale` (wl_compositor 6).
     integer: Option<i32>,
+    outputs: Vec<(WlOutput, String)>,
+    shapes: Option<WpCursorShapeManagerV1>,
+    pointer: Option<(WlPointer, Option<WpCursorShapeDeviceV1>)>,
+    enter_serial: u32,
+    over: Option<Hit>,
+    inputs: Vec<Input>,
+}
+
+impl State {
+    /// Turn a pointer position into what changed for the card.
+    fn point_at(&mut self, x: f64, y: f64) {
+        let old = self.over.unwrap_or(Hit::Outside);
+        let new = hit(x as f32, y as f32);
+        self.over = Some(new);
+        if old == new {
+            return;
+        }
+        if (old == Hit::Outside) != (new == Hit::Outside) {
+            self.inputs.push(Input::Hover(new != Hit::Outside));
+        }
+        if (old == Hit::Close) != (new == Hit::Close) {
+            self.inputs.push(Input::OverClose(new == Hit::Close));
+            if let Some((_, Some(dev))) = &self.pointer {
+                let shape = if new == Hit::Close {
+                    Shape::Pointer
+                } else {
+                    Shape::Default
+                };
+                dev.set_shape(self.enter_serial, shape);
+            }
+        }
+    }
 }
 
 impl WlLayer {
@@ -104,6 +145,16 @@ impl Backend for WlLayer {
             .bind(&qh, 1..=4, ())
             .map_err(|_| anyhow!("compositor has no wlr-layer-shell"))?;
 
+        let mut state = State {
+            shapes: globals.bind(&qh, 1..=1, ()).ok(),
+            ..State::default()
+        };
+        let _seat: Option<WlSeat> = globals.bind(&qh, 1..=7, ()).ok();
+        let output = match super::super::config::load().output {
+            Some(want) => find_output(&globals, &mut queue, &mut state, &want),
+            None => None,
+        };
+
         let fractional: Option<WpFractionalScaleManagerV1> = globals.bind(&qh, 1..=1, ()).ok();
         let viewporter: Option<WpViewporter> = globals.bind(&qh, 1..=1, ()).ok();
 
@@ -115,9 +166,15 @@ impl Backend for WlLayer {
             )),
             _ => None,
         };
+        // Clicks on the shadow margin go to whatever is underneath.
+        let region = compositor.create_region(&qh, ());
+        let (rx, ry, rw, rh) = INPUT_RECT;
+        region.add(rx, ry, rw, rh);
+        surface.set_input_region(Some(&region));
+        region.destroy();
         let layer = layer_shell.get_layer_surface(
             &surface,
-            None,
+            output.as_ref(),
             zwlr_layer_shell_v1::Layer::Overlay,
             "podctl-popup".into(),
             &qh,
@@ -132,7 +189,6 @@ impl Backend for WlLayer {
         // Waiting for one dispatch was waiting for *an* event: any
         // other event the compositor sent first ended the wait and the
         // surface was declared unconfigured.
-        let mut state = State::default();
         let deadline = Instant::now() + CONFIGURE_WAIT;
         while !state.configured && !state.closed {
             if Instant::now() >= deadline {
@@ -181,6 +237,14 @@ impl Backend for WlLayer {
             (_, _, Some(n)) if n > 0 => n as f32,
             _ => 1.0,
         }
+    }
+
+    fn input(&mut self) -> Vec<Input> {
+        let Some(win) = self.win.as_mut() else {
+            return Vec::new();
+        };
+        let _ = read_into(&win.conn, &mut win.queue, &mut win.state, Duration::ZERO);
+        std::mem::take(&mut win.state.inputs)
     }
 
     fn push_frame(&mut self, f: &Frame) -> Result<()> {
@@ -242,6 +306,14 @@ impl Backend for WlLayer {
                 viewport.destroy();
                 fractional.destroy();
             }
+            if let Some((pointer, dev)) = win.state.pointer.take() {
+                if let Some(dev) = dev {
+                    dev.destroy();
+                }
+                if pointer.version() >= 3 {
+                    pointer.release();
+                }
+            }
             win.layer.destroy();
             win.surface.destroy();
             if let Some(pool) = win.pool.take() {
@@ -251,6 +323,32 @@ impl Backend for WlLayer {
         }
         Ok(())
     }
+}
+
+/// The output named `want` (`wl_output` 4 tells names), if there is one.
+fn find_output(
+    globals: &wayland_client::globals::GlobalList,
+    queue: &mut EventQueue<State>,
+    state: &mut State,
+    want: &str,
+) -> Option<WlOutput> {
+    let qh = queue.handle();
+    for g in globals.contents().clone_list() {
+        if g.interface == WlOutput::interface().name && g.version >= 4 {
+            let _: WlOutput = globals.registry().bind(g.name, 4, &qh, ());
+        }
+    }
+    queue.roundtrip(state).ok()?;
+    let found = state
+        .outputs
+        .iter()
+        .find(|(_, name)| name == want)
+        .map(|(o, _)| o.clone());
+    if found.is_none() {
+        let known: Vec<&str> = state.outputs.iter().map(|(_, n)| n.as_str()).collect();
+        warn!(want, ?known, "no such output — the compositor picks one");
+    }
+    found
 }
 
 /// Buffers for frames of `w`×`h` device pixels. Ones the compositor
@@ -469,6 +567,84 @@ delegate_noop!(State: ignore WlCompositor);
 delegate_noop!(State: ignore WlShm);
 delegate_noop!(State: ignore WlShmPool);
 delegate_noop!(State: ignore WpFractionalScaleManagerV1);
+delegate_noop!(State: ignore WlRegion);
+delegate_noop!(State: ignore WpCursorShapeManagerV1);
+delegate_noop!(State: ignore WpCursorShapeDeviceV1);
+
+impl Dispatch<WlOutput, ()> for State {
+    fn event(
+        st: &mut Self,
+        out: &WlOutput,
+        ev: wl_output::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wl_output::Event::Name { name } = ev {
+            st.outputs.push((out.clone(), name));
+        }
+    }
+}
+
+impl Dispatch<WlSeat, ()> for State {
+    fn event(
+        st: &mut Self,
+        seat: &WlSeat,
+        ev: wl_seat::Event,
+        _: &(),
+        _: &Connection,
+        qh: &QueueHandle<Self>,
+    ) {
+        if let wl_seat::Event::Capabilities {
+            capabilities: WEnum::Value(caps),
+        } = ev
+            && caps.contains(wl_seat::Capability::Pointer)
+            && st.pointer.is_none()
+        {
+            let pointer = seat.get_pointer(qh, ());
+            let dev = st.shapes.as_ref().map(|m| m.get_pointer(&pointer, qh, ()));
+            st.pointer = Some((pointer, dev));
+        }
+    }
+}
+
+impl Dispatch<WlPointer, ()> for State {
+    fn event(
+        st: &mut Self,
+        _: &WlPointer,
+        ev: wl_pointer::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match ev {
+            wl_pointer::Event::Enter {
+                serial,
+                surface_x,
+                surface_y,
+                ..
+            } => {
+                st.enter_serial = serial;
+                if let Some((_, Some(dev))) = &st.pointer {
+                    dev.set_shape(serial, Shape::Default);
+                }
+                st.over = None;
+                st.point_at(surface_x, surface_y);
+            }
+            wl_pointer::Event::Motion {
+                surface_x,
+                surface_y,
+                ..
+            } => st.point_at(surface_x, surface_y),
+            wl_pointer::Event::Leave { .. } => st.point_at(-1.0, -1.0),
+            wl_pointer::Event::Button {
+                state: WEnum::Value(wl_pointer::ButtonState::Pressed),
+                ..
+            } if st.over.is_some_and(|h| h != Hit::Outside) => st.inputs.push(Input::Click),
+            _ => {}
+        }
+    }
+}
 delegate_noop!(State: ignore WpViewporter);
 delegate_noop!(State: ignore WpViewport);
 

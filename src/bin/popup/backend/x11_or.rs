@@ -11,7 +11,8 @@ use x11rb::wrapper::ConnectionExt as _;
 
 use tracing::debug;
 
-use super::{Backend, Frame, fingerprint};
+use super::{Backend, Frame, Input, fingerprint};
+use crate::render::{CLOSE_HIT_BOX, INPUT_RECT};
 
 pub struct X11Or {
     win: Option<Win>,
@@ -37,6 +38,10 @@ struct Win {
     shape_to_card: bool,
     /// Fingerprint of the picture currently in the pixmap.
     painted: Option<u64>,
+    /// Input-only child over the close button; it carries the hand cursor.
+    close: Window,
+    over_close: bool,
+    inputs: Vec<Input>,
 }
 
 impl X11Or {
@@ -88,7 +93,12 @@ impl Backend for X11Or {
             .background_pixel(0)
             .border_pixel(0)
             .colormap(cmap)
-            .event_mask(EventMask::EXPOSURE);
+            .event_mask(
+                EventMask::EXPOSURE
+                    | EventMask::BUTTON_PRESS
+                    | EventMask::ENTER_WINDOW
+                    | EventMask::LEAVE_WINDOW,
+            );
         conn.create_window(
             depth,
             window,
@@ -104,7 +114,8 @@ impl Backend for X11Or {
         )?;
 
         set_notification_type(&conn, window)?;
-        make_click_through(&conn, window);
+        take_input_on_card(&conn, window, scale);
+        let close = close_hotspot(&conn, window, scale)?;
 
         let pixmap = conn.generate_id()?;
         conn.create_pixmap(depth, pixmap, window, w as u16, h as u16)?;
@@ -125,12 +136,23 @@ impl Backend for X11Or {
             swap_bytes,
             shape_to_card,
             painted: None,
+            close,
+            over_close: false,
+            inputs: Vec::new(),
         });
         Ok(())
     }
 
     fn scale(&self) -> f32 {
         self.win.as_ref().map_or(1.0, |w| w.scale)
+    }
+
+    fn input(&mut self) -> Vec<Input> {
+        let Some(win) = self.win.as_mut() else {
+            return Vec::new();
+        };
+        pump(win);
+        std::mem::take(&mut win.inputs)
     }
 
     fn push_frame(&mut self, f: &Frame) -> Result<()> {
@@ -170,7 +192,7 @@ impl Backend for X11Or {
         win.conn
             .copy_area(win.pixmap, win.window, win.gc, 0, 0, 0, 0, win.w, win.h)?;
         win.conn.flush()?;
-        drain(win);
+        pump(win);
         Ok(())
     }
 
@@ -307,8 +329,36 @@ fn upload(win: &Win, bgra: &[u8]) -> Result<()> {
     Ok(())
 }
 
-fn drain(win: &Win) {
-    while let Ok(Some(_)) = win.conn.poll_for_event() {}
+/// Read what the server sent and keep the pointer activity. Moving
+/// between the card and the close button's child window reports a
+/// leave/enter of kind Inferior on the card, which is no leaving at all.
+fn pump(win: &mut Win) {
+    use x11rb::protocol::Event;
+    use x11rb::protocol::xproto::NotifyDetail;
+    while let Ok(Some(ev)) = win.conn.poll_for_event() {
+        match ev {
+            Event::EnterNotify(e) if e.event == win.close => {
+                win.over_close = true;
+                win.inputs.push(Input::OverClose(true));
+            }
+            Event::LeaveNotify(e) if e.event == win.close => {
+                win.over_close = false;
+                win.inputs.push(Input::OverClose(false));
+            }
+            Event::EnterNotify(e) if e.detail != NotifyDetail::INFERIOR => {
+                win.inputs.push(Input::Hover(true));
+            }
+            Event::LeaveNotify(e) if e.detail != NotifyDetail::INFERIOR => {
+                if win.over_close {
+                    win.over_close = false;
+                    win.inputs.push(Input::OverClose(false));
+                }
+                win.inputs.push(Input::Hover(false));
+            }
+            Event::ButtonPress(_) => win.inputs.push(Input::Click),
+            _ => {}
+        }
+    }
 }
 
 fn set_notification_type(conn: &RustConnection, window: Window) -> Result<()> {
@@ -326,11 +376,18 @@ fn set_notification_type(conn: &RustConnection, window: Window) -> Result<()> {
     Ok(())
 }
 
-/// An empty input region lets clicks reach whatever is underneath. The
-/// bubble reacts to nothing, and a window that swallows clicks over a
-/// third of the screen is worse than no bubble. Without the Shape
-/// extension the window simply stays clickable.
-fn make_click_through(conn: &RustConnection, window: Window) {
+/// Only the card takes clicks; the shadow margin lets them through to
+/// whatever is underneath. Without the Shape extension the whole window
+/// stays clickable.
+fn take_input_on_card(conn: &RustConnection, window: Window, scale: f32) {
+    let (x, y, w, h) = INPUT_RECT;
+    let px = |v: i32| (v as f32 * scale).round();
+    let card = Rectangle {
+        x: px(x) as i16,
+        y: px(y) as i16,
+        width: px(w) as u16,
+        height: px(h) as u16,
+    };
     let _ = conn.shape_rectangles(
         ShapeOp::SET,
         ShapeKind::INPUT,
@@ -338,8 +395,54 @@ fn make_click_through(conn: &RustConnection, window: Window) {
         window,
         0,
         0,
-        &[],
+        &[card],
     );
+}
+
+/// The X cursor font's pointing hand, `XC_hand2`, and its mask.
+const XC_HAND2: u16 = 60;
+
+/// An input-only child over the close button. The server shows its hand
+/// cursor by itself, and its enter/leave tell when the pointer is on the
+/// button; clicks pass up to the card.
+fn close_hotspot(conn: &RustConnection, parent: Window, scale: f32) -> Result<Window> {
+    let (x, y, side) = CLOSE_HIT_BOX;
+    let font = conn.generate_id()?;
+    conn.open_font(font, b"cursor")?;
+    let cursor = conn.generate_id()?;
+    conn.create_glyph_cursor(
+        cursor,
+        font,
+        font,
+        XC_HAND2,
+        XC_HAND2 + 1,
+        0,
+        0,
+        0,
+        0xFFFF,
+        0xFFFF,
+        0xFFFF,
+    )?;
+    conn.close_font(font)?;
+    let child = conn.generate_id()?;
+    conn.create_window(
+        0,
+        child,
+        parent,
+        (x * scale).round() as i16,
+        (y * scale).round() as i16,
+        (side * scale).round() as u16,
+        (side * scale).round() as u16,
+        0,
+        WindowClass::INPUT_ONLY,
+        0,
+        &CreateWindowAux::new()
+            .cursor(cursor)
+            .event_mask(EventMask::ENTER_WINDOW | EventMask::LEAVE_WINDOW),
+    )?;
+    conn.free_cursor(cursor)?;
+    conn.map_window(child)?;
+    Ok(child)
 }
 
 fn intern(conn: &RustConnection, name: &[u8]) -> Result<u32> {
@@ -385,7 +488,8 @@ struct Rect {
 
 /// Centring on the root window straddles the seam on a multi-head X
 /// screen, so pick one RandR monitor: the configured output, else the
-/// primary, else the one under the pointer, else the first.
+/// one under the pointer (where one is working), else the primary, else
+/// the first.
 fn pick_monitor(conn: &RustConnection, root: Window, want: Option<&str>) -> Option<Rect> {
     let mons = conn
         .randr_get_monitors(root, true)
@@ -408,9 +512,6 @@ fn pick_monitor(conn: &RustConnection, root: Window, want: Option<&str>) -> Opti
             }
         }
     }
-    if let Some(m) = mons.iter().find(|m| m.primary) {
-        return Some(rect(m));
-    }
     if let Some(p) = conn.query_pointer(root).ok().and_then(|c| c.reply().ok()) {
         let (px, py) = (p.root_x as i32, p.root_y as i32);
         if let Some(m) = mons
@@ -420,6 +521,9 @@ fn pick_monitor(conn: &RustConnection, root: Window, want: Option<&str>) -> Opti
         {
             return Some(m);
         }
+    }
+    if let Some(m) = mons.iter().find(|m| m.primary) {
+        return Some(rect(m));
     }
     mons.first().map(rect)
 }

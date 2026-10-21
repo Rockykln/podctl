@@ -25,7 +25,7 @@ use podctl::{Request, Response, WatchRole};
 
 use anim::{FRAME, Slide};
 use art::Art;
-use backend::{Backend, Frame};
+use backend::{Backend, Frame, Input};
 use config::{Pick, ThemePick};
 use render::{BUF_H, BUF_W, Pod, Snapshot, Theme};
 
@@ -38,6 +38,11 @@ const DEBOUNCE_MS: u64 = 500;
 const AUTO_MODE_WINDOW: Duration = Duration::from_secs(3);
 const BACKOFF_INITIAL_MS: u64 = 500;
 const BACKOFF_MAX_MS: u64 = 30_000;
+/// After the pointer leaves the card the bubble stays at least this long,
+/// so it does not vanish the moment one looks away.
+const AFTER_HOVER: Duration = Duration::from_millis(1500);
+/// How often the hold loop looks at pointer input.
+const INPUT_SLICE: Duration = Duration::from_millis(30);
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
@@ -301,6 +306,8 @@ struct Card {
     snap: Snapshot,
     theme: Theme,
     scale: f32,
+    drawn: Option<render::Drawn>,
+    hover: bool,
     bgra: Vec<u8>,
     w: u32,
     h: u32,
@@ -312,6 +319,8 @@ impl Card {
             snap,
             theme: *theme,
             scale,
+            drawn: None,
+            hover: false,
             bgra: Vec::new(),
             w: 0,
             h: 0,
@@ -321,9 +330,37 @@ impl Card {
     }
 
     fn draw(&mut self) {
-        let pm = render::render(&self.snap, &self.theme, self.scale);
-        (self.w, self.h) = (pm.width(), pm.height());
-        self.bgra = render::to_bgra_premul(&pm);
+        let d = render::render_card(&self.snap, &self.theme, self.scale);
+        (self.w, self.h) = (d.pm.width(), d.pm.height());
+        self.bgra = render::to_bgra_premul(&d.pm);
+        self.drawn = Some(d);
+        if self.hover {
+            self.patch_close();
+        }
+    }
+
+    /// Light the close button or not, without drawing the whole card.
+    fn set_hover(&mut self, on: bool) -> bool {
+        if self.hover == on {
+            return false;
+        }
+        self.hover = on;
+        self.patch_close();
+        true
+    }
+
+    fn patch_close(&mut self) {
+        let Some(d) = &self.drawn else { return };
+        let patch = d.close_patch(&self.theme, self.hover);
+        let (x0, y0) = d.close_at();
+        let row = patch.width() as usize * 4;
+        let src = render::to_bgra_premul(&patch);
+        for (y, line) in src.chunks_exact(row).enumerate() {
+            let at = ((y0 as usize + y) * self.w as usize + x0 as usize) * 4;
+            if let Some(dst) = self.bgra.get_mut(at..at + row) {
+                dst.copy_from_slice(line);
+            }
+        }
     }
 
     fn set(&mut self, snap: Snapshot) {
@@ -403,6 +440,48 @@ fn drain(rx: &Receiver<Cmd>, card: &mut Card, be: &mut dyn Backend) -> Drained {
     }
 }
 
+/// The hold timer. It stands still while the pointer rests on the card.
+struct Hold {
+    deadline: Instant,
+    paused: Option<Duration>,
+}
+
+impl Hold {
+    fn new(now: Instant, hold: Duration) -> Self {
+        Hold {
+            deadline: now + hold,
+            paused: None,
+        }
+    }
+
+    fn restart(&mut self, now: Instant, hold: Duration) {
+        match &mut self.paused {
+            Some(left) => *left = hold,
+            None => self.deadline = now + hold,
+        }
+    }
+
+    fn pause(&mut self, now: Instant) {
+        if self.paused.is_none() {
+            self.paused = Some(self.deadline.saturating_duration_since(now));
+        }
+    }
+
+    fn resume(&mut self, now: Instant) {
+        if let Some(left) = self.paused.take() {
+            self.deadline = now + left.max(AFTER_HOVER);
+        }
+    }
+
+    /// Time left, or `None` while paused.
+    fn left(&self, now: Instant) -> Option<Duration> {
+        match self.paused {
+            Some(_) => None,
+            None => Some(self.deadline.saturating_duration_since(now)),
+        }
+    }
+}
+
 fn show_cycle(
     rx: &Receiver<Cmd>,
     pick: &BackendPick,
@@ -454,21 +533,40 @@ fn show_cycle(
         Some(o) => o,
         None => {
             last = rest;
-            let mut deadline = Instant::now() + hold;
+            let mut timer = Hold::new(Instant::now(), hold);
             let mut o = Outcome::Done;
             // Nothing moves while the bubble stands still, so it waits
             // for the next command instead of pushing the same frame
             // sixty times a second: that was ~340 commits per bubble,
             // and on X11 a full 260 kB upload plus a shape change each
             // time.
-            loop {
-                let now = Instant::now();
-                if now >= deadline {
-                    break;
+            'hold: loop {
+                let mut redraw = false;
+                for ev in be.input() {
+                    debug!(?ev, "pointer");
+                    let now = Instant::now();
+                    match ev {
+                        Input::Hover(true) => timer.pause(now),
+                        Input::Hover(false) => {
+                            timer.resume(now);
+                            redraw |= card.set_hover(false);
+                        }
+                        Input::OverClose(on) => redraw |= card.set_hover(on),
+                        Input::Click => break 'hold,
+                    }
                 }
-                let cmd = match rx.recv_timeout(deadline - now) {
+                if redraw && push(be.as_mut(), &mut card, rest).is_err() {
+                    let _ = be.close();
+                    return o;
+                }
+                let wait = match timer.left(Instant::now()) {
+                    Some(d) if d.is_zero() => break,
+                    Some(d) => d.min(INPUT_SLICE),
+                    None => INPUT_SLICE,
+                };
+                let cmd = match rx.recv_timeout(wait) {
                     Ok(c) => c,
-                    Err(RecvTimeoutError::Timeout) => break,
+                    Err(RecvTimeoutError::Timeout) => continue,
                     Err(RecvTimeoutError::Disconnected) => {
                         o = Outcome::Quit;
                         break;
@@ -491,7 +589,7 @@ fn show_cycle(
                     Drained::Continue => {}
                 }
                 if reset {
-                    deadline = Instant::now() + hold;
+                    timer.restart(Instant::now(), hold);
                 }
                 if push(be.as_mut(), &mut card, rest).is_err() {
                     let _ = be.close();
@@ -819,16 +917,23 @@ fn dump(path: &str, theme: &Theme, args: &[String]) -> std::io::Result<()> {
 }
 
 fn demo(theme: &Theme, want: Option<String>, hold: Duration) -> anyhow::Result<()> {
-    let mut card = Card::new(Snapshot::sample(), theme, 1.0);
-    let pick = want.as_deref().unwrap_or("wl");
-    let mut be = open_backend(pick, want.is_some(), hold)?;
-    eprintln!("podctl-popup: backend {}", short(be.kind()));
-    let (title, body) = labels(&card.snap);
-    be.set_labels(&title, &body);
-    card.fit(be.as_ref());
-    eprintln!("podctl-popup: scale {}", card.scale);
-    present(be.as_mut(), &mut card, hold)?;
-    be.close()?;
+    let pick = BackendPick {
+        name: want.clone().unwrap_or_else(|| "wl".into()),
+        explicit: want.is_some(),
+    };
+    // Kept alive, or the cycle reads the closed channel as Quit.
+    let (_tx, rx) = mpsc::channel::<Cmd>();
+    let mut scale = 1.0;
+    show_cycle(
+        &rx,
+        &pick,
+        theme,
+        DEMO_ANIM_MS,
+        hold,
+        Snapshot::sample(),
+        &mut scale,
+    );
+    eprintln!("podctl-popup: scale {scale}");
     Ok(())
 }
 
@@ -863,23 +968,6 @@ fn open_backend(
         }
     }
     Err(last)
-}
-
-fn present(be: &mut dyn Backend, card: &mut Card, hold: Duration) -> anyhow::Result<()> {
-    let hidden = -(BUF_H as f32);
-    for m in Slide::new(hidden, REST_MARGIN as f32, DEMO_ANIM_MS) {
-        push(be, card, m)?;
-        sleep(FRAME);
-    }
-    for _ in 0..(hold.as_millis() / 100) {
-        push(be, card, REST_MARGIN as f32)?;
-        sleep(Duration::from_millis(100));
-    }
-    for m in Slide::new(REST_MARGIN as f32, hidden, DEMO_ANIM_MS) {
-        push(be, card, m)?;
-        sleep(FRAME);
-    }
-    Ok(())
 }
 
 fn push(be: &mut dyn Backend, card: &mut Card, margin: f32) -> anyhow::Result<()> {
@@ -917,7 +1005,33 @@ fn print_usage() {
 
 #[cfg(test)]
 mod tests {
-    use super::labels;
+    use super::{AFTER_HOVER, Hold, labels};
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn the_pointer_holds_the_bubble() {
+        let s = |n: u64| Duration::from_millis(n);
+        let t0 = Instant::now();
+        let mut h = Hold::new(t0, s(5500));
+        assert_eq!(h.left(t0 + s(1000)), Some(s(4500)));
+        h.pause(t0 + s(1000));
+        assert_eq!(h.left(t0 + s(60_000)), None);
+        // Back with plenty left: the rest runs on.
+        h.resume(t0 + s(60_000));
+        assert_eq!(h.left(t0 + s(60_000)), Some(s(4500)));
+        // Back with almost nothing left: at least AFTER_HOVER.
+        let mut h = Hold::new(t0, s(5500));
+        h.pause(t0 + s(5400));
+        h.resume(t0 + s(9000));
+        assert_eq!(h.left(t0 + s(9000)), Some(AFTER_HOVER));
+        // A fresh trigger while paused only refills what is left.
+        let mut h = Hold::new(t0, s(5500));
+        h.pause(t0 + s(5000));
+        h.restart(t0 + s(6000), s(5500));
+        assert_eq!(h.left(t0 + s(7000)), None);
+        h.resume(t0 + s(7000));
+        assert_eq!(h.left(t0 + s(7000)), Some(s(5500)));
+    }
     use crate::art::Art;
     use crate::render::{Pod, Snapshot};
 

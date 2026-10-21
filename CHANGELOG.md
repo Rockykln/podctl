@@ -245,6 +245,14 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
   included (`fractional-scale-v1` with `viewporter`, else the integer
   buffer scale); on X11 at `Xft.dpi` / 96. It used to draw at 1× and
   leave the stretching to the compositor.
+- **The bubble answers to the pointer.** A click on the card closes it;
+  while the pointer rests on it the bubble stays, and once it leaves at
+  least 1.5 s remain. Over the close button it lights up and the pointer
+  turns into a hand (`cursor-shape-v1` on Wayland, the cursor font's
+  hand on X11). Only the card takes clicks, the shadow around it lets
+  them through; on X11 the whole bubble used to be click-through.
+- `output` in `popup.toml` works on Wayland too. On X11 the bubble now
+  goes to the monitor under the pointer before the primary one.
 - The bubble draws about five times faster: shadows are blurred only
   where they fall, not across the whole buffer. A card at 2× took 1.7 s
   and now takes 0.3 s.

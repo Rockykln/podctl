@@ -56,7 +56,8 @@ futures-util = { version = "0.3", default-features = false, features = ["std"] }
 tiny-skia = "0.12"
 ttf-parser = "0.25"
 wayland-client = "0.31"
-wayland-protocols = { version = "0.32", features = ["client", "staging"] }
+# cursor-shape sits behind "unstable" because it names the tablet protocol.
+wayland-protocols = { version = "0.32", features = ["client", "staging", "unstable"] }
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 x11rb = { version = "0.14", features = ["randr", "shape"] }
 

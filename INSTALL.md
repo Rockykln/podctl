@@ -156,17 +156,23 @@ backend     = "auto"    # auto | wl | x11 | notify
 theme       = "auto"    # auto (desktop style) | dark | light
 duration_ms = 5500      # time on screen, 500 … 60000
 anim_ms     = 200       # slide in/out, 0 … 2000
-output      = ""        # X11: monitor to centre on, e.g. "eDP-1"
+output      = ""        # monitor to show on, e.g. "eDP-1"
 ```
 
 `duration_ms` counts the hold only; the two slides add `2 × anim_ms` on
 top. Out-of-range values are clamped rather than rejected.
 
-On X11 the bubble is centred on a single monitor: `output` if set (names
-as in `xrandr --listmonitors`), else the RandR primary, else the monitor
-under the pointer. It is click-through, and without a compositing manager
+On Wayland `output` names the monitor as the compositor does (as in
+`kscreen-doctor -o` or `wlr-randr`); without it the compositor picks,
+usually the one in use. On X11 the bubble is centred on a single monitor:
+`output` if set (names as in `xrandr --listmonitors`), else the monitor
+under the pointer, else the RandR primary. Without a compositing manager
 (no picom/xcompmgr) the window is clipped to the card, since an X server
 on its own ignores the alpha channel and would paint a black rectangle.
+
+A click on the card closes the bubble, and while the pointer rests on it
+the bubble stays; once it leaves, at least 1.5 s remain. Only the card
+takes clicks, the shadow around it lets them through.
 
 While the session is locked no bubble appears; `podctl popup` still shows
 one on demand. Lock state comes from logind's `LockedHint`, with

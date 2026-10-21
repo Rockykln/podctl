@@ -29,6 +29,16 @@ pub fn fingerprint(b: &[u8]) -> u64 {
     h
 }
 
+/// What the pointer did on the card.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Input {
+    /// Onto the card (`true`) or off it.
+    Hover(bool),
+    /// Onto the close button or off it.
+    OverClose(bool),
+    Click,
+}
+
 pub trait Backend {
     /// How long the bubble is meant to stay up. Only the notification
     /// fallback needs it — the server, not us, retires that one, so it
@@ -48,6 +58,10 @@ pub trait Backend {
         1.0
     }
     fn push_frame(&mut self, f: &Frame) -> Result<()>;
+    /// Pointer input that arrived since the last call; never blocks.
+    fn input(&mut self) -> Vec<Input> {
+        Vec::new()
+    }
     fn close(&mut self) -> Result<()>;
     fn kind(&self) -> &'static str;
 }

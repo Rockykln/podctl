@@ -71,8 +71,9 @@ pub struct Config {
     pub theme: ThemePick,
     pub duration_ms: u64,
     pub anim_ms: u32,
-    /// RandR output (e.g. `eDP-1`) to centre the X11 bubble on. `None`
-    /// falls back to the RandR primary, then the monitor under the pointer.
+    /// Output (e.g. `eDP-1`) to show the bubble on. `None` leaves it to
+    /// the compositor on Wayland; on X11 the monitor under the pointer,
+    /// then the RandR primary.
     pub output: Option<String>,
 }
 

@@ -125,8 +125,80 @@ pub fn buf_px(w: u32, h: u32, scale: f32) -> (u32, u32) {
     )
 }
 
-/// The card with its shadow margin, `scale` device pixels per logical one.
+/// Centre and radius of the close button, in logical buffer coordinates.
+const CLOSE_X: f32 = MARGIN + CARD_W - 30.0;
+const CLOSE_Y: f32 = MARGIN + 30.0;
+const CLOSE_R: f32 = 11.0;
+/// A little more than the drawn circle answers to the pointer.
+const CLOSE_HIT_R: f32 = 14.0;
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Hit {
+    Outside,
+    Card,
+    Close,
+}
+
+/// What lies under a point given in logical buffer coordinates.
+pub fn hit(x: f32, y: f32) -> Hit {
+    let (dx, dy) = (x - CLOSE_X, y - CLOSE_Y);
+    if dx * dx + dy * dy <= CLOSE_HIT_R * CLOSE_HIT_R {
+        Hit::Close
+    } else if (MARGIN..MARGIN + CARD_W).contains(&x) && (MARGIN..MARGIN + CARD_H).contains(&y) {
+        Hit::Card
+    } else {
+        Hit::Outside
+    }
+}
+
+/// The part of the buffer that takes clicks, logical `(x, y, w, h)`.
+pub const INPUT_RECT: (i32, i32, i32, i32) =
+    (MARGIN as i32, MARGIN as i32, CARD_W as i32, CARD_H as i32);
+
+/// The square around the close button that answers to the pointer,
+/// logical `(x, y, side)`.
+pub const CLOSE_HIT_BOX: (f32, f32, f32) = (
+    CLOSE_X - CLOSE_HIT_R,
+    CLOSE_Y - CLOSE_HIT_R,
+    2.0 * CLOSE_HIT_R,
+);
+
+/// A rendered card, plus what lies under its close button so the
+/// button alone can be drawn again on hover.
+pub struct Drawn {
+    pub pm: Pixmap,
+    under: Pixmap,
+    at: (u32, u32),
+}
+
+impl Drawn {
+    /// Device-pixel origin of `close_patch` in the card.
+    pub fn close_at(&self) -> (u32, u32) {
+        self.at
+    }
+
+    /// The close button area, lit or not.
+    pub fn close_patch(&self, pal: &Pal, hover: bool) -> Pixmap {
+        let s = scale_of(&self.pm);
+        set_scale(s);
+        let mut pm = self.under.clone();
+        let t =
+            Transform::from_scale(s, s).post_translate(-(self.at.0 as f32), -(self.at.1 as f32));
+        close_btn(&mut pm, pal, t, hover);
+        pm
+    }
+}
+
+fn scale_of(pm: &Pixmap) -> f32 {
+    pm.width() as f32 / BUF_W as f32
+}
+
 pub fn render(snap: &Snapshot, pal: &Theme, scale: f32) -> Pixmap {
+    render_card(snap, pal, scale).pm
+}
+
+/// The card with its shadow margin, `scale` device pixels per logical one.
+pub fn render_card(snap: &Snapshot, pal: &Theme, scale: f32) -> Drawn {
     let s = scale;
     set_scale(s);
     let (bw, bh) = buf_px(BUF_W, BUF_H, s);
@@ -163,13 +235,22 @@ pub fn render(snap: &Snapshot, pal: &Theme, scale: f32) -> Pixmap {
         pal.sub,
         0.0,
     );
-    close_btn(&mut pm, pal, s, x0 + CARD_W - 30.0, y0 + 30.0);
+    let r = (CLOSE_R + 1.0) * s;
+    let at = (
+        ((CLOSE_X * s - r).floor().max(0.0)) as u32,
+        ((CLOSE_Y * s - r).floor().max(0.0)) as u32,
+    );
+    let side = (2.0 * r).ceil() as u32 + 1;
+    let under = pm
+        .clone_rect(IntRect::from_xywh(at.0 as i32, at.1 as i32, side, side).expect("non-empty"))
+        .expect("inside the card");
+    close_btn(&mut pm, pal, t, false);
 
     let base = y0 + CARD_H - 18.0;
     if snap.art.is_max() {
         draw_max(&mut pm, pal, s, x0 + CARD_W / 2.0, y0 + FLOOR, K_MAX);
         readout(&mut pm, pal, s, x0 + CARD_W / 2.0, base, None, snap.left);
-        return pm;
+        return Drawn { pm, under, at };
     }
     let ca = x0 + 104.0;
     let cb = x0 + 266.0;
@@ -203,7 +284,7 @@ pub fn render(snap: &Snapshot, pal: &Theme, scale: f32) -> Pixmap {
         readout(&mut pm, pal, s, ca + 40.0, base, Some("R"), r);
     }
     readout(&mut pm, pal, s, cb, base, None, snap.case);
-    pm
+    Drawn { pm, under, at }
 }
 
 /// One value for both buds when they are within 5 points and charge
@@ -306,9 +387,19 @@ fn readout(pm: &mut Pixmap, pal: &Pal, s: f32, cx: f32, base: f32, label: Option
     }
 }
 
-fn close_btn(pm: &mut Pixmap, pal: &Pal, s: f32, cx: f32, cy: f32) {
-    let t = Transform::from_scale(s, s);
-    fill(pm, &oval(cx, cy, 11.0, 11.0), pal.fill3, t);
+fn close_btn(pm: &mut Pixmap, pal: &Pal, t: Transform, hover: bool) {
+    let (cx, cy) = (CLOSE_X, CLOSE_Y);
+    let (face, mark) = if hover {
+        let face = if pal.dark {
+            hex(0x4A4A4F, 255)
+        } else {
+            hex(0xDCDCE1, 255)
+        };
+        (face, mix(pal.sub, pal.text, 0.5))
+    } else {
+        (pal.fill3, pal.sub)
+    };
+    fill(pm, &oval(cx, cy, CLOSE_R, CLOSE_R), face, t);
     let d = 3.6;
     let mut pb = PathBuilder::new();
     pb.move_to(cx - d, cy - d);
@@ -316,8 +407,19 @@ fn close_btn(pm: &mut Pixmap, pal: &Pal, s: f32, cx: f32, cy: f32) {
     pb.move_to(cx + d, cy - d);
     pb.line_to(cx - d, cy + d);
     if let Some(x) = pb.finish() {
-        stroke(pm, &x, pal.sub, 1.7, LineCap::Round, t);
+        stroke(pm, &x, mark, 1.7, LineCap::Round, t);
     }
+}
+
+fn mix(a: Color, b: Color, k: f32) -> Color {
+    let l = |x: f32, y: f32| x + (y - x) * k;
+    Color::from_rgba(
+        l(a.red(), b.red()),
+        l(a.green(), b.green()),
+        l(a.blue(), b.blue()),
+        l(a.alpha(), b.alpha()),
+    )
+    .unwrap_or(b)
 }
 
 /// The soft gradient the reference images put behind the card.
@@ -358,6 +460,34 @@ pub fn to_bgra_premul(pm: &Pixmap) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hits_the_card_and_its_close_button() {
+        assert_eq!(hit(CLOSE_X, CLOSE_Y), Hit::Close);
+        assert_eq!(hit(CLOSE_X + 13.0, CLOSE_Y), Hit::Close);
+        assert_eq!(hit(MARGIN + 20.0, MARGIN + 20.0), Hit::Card);
+        assert_eq!(hit(MARGIN - 1.0, MARGIN + 20.0), Hit::Outside);
+        assert_eq!(hit(MARGIN + CARD_W, MARGIN + 20.0), Hit::Outside);
+        assert_eq!(hit(10.0, 10.0), Hit::Outside);
+    }
+
+    #[test]
+    fn an_unlit_close_patch_is_the_card_itself() {
+        for scale in [1.0, 1.25, 1.75, 2.0] {
+            for pal in [dark(), light()] {
+                let d = render_card(&Snapshot::sample(), &pal, scale);
+                let patch = d.close_patch(&pal, false);
+                let (x0, y0) = d.close_at();
+                let w = d.pm.width() as usize;
+                let row = patch.width() as usize * 4;
+                for (y, line) in patch.data().chunks_exact(row).enumerate() {
+                    let at = ((y0 as usize + y) * w + x0 as usize) * 4;
+                    assert_eq!(line, &d.pm.data()[at..at + row], "scale {scale}, row {y}");
+                }
+                assert_ne!(d.close_patch(&pal, true).data(), patch.data());
+            }
+        }
+    }
 
     #[test]
     fn buffer_sizes_round_like_the_compositor() {
