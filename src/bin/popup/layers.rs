@@ -4,6 +4,8 @@
 use tiny_skia::*;
 
 use crate::anim::Art;
+#[cfg(test)]
+use crate::anim::Gauge;
 use crate::paint::{Pal, inked};
 use crate::render::{self, BUF_H, BUF_W, Part, Snapshot};
 
@@ -56,7 +58,6 @@ pub struct Layers {
     /// The case's charging light: the lit case where it differs from the
     /// dark one, faded in over it.
     led: Option<Sprite>,
-    readouts: Option<Sprite>,
 }
 
 fn blank(s: f32) -> Pixmap {
@@ -102,7 +103,6 @@ impl Layers {
             jobs[i] = Part::Case { led: false };
             jobs.push(Part::Case { led: true });
         }
-        jobs.push(Part::Readouts);
         let (plate, drawn) = std::thread::scope(|sc| {
             let plate = sc.spawn(|| render::render_plate(snap, pal, s));
             let parts: Vec<_> = jobs
@@ -124,12 +124,9 @@ impl Layers {
         };
         let cut = |pm: &Pixmap| inked(pm).and_then(|a| Sprite::cut(pm, a));
         let mut parts = Vec::new();
-        let mut readouts = None;
         for (p, pm) in &drawn {
-            match p {
-                Part::Case { led: true } => {}
-                Part::Readouts => readouts = cut(pm),
-                _ => parts.extend(cut(pm).map(|sp| (*p, sp))),
+            if *p != (Part::Case { led: true }) {
+                parts.extend(cut(pm).map(|sp| (*p, sp)));
             }
         }
         Layers {
@@ -137,12 +134,12 @@ impl Layers {
             plate,
             parts,
             led,
-            readouts,
         }
     }
 
-    /// The card with the products where `art` has them.
-    pub fn compose(&self, art: Art) -> Pixmap {
+    /// The card with the products where `art` has them; `overlay` then
+    /// draws what changes with the values (status line, readouts).
+    pub fn compose(&self, art: Art, overlay: &dyn Fn(&mut Pixmap)) -> Pixmap {
         let s = self.scale;
         let mut out = self.plate.clone();
         let (sin, cos) = REAR_TILT_DEG.to_radians().sin_cos();
@@ -167,9 +164,7 @@ impl Layers {
                 }
             }
         }
-        if let Some(ro) = &self.readouts {
-            ro.draw(&mut out, 0.0, 0.0, 1.0);
-        }
+        overlay(&mut out);
         out
     }
 }
@@ -192,7 +187,10 @@ mod tests {
         ] {
             let snap = Snapshot::sample_for(model);
             let want = render::render(&snap, &pal, scale);
-            let got = Layers::build(&snap, &pal, scale).compose(Art::REST);
+            let got = Layers::build(&snap, &pal, scale).compose(Art::REST, &|pm| {
+                render::draw_status(pm, snap.status(), &pal, scale, 1.0, 0.0);
+                render::draw_readouts(pm, &snap, &pal, scale, &|_, _| Gauge::REST);
+            });
             let mut off = 0usize;
             for (a, b) in got.data().chunks(4).zip(want.data().chunks(4)) {
                 if a.iter().zip(b).any(|(x, y)| x.abs_diff(*y) > 5) {

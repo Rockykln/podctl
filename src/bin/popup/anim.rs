@@ -36,7 +36,6 @@ pub struct Art {
     pub led: f32,
 }
 
-#[cfg(test)]
 impl Art {
     pub const REST: Art = Art {
         left: 0.0,
@@ -64,6 +63,98 @@ pub fn art(ms: f32) -> Art {
         right: hop(ms - HOP_R_FROM),
         led: ease_out_cubic((ms - LED_FROM) / LED_MS),
     }
+}
+
+/// With the values there when the card maps, the rings start this late.
+pub const RINGS_AFTER_MAP_MS: f32 = 120.0;
+const RING_MS: f32 = 700.0;
+const RING_STAGGER_MS: f32 = 70.0;
+const SWAP_MS: f32 = 260.0;
+const BOLT_FROM_MS: f32 = 500.0;
+/// The bolt comes in at its full size in the room the row kept for it,
+/// in four steps of 100 ms. The design's spring overshot and moved the
+/// row, and a smooth fade looked unsteady.
+const BOLT_STEPS: f32 = 4.0;
+const BOLT_STEP_MS: f32 = 100.0;
+const BOLT_MS: f32 = BOLT_STEPS * BOLT_STEP_MS;
+const PULSE_MS: f32 = 480.0;
+pub const STROKE: f32 = 2.6;
+const PULSE_PX: f32 = 1.0;
+const DRIFT_PX: f32 = 3.0;
+
+/// One readout while its value comes in: how much of the ring is drawn,
+/// how far the "—" has given way to the number (0 to 1), how far the
+/// bolt has come in, and the ring's stroke.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Gauge {
+    pub fill: f32,
+    pub text: f32,
+    pub bolt: f32,
+    pub stroke: f32,
+}
+
+impl Gauge {
+    pub const REST: Gauge = Gauge {
+        fill: 1.0,
+        text: 1.0,
+        bolt: 1.0,
+        stroke: STROKE,
+    };
+}
+
+/// Readout `i` (left to right) `ms` after the values arrived. A low one
+/// pulses once after it has filled; nothing blinks after that.
+pub fn gauge(ms: f32, i: usize, low: bool) -> Gauge {
+    let t = ms - i as f32 * RING_STAGGER_MS;
+    let pulse = (t - RING_MS) / PULSE_MS;
+    Gauge {
+        fill: ease_out_quint(t / RING_MS),
+        text: (t / SWAP_MS).clamp(0.0, 1.0),
+        bolt: ((((t - BOLT_FROM_MS) / BOLT_STEP_MS).floor() + 1.0) / BOLT_STEPS).clamp(0.0, 1.0),
+        stroke: if low && (0.0..1.0).contains(&pulse) {
+            STROKE + PULSE_PX * (std::f32::consts::PI * pulse).sin()
+        } else {
+            STROKE
+        },
+    }
+}
+
+/// Whether `n` readouts are still moving `ms` after the values arrived.
+pub fn gauges_moving(ms: f32, n: usize) -> bool {
+    let last = (n.max(1) - 1) as f32 * RING_STAGGER_MS;
+    ms < last + (RING_MS + PULSE_MS).max(BOLT_FROM_MS + BOLT_MS)
+}
+
+/// The text "—" or the number, `u` into the swap: how visible it is and
+/// how far below its place. The dash goes in the first 30 %, the number
+/// comes up 3 px in the rest; the two are never both legible.
+pub fn swap_text(u: f32, number: bool) -> (f32, f32) {
+    if number {
+        let v = ((u - 0.3) / 0.7).clamp(0.0, 1.0);
+        (v, DRIFT_PX * (1.0 - ease_out_cubic(v)))
+    } else {
+        (1.0 - (u / 0.3).clamp(0.0, 1.0), 0.0)
+    }
+}
+
+const STATUS_MS: f32 = 260.0;
+
+/// The status line changing `ms` in: the old text drifts up and out in
+/// the first 40 %, the new one comes up from below in the rest. Returns
+/// (old alpha, old dy, new alpha, new dy); `None` once it is over.
+pub fn status_swap(ms: f32) -> Option<(f32, f32, f32, f32)> {
+    if ms >= STATUS_MS {
+        return None;
+    }
+    let u = (ms / STATUS_MS).max(0.0);
+    let out = (u / 0.4).clamp(0.0, 1.0);
+    let inn = ((u - 0.4) / 0.6).clamp(0.0, 1.0);
+    Some((
+        1.0 - out,
+        -DRIFT_PX * ease_out_cubic(out),
+        inn,
+        DRIFT_PX * (1.0 - ease_out_cubic(inn)),
+    ))
 }
 
 /// Where the card is: offset down, opacity, and scale about its centre.
@@ -188,6 +279,46 @@ mod tests {
         assert!(art(150.0).left > 0.0 && art(150.0).right == 0.0);
         assert_eq!(art(ENTRY_MS), Art::REST);
         assert!(art(400.0).led > 0.0 && art(400.0).led < 1.0);
+    }
+
+    #[test]
+    fn rings_fill_in_turn_and_a_low_one_pulses_once() {
+        let g = |ms, i| gauge(ms, i, false);
+        assert_eq!(g(0.0, 0).fill, 0.0);
+        assert!(g(100.0, 0).fill > 0.0 && g(60.0, 1).fill == 0.0);
+        assert!((g(RING_MS, 0).fill - 1.0).abs() < 1e-6);
+        assert!(g(0.0, 0).bolt == 0.0 && g(2000.0, 0).bolt == 1.0);
+        let most = (0..2000)
+            .map(|ms| g(ms as f32, 0).bolt)
+            .fold(0.0f32, f32::max);
+        assert_eq!(most, 1.0, "the bolt never grows past its size");
+        let steps: std::collections::BTreeSet<u32> = (0..2000)
+            .map(|ms| (g(ms as f32, 0).bolt * 100.0) as u32)
+            .collect();
+        assert_eq!(steps.into_iter().collect::<Vec<_>>(), [0, 25, 50, 75, 100]);
+        let widest = (0..2000)
+            .map(|ms| gauge(ms as f32, 0, true).stroke)
+            .fold(0.0f32, f32::max);
+        assert!((widest - STROKE - PULSE_PX).abs() < 0.01);
+        assert_eq!(gauge(1500.0, 0, true).stroke, STROKE);
+        assert_eq!(gauge(900.0, 0, false).stroke, STROKE);
+        assert!(gauges_moving(1000.0, 3) && !gauges_moving(1400.0, 1));
+        assert_eq!(gauge(1400.0, 0, true), Gauge::REST);
+    }
+
+    #[test]
+    fn two_texts_are_never_both_legible() {
+        for i in 0..=100 {
+            let u = i as f32 / 100.0;
+            let (dash, _) = swap_text(u, false);
+            let (num, _) = swap_text(u, true);
+            assert!(dash == 0.0 || num == 0.0, "{u}");
+            if let Some((a, _, b, _)) = status_swap(u * 260.0) {
+                assert!(a == 0.0 || b == 0.0, "{u}");
+            }
+        }
+        assert_eq!(swap_text(1.0, true), (1.0, 0.0));
+        assert!(status_swap(260.0).is_none());
     }
 
     #[test]

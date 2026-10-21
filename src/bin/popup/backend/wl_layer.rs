@@ -61,9 +61,9 @@ struct Win {
     h: u32,
 }
 
-/// Two buffers of one device size in one shared mapping.
+/// Buffers of one device size in one shared mapping.
 struct Pool {
-    bufs: [Buf; 2],
+    bufs: [Buf; BUFFERS],
     map: *mut u8,
     map_len: usize,
     w: u32,
@@ -275,12 +275,12 @@ impl Backend for WlLayer {
 
         collect_releases(&mut win.state, pool);
 
-        let slot = if !pool.bufs[win.cur].busy {
-            win.cur
-        } else {
-            1 - win.cur
-        };
-        // Both in flight. Waiting for *an* event was not enough: any
+        // The next free one, starting where the last frame left off.
+        let slot = (0..BUFFERS)
+            .map(|i| (win.cur + i) % BUFFERS)
+            .find(|&i| !pool.bufs[i].busy)
+            .unwrap_or(win.cur);
+        // All in flight. Waiting for *an* event was not enough: any
         // event ended the wait, and the frame was then written into a
         // buffer the compositor was still reading from.
         let deadline = Instant::now() + RELEASE_WAIT;
@@ -308,7 +308,7 @@ impl Backend for WlLayer {
         win.state.frame_due = true;
         win.surface.commit();
         pool.bufs[slot].busy = true;
-        win.cur = 1 - slot;
+        win.cur = (slot + 1) % BUFFERS;
 
         win.conn.flush().context("flush wayland")?;
         win.queue
@@ -376,7 +376,7 @@ fn resize(win: &mut Win, w: u32, h: u32) -> Result<()> {
     }
     let stride = w as usize * 4;
     let one = stride * h as usize;
-    let map_len = one * 2;
+    let map_len = one * BUFFERS;
     let (fd, map) = shm_alloc(map_len)?;
     let pool = win.shm.create_pool(fd.as_fd(), map_len as i32, &win.qh, ());
     let mk = |off: usize| Buf {
@@ -392,7 +392,7 @@ fn resize(win: &mut Win, w: u32, h: u32) -> Result<()> {
         offset: off,
         busy: false,
     };
-    let bufs = [mk(0), mk(one)];
+    let bufs = std::array::from_fn(|i| mk(i * one));
     pool.destroy();
     let buffer_scale = match &win.viewport {
         Some((viewport, _)) => {
@@ -439,6 +439,9 @@ const READ_SLICE: Duration = Duration::from_millis(25);
 /// How long the surface may take to be configured before the bubble
 /// gives up and the next backend gets a turn.
 const CONFIGURE_WAIT: Duration = Duration::from_secs(2);
+/// One more than double buffering, so a frame never has to wait for the
+/// compositor to hand one back.
+const BUFFERS: usize = 3;
 /// The longest a frame waits for the compositor's go.
 const FRAME_WAIT: Duration = Duration::from_millis(40);
 /// How long to wait for the scale after the configure before drawing

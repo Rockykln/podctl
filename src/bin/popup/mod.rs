@@ -312,6 +312,20 @@ struct Card {
     /// they are there the entry shows the card standing still.
     layers: Option<Layers>,
     pending: Option<Receiver<Layers>>,
+    /// When the readouts' values came in, and what the status line said
+    /// before it last changed: both play out over the next frames.
+    values_at: Option<Instant>,
+    status_from: Option<(Instant, &'static str)>,
+}
+
+fn has_values(s: &Snapshot) -> bool {
+    [s.left, s.right, s.case].iter().any(|p| p.level.is_some())
+}
+
+/// What the layers are drawn from; the values and the status line are
+/// drawn on top per frame.
+fn layer_key(s: &Snapshot) -> (String, Art, bool) {
+    (s.name.clone(), s.art, s.case.charging)
 }
 
 impl Card {
@@ -329,9 +343,59 @@ impl Card {
             frame_h: 0,
             layers: None,
             pending: None,
+            values_at: None,
+            status_from: None,
         };
         c.draw();
         c
+    }
+
+    /// The card maps at `t0`: values it already has fill in from there.
+    fn mapped(&mut self, t0: Instant) {
+        if has_values(&self.snap) {
+            self.values_at = Some(t0 + Duration::from_secs_f32(anim::RINGS_AFTER_MAP_MS / 1000.0));
+        }
+    }
+
+    /// Whether the values or the status line are still on their way in.
+    fn settling(&self, now: Instant) -> bool {
+        let n = render::readout_count(&self.snap);
+        let since = |t: Instant| now.saturating_duration_since(t).as_secs_f32() * 1000.0;
+        // Before its start the timeline counts as running too.
+        self.values_at
+            .is_some_and(|t| t > now || anim::gauges_moving(since(t), n))
+            || self
+                .status_from
+                .is_some_and(|(t, _)| anim::status_swap(since(t)).is_some())
+    }
+
+    /// The status line and the readouts as they are at `now`.
+    fn overlay(&self, now: Instant) -> impl Fn(&mut tiny_skia::Pixmap) + '_ {
+        let ms = |t: Instant| {
+            if t > now {
+                -(t - now).as_secs_f32() * 1000.0
+            } else {
+                (now - t).as_secs_f32() * 1000.0
+            }
+        };
+        let values = self.values_at.map(ms);
+        let status = self
+            .status_from
+            .and_then(|(t, old)| anim::status_swap(ms(t)).map(|sw| (old, sw)));
+        move |pm: &mut tiny_skia::Pixmap| {
+            let (pal, s) = (&self.theme, self.scale);
+            match status {
+                Some((old, (a, ady, b, bdy))) => {
+                    render::draw_status(pm, old, pal, s, a, ady);
+                    render::draw_status(pm, self.snap.status(), pal, s, b, bdy);
+                }
+                None => render::draw_status(pm, self.snap.status(), pal, s, 1.0, 0.0),
+            }
+            render::draw_readouts(pm, &self.snap, pal, s, &|i, low| match values {
+                Some(ms) => anim::gauge(ms, i, low),
+                None => anim::Gauge::REST,
+            });
+        }
     }
 
     fn start_layers(&mut self) {
@@ -372,8 +436,19 @@ impl Card {
     /// are row copies and a multiply; only the shrink of a dismissal
     /// needs a real transform.
     fn compose(&mut self, pose: Pose, art: Option<anim::Art>) {
-        let moving = art.and_then(|a| self.layers().map(|l| l.compose(a)));
-        let moving = moving.map(|pm| render::to_bgra_premul(&pm));
+        let now = Instant::now();
+        let art = art.or_else(|| self.settling(now).then_some(anim::Art::REST));
+        let _ = self.layers();
+        let moving = match (art, &self.layers) {
+            (Some(a), Some(l)) => {
+                let mut bgra = render::to_bgra_premul(&l.compose(a, &self.overlay(now)));
+                if self.hover {
+                    self.patch_close(&mut bgra);
+                }
+                Some(bgra)
+            }
+            _ => None,
+        };
         let src = moving.as_deref().unwrap_or(&self.bgra);
         let (w, h) = (self.w as usize, self.h as usize);
         self.frame_h = render::buf_px(BUF_W, BUF_H + RISE as u32, self.scale).1;
@@ -416,11 +491,10 @@ impl Card {
         (self.w, self.h) = (d.pm.width(), d.pm.height());
         self.bgra = render::to_bgra_premul(&d.pm);
         self.drawn = Some(d);
-        // Whatever the layers show is out of date now.
-        self.layers = None;
-        self.pending = None;
         if self.hover {
-            self.patch_close();
+            let mut bgra = std::mem::take(&mut self.bgra);
+            self.patch_close(&mut bgra);
+            self.bgra = bgra;
         }
     }
 
@@ -430,11 +504,14 @@ impl Card {
             return false;
         }
         self.hover = on;
-        self.patch_close();
+        let mut bgra = std::mem::take(&mut self.bgra);
+        self.patch_close(&mut bgra);
+        self.bgra = bgra;
         true
     }
 
-    fn patch_close(&mut self) {
+    /// Put the close button, lit as `hover` says, into a card's pixels.
+    fn patch_close(&self, bgra: &mut [u8]) {
         let Some(d) = &self.drawn else { return };
         let patch = d.close_patch(&self.theme, self.hover);
         let (x0, y0) = d.close_at();
@@ -442,15 +519,27 @@ impl Card {
         let src = render::to_bgra_premul(&patch);
         for (y, line) in src.chunks_exact(row).enumerate() {
             let at = ((y0 as usize + y) * self.w as usize + x0 as usize) * 4;
-            if let Some(dst) = self.bgra.get_mut(at..at + row) {
+            if let Some(dst) = bgra.get_mut(at..at + row) {
                 dst.copy_from_slice(line);
             }
         }
     }
 
     fn set(&mut self, snap: Snapshot) {
+        let now = Instant::now();
+        if !has_values(&self.snap) && has_values(&snap) {
+            self.values_at = Some(now);
+        }
+        if self.snap.status() != snap.status() {
+            self.status_from = Some((now, self.snap.status()));
+        }
+        let rebuild = layer_key(&self.snap) != layer_key(&snap)
+            && (self.layers.is_some() || self.pending.is_some());
         self.snap = snap;
         self.draw();
+        if rebuild {
+            self.start_layers();
+        }
     }
 
     /// Draw again if the backend now shows at another scale.
@@ -460,6 +549,8 @@ impl Card {
             debug!(from = self.scale, to = s, "redraw for the output scale");
             let had_layers = self.layers.is_some() || self.pending.is_some();
             self.scale = s;
+            self.layers = None;
+            self.pending = None;
             self.draw();
             if had_layers {
                 self.start_layers();
@@ -610,6 +701,9 @@ fn show_cycle(
     let mut pose = Pose::REST;
     let mut stop = None;
     let t0 = Instant::now();
+    if moves {
+        card.mapped(t0);
+    }
     let mut frames = 0u32;
     while let Some(p) = moves.then(|| anim::entry(ms_since(t0))).flatten() {
         frames += 1;
@@ -632,12 +726,9 @@ fn show_cycle(
         Some(o) => o,
         None => {
             pose = Pose::REST;
-            if push(be.as_mut(), &mut card, pose).is_err() {
-                let _ = be.close();
-                return Outcome::Done;
-            }
             let mut timer = Hold::new(Instant::now(), hold);
             let mut o = Outcome::Done;
+            let mut settled = false;
             // Nothing moves while the bubble stands still, so it waits
             // for the next command instead of pushing the same frame
             // sixty times a second: that was ~340 commits per bubble,
@@ -665,8 +756,22 @@ fn show_cycle(
                     let _ = be.close();
                     return o;
                 }
+                // Values still coming in are drawn frame by frame; the
+                // first still frame after them is the card drawn whole.
+                let settling = moves && card.settling(Instant::now());
+                if settling || !settled {
+                    if push(be.as_mut(), &mut card, Pose::REST).is_err() {
+                        let _ = be.close();
+                        return o;
+                    }
+                    settled = !settling;
+                    if settling {
+                        be.wait_frame();
+                    }
+                }
                 let wait = match timer.left(Instant::now()) {
                     Some(d) if d.is_zero() => break,
+                    _ if settling => Duration::ZERO,
                     Some(d) => d.min(INPUT_SLICE),
                     None => INPUT_SLICE,
                 };
@@ -697,6 +802,7 @@ fn show_cycle(
                 if reset {
                     timer.restart(Instant::now(), hold);
                 }
+                settled = false;
                 if push(be.as_mut(), &mut card, Pose::REST).is_err() {
                     let _ = be.close();
                     return o;
@@ -1032,15 +1138,17 @@ fn dump(path: &str, theme: &Theme, args: &[String]) -> std::io::Result<()> {
 }
 
 /// One frame of the motion, as `<phase>:<ms>` names it (`entry:120`,
-/// `exit:100`, `dismiss:60`), in the frame the window shows.
+/// `exit:100`, `dismiss:60`, or `values:200` for values that arrive
+/// while "Connecting…" shows), in the frame the window shows.
 fn frame_at(art: Art, theme: &Theme, scale: f32, at: &str) -> Result<tiny_skia::Pixmap, String> {
-    let wrong = || format!("at '{at}' (entry|exit|dismiss:<ms>)");
+    let wrong = || format!("at '{at}' (entry|exit|dismiss|values:<ms>)");
     let (phase, ms) = at.split_once(':').ok_or_else(wrong)?;
     let ms: f32 = ms.parse().map_err(|_| wrong())?;
     let pose = match phase {
         "entry" => anim::entry(ms),
         "exit" => anim::exit(ms, Pose::REST),
         "dismiss" => anim::dismiss(ms, Pose::REST),
+        "values" => Some(Pose::REST),
         _ => return Err(wrong()),
     }
     .unwrap_or(match phase {
@@ -1051,10 +1159,24 @@ fn frame_at(art: Art, theme: &Theme, scale: f32, at: &str) -> Result<tiny_skia::
         },
     });
     let mut card = Card::new(Snapshot::sample_for(art), theme, scale);
+    if phase == "entry" || phase == "values" {
+        card.layers = Some(Layers::build(&card.snap, theme, scale));
+    }
+    // After the build, or the frame comes out that much later.
+    let now = Instant::now();
+    let back = |ms: f32| {
+        let d = Duration::from_secs_f32(ms.abs() / 1000.0);
+        if ms >= 0.0 { now - d } else { now + d }
+    };
     let moving = match phase {
         "entry" => {
-            card.layers = Some(Layers::build(&card.snap, theme, scale));
+            card.mapped(back(ms));
             Some(anim::art(ms))
+        }
+        "values" => {
+            card.values_at = Some(back(ms));
+            card.status_from = Some((back(ms), "Connecting…"));
+            None
         }
         _ => None,
     };
@@ -1150,7 +1272,7 @@ fn print_usage() {
     println!();
     println!("usage:");
     println!(
-        "  podctl-popup --dump <file.png> [--theme auto|dark|light] [--model <slug>] [--scale <n>] [--at entry|exit|dismiss:<ms>] [--backdrop]"
+        "  podctl-popup --dump <file.png> [--theme auto|dark|light] [--model <slug>] [--scale <n>] [--at entry|exit|dismiss|values:<ms>] [--backdrop]"
     );
     println!(
         "  podctl-popup --demo [--backend wl|x11|notify] [--theme auto|dark|light] [--hold <ms>]"

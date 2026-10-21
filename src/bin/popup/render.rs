@@ -4,6 +4,7 @@
 use podctl::model::Mode;
 use tiny_skia::*;
 
+use crate::anim::{Gauge, swap_text};
 use crate::art::{Art, draw_case, draw_max, draw_pair};
 use crate::paint::*;
 
@@ -203,7 +204,7 @@ pub fn render_card(snap: &Snapshot, pal: &Theme, scale: f32) -> Drawn {
     set_scale(s);
     let (bw, bh) = buf_px(BUF_W, BUF_H, s);
     let mut pm = Pixmap::new(bw, bh).expect("non-zero card");
-    let (under, at) = plate(&mut pm, snap, pal, s);
+    let (under, at) = plate(&mut pm, snap, pal, s, true);
     for part in Part::products(snap) {
         draw_part(&mut pm, snap, pal, s, part);
     }
@@ -243,18 +244,25 @@ impl Part {
     }
 }
 
-/// The card without products and readouts, for the layers of the motion.
+/// The card without status line, products and readouts, for the layers
+/// of the motion.
 pub fn render_plate(snap: &Snapshot, pal: &Pal, s: f32) -> Pixmap {
     set_scale(s);
     let (bw, bh) = buf_px(BUF_W, BUF_H, s);
     let mut pm = Pixmap::new(bw, bh).expect("non-zero card");
-    plate(&mut pm, snap, pal, s);
+    plate(&mut pm, snap, pal, s, false);
     pm
 }
 
 /// Shadow, card, edge, title, status line and close button; returns what
 /// lies under the close button and where.
-fn plate(pm: &mut Pixmap, snap: &Snapshot, pal: &Pal, s: f32) -> (Pixmap, (u32, u32)) {
+fn plate(
+    pm: &mut Pixmap,
+    snap: &Snapshot,
+    pal: &Pal,
+    s: f32,
+    with_status: bool,
+) -> (Pixmap, (u32, u32)) {
     let t = Transform::from_scale(s, s);
     let (x0, y0) = (MARGIN, MARGIN);
     let body = rrect(x0, y0, CARD_W, CARD_H, RADIUS);
@@ -276,17 +284,9 @@ fn plate(pm: &mut Pixmap, snap: &Snapshot, pal: &Pal, s: f32) -> (Pixmap, (u32, 
         pal.text,
         -0.1,
     );
-    text(
-        pm,
-        t,
-        snap.status(),
-        x0 + 20.0,
-        y0 + 53.0,
-        12.5,
-        0.0,
-        pal.sub,
-        0.0,
-    );
+    if with_status {
+        draw_status(pm, snap.status(), pal, s, 1.0, 0.0);
+    }
     let r = (CLOSE_R + 1.0) * s;
     let at = (
         ((CLOSE_X * s - r).floor().max(0.0)) as u32,
@@ -300,11 +300,87 @@ fn plate(pm: &mut Pixmap, snap: &Snapshot, pal: &Pal, s: f32) -> (Pixmap, (u32, 
     (under, at)
 }
 
+/// The line under the title, `alpha` visible and `dy` below its place.
+pub fn draw_status(pm: &mut Pixmap, status: &str, pal: &Pal, s: f32, alpha: f32, dy: f32) {
+    if alpha <= 0.0 {
+        return;
+    }
+    let t = Transform::from_scale(s, s);
+    text(
+        pm,
+        t,
+        status,
+        MARGIN + 20.0,
+        MARGIN + 53.0 + dy,
+        12.5,
+        0.0,
+        faded(pal.sub, alpha),
+        0.0,
+    );
+}
+
+fn faded(c: Color, alpha: f32) -> Color {
+    if alpha >= 1.0 {
+        return c;
+    }
+    let mut c = c;
+    c.apply_opacity(alpha);
+    c
+}
+
+/// How many readouts the card shows, left to right.
+pub fn readout_count(snap: &Snapshot) -> usize {
+    if snap.art.is_max() {
+        1
+    } else if merged(snap.left, snap.right).is_some() {
+        2
+    } else {
+        3
+    }
+}
+
+/// The readouts, readout `i` as `gauge(i, low)` has it.
+pub fn draw_readouts(
+    pm: &mut Pixmap,
+    snap: &Snapshot,
+    pal: &Pal,
+    s: f32,
+    gauge: &dyn Fn(usize, bool) -> Gauge,
+) {
+    let low = |p: Pod| p.level.is_some_and(|l| l <= LOW_PCT) && !p.charging;
+    let g = |i: usize, p: Pod| gauge(i, low(p));
+    set_scale(s);
+    let (x0, y0) = (MARGIN, MARGIN);
+    let base = y0 + CARD_H - 18.0;
+    let (ca, cb) = (x0 + 104.0, x0 + 266.0);
+    if snap.art.is_max() {
+        readout(
+            pm,
+            pal,
+            s,
+            x0 + CARD_W / 2.0,
+            base,
+            None,
+            snap.left,
+            g(0, snap.left),
+        );
+        return;
+    }
+    let (l, r) = (snap.left, snap.right);
+    if let Some(both) = merged(l, r) {
+        readout(pm, pal, s, ca, base, None, both, g(0, both));
+        readout(pm, pal, s, cb, base, None, snap.case, g(1, snap.case));
+    } else {
+        readout(pm, pal, s, ca - 40.0, base, Some("L"), l, g(0, l));
+        readout(pm, pal, s, ca + 40.0, base, Some("R"), r, g(1, r));
+        readout(pm, pal, s, cb, base, None, snap.case, g(2, snap.case));
+    }
+}
+
 /// Draw `part` of the card into `pm` at scale `s`.
 pub fn draw_part(pm: &mut Pixmap, snap: &Snapshot, pal: &Pal, s: f32, part: Part) {
     set_scale(s);
     let (x0, y0) = (MARGIN, MARGIN);
-    let base = y0 + CARD_H - 18.0;
     let (ca, cb) = (x0 + 104.0, x0 + 266.0);
     let pair = |pm: &mut Pixmap, sel: u8| {
         let lift = snap.art.bud_lift() * K_BUDS;
@@ -327,19 +403,7 @@ pub fn draw_part(pm: &mut Pixmap, snap: &Snapshot, pal: &Pal, s: f32, part: Part
         Part::Case { led } => draw_case(pm, pal, s, &snap.art.case(), cb, y0 + FLOOR, K_BUDS, led),
         Part::MaxShadow => draw_max(pm, pal, s, x0 + CARD_W / 2.0, y0 + FLOOR, K_MAX, 1),
         Part::MaxBody => draw_max(pm, pal, s, x0 + CARD_W / 2.0, y0 + FLOOR, K_MAX, 2),
-        Part::Readouts if snap.art.is_max() => {
-            readout(pm, pal, s, x0 + CARD_W / 2.0, base, None, snap.left);
-        }
-        Part::Readouts => {
-            let (l, r) = (snap.left, snap.right);
-            if let Some(both) = merged(l, r) {
-                readout(pm, pal, s, ca, base, None, both);
-            } else {
-                readout(pm, pal, s, ca - 40.0, base, Some("L"), l);
-                readout(pm, pal, s, ca + 40.0, base, Some("R"), r);
-            }
-            readout(pm, pal, s, cb, base, None, snap.case);
-        }
+        Part::Readouts => draw_readouts(pm, snap, pal, s, &|_, _| Gauge::REST),
     }
 }
 
@@ -398,7 +462,16 @@ fn bolt(cx: f32, cy: f32, h: f32) -> Path {
 
 /// `[label] (ring) 82% [bolt]`, centred on `cx` at baseline `base`.
 #[allow(clippy::too_many_arguments)]
-fn readout(pm: &mut Pixmap, pal: &Pal, s: f32, cx: f32, base: f32, label: Option<&str>, p: Pod) {
+fn readout(
+    pm: &mut Pixmap,
+    pal: &Pal,
+    s: f32,
+    cx: f32,
+    base: f32,
+    label: Option<&str>,
+    p: Pod,
+    g: Gauge,
+) {
     let t = Transform::from_scale(s, s);
     let ring_d = 15.0;
     let pct = match p.level {
@@ -409,6 +482,8 @@ fn readout(pm: &mut Pixmap, pal: &Pal, s: f32, cx: f32, base: f32, label: Option
     let pct_w = text_w(&pct, pct_px, 0.0);
     let lab_px = 11.0;
     let lab_w = label.map(|l| text_w(l, lab_px, 0.0) + 5.0).unwrap_or(0.0);
+    // The row keeps the bolt's room from the start, so only the bolt
+    // itself changes as it comes in.
     let bolt_w = if p.charging { 9.0 } else { 0.0 };
     let total = lab_w + ring_d + 6.0 + pct_w + bolt_w;
     let mut x = cx - total / 2.0;
@@ -419,15 +494,15 @@ fn readout(pm: &mut Pixmap, pal: &Pal, s: f32, cx: f32, base: f32, label: Option
     let rc = (x + ring_d / 2.0, base - 4.6);
     let rr = ring_d / 2.0 - 1.3;
     if let Some(full) = arc(rc.0, rc.1, rr, 0.0, std::f32::consts::TAU) {
-        stroke(pm, &full, pal.track, 2.6, LineCap::Butt, t);
+        stroke(pm, &full, pal.track, g.stroke, LineCap::Butt, t);
     }
     if let Some(l) = p.level {
         let a0 = -std::f32::consts::FRAC_PI_2;
-        let f = l as f32 / 100.0;
+        let f = l as f32 / 100.0 * g.fill;
         if f > 0.005
             && let Some(a) = arc(rc.0, rc.1, rr, a0, a0 + f * std::f32::consts::TAU)
         {
-            stroke(pm, &a, ring_color(pal, p), 2.6, LineCap::Round, t);
+            stroke(pm, &a, ring_color(pal, p), g.stroke, LineCap::Round, t);
         }
     }
     x += ring_d + 6.0;
@@ -436,10 +511,24 @@ fn readout(pm: &mut Pixmap, pal: &Pal, s: f32, cx: f32, base: f32, label: Option
         Some(_) => pal.text,
         None => pal.sub,
     };
-    text(pm, t, &pct, x, base, pct_px, 0.55, tc, 0.0);
+    if g.text >= 1.0 || p.level.is_none() {
+        text(pm, t, &pct, x, base, pct_px, 0.55, tc, 0.0);
+    } else {
+        let (dash, _) = swap_text(g.text, false);
+        text(pm, t, "—", x, base, pct_px, 0.55, faded(pal.sub, dash), 0.0);
+        let (num, dy) = swap_text(g.text, true);
+        if num > 0.0 {
+            text(pm, t, &pct, x, base + dy, pct_px, 0.55, faded(tc, num), 0.0);
+        }
+    }
     x += pct_w;
-    if p.charging {
-        fill(pm, &bolt(x + 5.5, base - 4.6, 10.0), pal.green, t);
+    if p.charging && g.bolt > 0.0 {
+        fill(
+            pm,
+            &bolt(x + 5.5, base - 4.6, 10.0),
+            faded(pal.green, g.bolt),
+            t,
+        );
     }
 }
 

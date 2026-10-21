@@ -262,6 +262,13 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
   charging case's light comes on. The products are drawn once into
   layers on a thread of their own and only put together per frame; once
   the entry is over the card is the one drawn in one go again.
+- The levels come in instead of standing there: each ring fills in
+  turn, the "—" makes way for the number as it rises into place, a
+  charging case's bolt comes in after its ring in four short steps, and
+  a low level pulses once. Values that arrive while "Connecting…" shows
+  play the same way, and the status line changes without two texts ever
+  overlapping. The Wayland bubble keeps three buffers, so a frame no
+  longer waits a quarter of a second for one to come back.
 - `output` in `popup.toml` works on Wayland too. On X11 the bubble now
   goes to the monitor under the pointer before the primary one.
 - The bubble draws about five times faster: shadows are blurred only
