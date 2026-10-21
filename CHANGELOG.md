@@ -240,6 +240,9 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
   `light`. It reads the setting from the desktop portal (KDE, GNOME and
   others) and picks up a change from the next bubble on. Without a
   portal it stays dark, as before.
+- The bubble draws about five times faster: shadows are blurred only
+  where they fall, not across the whole buffer. A card at 2× took 1.7 s
+  and now takes 0.3 s.
 - The duck for speech starts as soon as the AirPods report it, by the
   smallest step, while the music's level is measured; it used to wait
   for the measurement first. About 0.7 s earlier, down after 1.3 s.

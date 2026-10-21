@@ -249,20 +249,50 @@ pub fn fill_sh(pm: &mut Pixmap, p: &Path, sh: Shader, t: Transform) {
     pm.fill_path(p, &pt, FillRule::Winding, t, None);
 }
 
+/// Columns and rows that hold any ink, as half-open ranges.
+fn inked(pm: &Pixmap) -> Option<((usize, usize), (usize, usize))> {
+    let w = pm.width() as usize;
+    let (mut x0, mut x1, mut y0, mut y1) = (usize::MAX, 0, usize::MAX, 0);
+    for (y, row) in pm.data().chunks_exact(w * 4).enumerate() {
+        let px = row.as_chunks::<4>().0;
+        let Some(first) = px.iter().position(|p| p[3] != 0) else {
+            continue;
+        };
+        let last = px.iter().rposition(|p| p[3] != 0).unwrap_or(first);
+        x0 = x0.min(first);
+        x1 = x1.max(last + 1);
+        y0 = y0.min(y);
+        y1 = y1.max(y + 1);
+    }
+    (x0 < x1).then_some(((x0, x1), (y0, y1)))
+}
+
 /// Separable box blur, 3 passes ~ gaussian. Operates on all channels.
+/// Only the inked area plus the reach of the passes is touched: outside
+/// it every pixel is zero before and after.
 pub fn blur(pm: &mut Pixmap, r: usize) {
     let (w, h) = (pm.width() as usize, pm.height() as usize);
+    let Some(((x0, x1), (y0, y1))) = inked(pm) else {
+        return;
+    };
+    let reach = 3 * r;
+    let (x0, x1) = (x0.saturating_sub(reach), (x1 + reach).min(w));
+    let (y0, y1) = (y0.saturating_sub(reach), (y1 + reach).min(h));
     for _ in 0..3 {
         for horiz in [true, false] {
             let src = pm.data().to_vec();
             let dst = pm.data_mut();
-            let (outer, inner) = if horiz { (h, w) } else { (w, h) };
-            for o in 0..outer {
+            let (outer, inner) = if horiz {
+                (y0..y1, x1 - x0)
+            } else {
+                (x0..x1, y1 - y0)
+            };
+            for o in outer {
                 let idx = |i: usize| {
                     if horiz {
-                        (o * w + i) * 4
+                        (o * w + x0 + i) * 4
                     } else {
-                        (i * w + o) * 4
+                        ((y0 + i) * w + o) * 4
                     }
                 };
                 let mut acc = [0u32; 4];
