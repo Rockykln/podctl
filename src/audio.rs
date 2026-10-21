@@ -59,17 +59,22 @@ fn pick_sink(out: &str, addr: &str, default: Option<&str>) -> Option<SinkInfo> {
 /// Whether that device's sink is actually playing something right now
 /// (PipeWire reports `RUNNING`; idle and suspended sinks carry no audio).
 pub fn sink_running_for(addr: &str) -> bool {
-    let Ok(out) = pactl(&["list", "sinks", "short"]) else {
-        return false;
-    };
-    sink_is_running(&out, addr)
+    sink_state_for(addr) == Some(true)
 }
 
-fn sink_is_running(out: &str, addr: &str) -> bool {
+/// Whether the device's sink is running, or `None` without one.
+pub fn sink_state_for(addr: &str) -> Option<bool> {
+    let out = pactl(&["list", "sinks", "short"]).ok()?;
+    sink_state(&out, addr)
+}
+
+fn sink_state(out: &str, addr: &str) -> Option<bool> {
     let want = bluez_prefix("bluez_output", addr);
-    out.lines().any(|l| {
+    out.lines().find_map(|l| {
         let cols: Vec<&str> = l.split('\t').collect();
-        cols.get(1).is_some_and(|n| n.starts_with(&want)) && cols.last() == Some(&"RUNNING")
+        cols.get(1)
+            .is_some_and(|n| n.starts_with(&want))
+            .then(|| cols.last() == Some(&"RUNNING"))
     })
 }
 
@@ -461,7 +466,7 @@ pub fn have_pactl() -> bool {
 mod tests {
     use super::{
         CardInfo, available_codecs, error_code_for, nothing_to_act_on, parse_sink_codec, pick_sink,
-        set_codec, sink_is_running,
+        set_codec, sink_state,
     };
     use crate::ipc::ErrorCode;
 
@@ -518,8 +523,9 @@ mod tests {
     /// and lower whatever it found first.
     #[test]
     fn running_is_per_device() {
-        assert!(sink_is_running(SINKS, "FF:EE:DD:CC:BB:AA"));
-        assert!(!sink_is_running(SINKS, "AA:BB:CC:DD:EE:01"));
+        assert_eq!(sink_state(SINKS, "FF:EE:DD:CC:BB:AA"), Some(true));
+        assert_eq!(sink_state(SINKS, "AA:BB:CC:DD:EE:01"), Some(false));
+        assert_eq!(sink_state(SINKS, "11:22:33:44:55:66"), None);
     }
 
     /// WirePlumber has named the sink `.a2dp-sink` and `.1` over the

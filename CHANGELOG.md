@@ -6,6 +6,12 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **Music that stopped with the link comes back with a bud.** When the
+  AirPods disconnect while something plays through them, a bud in ear
+  after the reconnect resumes it, as when one goes back in after being
+  taken out — within 5 minutes, and not on the reconnect itself: opening
+  the case connects them while they are still in a hand. Music paused
+  before the link dropped stays paused.
 - **`podctl debug` carries the logs.** The report ends with the last 40
   journal lines of `podctld`, the tray and the bubble, through the same
   redaction as the rest: the host name, the user name, serial numbers

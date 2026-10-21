@@ -129,6 +129,9 @@ pub async fn run(daemon: Arc<Daemon>) {
             let _ = scan_tx.send(snap_addr.is_some() && !snap_connected);
             daemon.media.set_address(snap_addr.clone()).await;
             daemon.media.watchdog().await;
+            if snap_connected {
+                daemon.media.note_playback().await;
+            }
             // Spawn, restart or stop the AAP loop.
             aap.sync(&daemon, &snap_addr, snap_connected).await;
             aap.watchdog(&daemon).await;
@@ -270,7 +273,7 @@ impl AapSupervisor {
         // drops. `case_lid_open` goes with them: leaving it at `Some(true)`
         // would swallow the lid edge on the next connect, and with it the
         // popup that edge triggers.
-        daemon.media.reset().await;
+        daemon.media.link_dropped().await;
         let mut s = daemon.state.write().await;
         s.battery = podctl::Battery::default();
         s.battery_at = None;

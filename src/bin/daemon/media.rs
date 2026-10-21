@@ -17,6 +17,11 @@ const MPRIS_PLAYER: &str = "org.mpris.MediaPlayer2.Player";
 
 /// Buds that come back after this long don't restart the music.
 const RESUME_WINDOW: Duration = Duration::from_secs(15 * 60);
+/// The same after the link dropped. Shorter: opening the case connects
+/// them long before anyone listens again.
+const LINK_RESUME_WINDOW: Duration = Duration::from_secs(5 * 60);
+/// How old the last look at the players may be when the link drops.
+const PLAYING_FRESH: Duration = Duration::from_secs(7);
 /// After a reconnect from the case the AirPods sink needs a moment to
 /// reappear; resuming earlier would play through the speakers.
 const SINK_WAIT: Duration = Duration::from_secs(15);
@@ -82,6 +87,13 @@ struct Inner {
     paused: Vec<String>,
     paused_at: Option<Instant>,
     resume_at_count: u8,
+    /// `paused` holds what played when the link dropped, not what a bud
+    /// coming out paused.
+    paused_by_link: bool,
+    /// Players heard through the buds at the last poll. By the time the
+    /// link is reported down, the sink is gone and some players have
+    /// paused themselves.
+    last_playing: Option<(Instant, Vec<String>)>,
     /// Volume to restore once speech ends, and the level we set.
     ducked_from: Option<u8>,
     ducked_to: Option<u8>,
@@ -112,6 +124,14 @@ impl Media {
         let mut inner = self.inner.lock().await;
         inner.ear_gen += 1;
         let my_gen = inner.ear_gen;
+        // Left over from a link that dropped with the buds never put back
+        // in: it must not stop the next bud that comes out from pausing.
+        let since = inner.paused_at.map(|t| t.elapsed());
+        let expired = since.is_none_or(|d| d >= LINK_RESUME_WINDOW);
+        if inner.paused_by_link && expired {
+            inner.paused.clear();
+            inner.paused_by_link = false;
+        }
         match ear_action(prev, now, !inner.paused.is_empty(), inner.resume_at_count) {
             EarAction::Nothing => return,
             EarAction::Pause => {
@@ -125,6 +145,7 @@ impl Media {
                 if !paused.is_empty() {
                     info!(players = ?paused, before, after, "paused on ear removal");
                     inner.paused = paused;
+                    inner.paused_by_link = false;
                     inner.paused_at = Some(Instant::now());
                     inner.resume_at_count = before;
                 }
@@ -139,7 +160,13 @@ impl Media {
         if inner.ear_gen != my_gen || inner.paused.is_empty() {
             return;
         }
-        let fresh = inner.paused_at.is_some_and(|t| t.elapsed() < RESUME_WINDOW);
+        let window = if inner.paused_by_link {
+            LINK_RESUME_WINDOW
+        } else {
+            RESUME_WINDOW
+        };
+        let fresh = inner.paused_at.is_some_and(|t| t.elapsed() < window);
+        inner.paused_by_link = false;
         let players = std::mem::take(&mut inner.paused);
         inner.paused_at = None;
         if !fresh {
@@ -253,9 +280,38 @@ impl Media {
         }
     }
 
-    /// Called when the link drops so a duck never outlives the session.
+    /// Called when the daemon stops so a duck never outlives it.
     pub async fn reset(&self) {
         self.inner.lock().await.restore_volume(&self.speech).await;
+    }
+
+    /// Called when the link drops. Music that was playing through the
+    /// buds counts as paused by us, so a bud back in after the reconnect
+    /// resumes it like one put back after being taken out.
+    pub async fn link_dropped(&self) {
+        let mut inner = self.inner.lock().await;
+        inner.restore_volume(&self.speech).await;
+        let Some((at, names)) = inner.last_playing.take() else {
+            return;
+        };
+        if at.elapsed() > PLAYING_FRESH || !inner.paused.is_empty() {
+            return;
+        }
+        info!(players = ?names, "link dropped while playing — resuming once a bud is back in");
+        inner.paused = names;
+        inner.paused_at = Some(Instant::now());
+        inner.paused_by_link = true;
+        inner.resume_at_count = 1;
+    }
+
+    /// Checked on every poll of the link task, see `last_playing`. A
+    /// sink that is already gone says nothing about what played, but one
+    /// that is idle does: music paused by hand stays paused.
+    pub async fn note_playback(&self) {
+        let mut inner = self.inner.lock().await;
+        if let Some(names) = inner.playing_players().await {
+            inner.last_playing = (!names.is_empty()).then(|| (Instant::now(), names));
+        }
     }
 
     /// Checked on every poll of the link task: speech that never ended
@@ -382,6 +438,35 @@ impl Inner {
             }
         }
         self.conn.clone()
+    }
+
+    /// One per track: a mirror plays the same title, and `play` skips a
+    /// player that is already back by the time it gets to it.
+    /// `None` while the buds have no sink to look at.
+    async fn playing_players(&mut self) -> Option<Vec<String>> {
+        let addr = self.addr.clone()?;
+        let running = tokio::task::spawn_blocking(move || audio::sink_state_for(&addr))
+            .await
+            .ok()
+            .flatten()?;
+        if !running {
+            return Some(Vec::new());
+        }
+        let conn = self.connection().await?;
+        let mut names = Vec::new();
+        let mut tracks: Vec<String> = Vec::new();
+        for name in players(&conn).await {
+            if status(&conn, &name).await.as_deref() != Some("Playing") {
+                continue;
+            }
+            let track = title(&conn, &name).await;
+            if track.as_ref().is_some_and(|t| tracks.contains(t)) {
+                continue;
+            }
+            tracks.extend(track);
+            names.push(name);
+        }
+        Some(names)
     }
 
     /// Ducking silence only makes the volume jump in the OSD and mixer.
