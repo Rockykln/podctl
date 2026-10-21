@@ -1,14 +1,17 @@
 //! What an iPhone does on the host side: pause on ear removal, resume on
 //! return, lower the volume while the wearer is talking.
 
+use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use tokio::sync::Mutex;
+use tokio::time::Instant;
 use tracing::{debug, info, warn};
 use zbus::Connection;
 
+use podctl::audio::SinkInfo;
 use podctl::{InEar, audio};
 
 const MPRIS_PREFIX: &str = "org.mpris.MediaPlayer2.";
@@ -69,17 +72,36 @@ const RESTORE_TICK: Duration = Duration::from_millis(80);
 /// without a frame seen on a Pro 2).
 const DUCK_WATCHDOG: Duration = Duration::from_secs(30);
 
+/// Everything the media logic asks of the system: the sound server, the
+/// players on the session bus and the note on disk.
+pub trait Host: Send + Sync {
+    fn sink(&self, addr: &str) -> impl Future<Output = Option<SinkInfo>> + Send;
+    /// Whether the sink carries audio, `None` without one.
+    fn sink_running(&self, addr: &str) -> impl Future<Output = Option<bool>> + Send;
+    fn volume(&self, addr: &str) -> impl Future<Output = Option<u8>> + Send;
+    fn set_volume_tenths(&self, sink: &SinkInfo, tenths: u16) -> impl Future<Output = bool> + Send;
+    /// Level of what plays, before the sink volume; takes `MEASURE`.
+    fn measure_db(&self, addr: &str) -> impl Future<Output = Option<f64>> + Send;
+    fn players(&self) -> impl Future<Output = Vec<String>> + Send;
+    fn status(&self, player: &str) -> impl Future<Output = Option<String>> + Send;
+    fn title(&self, player: &str) -> impl Future<Output = Option<String>> + Send;
+    fn call(&self, player: &str, method: &str) -> impl Future<Output = Result<(), String>> + Send;
+    fn read_note(&self) -> Option<Ducked>;
+    fn write_note(&self, d: &Ducked);
+    fn clear_note(&self);
+}
+
 #[derive(Default)]
-pub struct Media {
+pub struct Media<H: Host = System> {
     inner: Mutex<Inner>,
     /// Bumped whenever speech is (still) detected. Kept outside the lock:
     /// a restore holds it while fading up, and speech has to stop that.
     speech: Arc<AtomicU64>,
+    host: H,
 }
 
 #[derive(Default)]
 struct Inner {
-    conn: Option<Connection>,
     /// Address of the buds. Every audio call needs it; without one the
     /// first Bluetooth sink on the system would be taken for theirs.
     addr: Option<String>,
@@ -107,7 +129,7 @@ struct Inner {
     ear_gen: u64,
 }
 
-impl Media {
+impl<H: Host> Media<H> {
     /// Told by the link task on every poll, so the audio calls act on
     /// the right device even across a reconnect.
     pub async fn set_address(&self, addr: Option<String>) {
@@ -138,10 +160,10 @@ impl Media {
                 let Some(addr) = inner.addr.clone() else {
                     return;
                 };
-                if !airpods_are_output(&addr).await {
+                if !airpods_are_output(&self.host, &addr).await {
                     return;
                 }
-                let paused = inner.pause_playing().await;
+                let paused = inner.pause_playing(&self.host).await;
                 if !paused.is_empty() {
                     info!(players = ?paused, before, after, "paused on ear removal");
                     inner.paused = paused;
@@ -180,7 +202,7 @@ impl Media {
         // touches the player list — a bud coming back out, the ducking
         // on speech — waits behind this lock, so let go of it first.
         drop(inner);
-        if !wait_for_airpods_output(&addr).await {
+        if !wait_for_airpods_output(&self.host, &addr).await {
             warn!("AirPods sink never became the default — not resuming");
             return;
         }
@@ -189,7 +211,7 @@ impl Media {
             debug!("ears changed while waiting for the sink — not resuming");
             return;
         }
-        let resumed = inner.play(&players).await;
+        let resumed = inner.play(&self.host, &players).await;
         if parked {
             inner.resume_at_count = 1;
             info!(players = ?resumed, "resumed — one bud charging, one in ear");
@@ -217,37 +239,39 @@ impl Media {
                     && inner.cut_short
                 {
                     inner.cut_short = false;
-                    if let Some(vol) = current_volume(&addr).await
+                    if let Some(vol) = self.host.volume(&addr).await
                         && vol > to
                     {
-                        fade(&addr, vol, to, FADE_TICK, None).await;
+                        fade(&self.host, &addr, vol, to, FADE_TICK, None).await;
                         debug!(from = vol, to, "speech again — back down");
                     }
                     return;
                 }
-                if inner.ducked_from.is_some() || !inner.music_playing().await {
+                if inner.ducked_from.is_some() || !inner.music_playing(&self.host).await {
                     return;
                 }
-                let Some(vol) = current_volume(&addr).await else {
+                let Some(vol) = self.host.volume(&addr).await else {
                     return;
                 };
                 // The level takes MEASURE to read; the first, smallest dip
                 // runs meanwhile so the duck starts with the speech.
                 let first = duck_first(vol);
-                let (dipped, level) =
-                    tokio::join!(fade(&addr, vol, first, FADE_TICK, None), measure_db(&addr));
+                let (dipped, level) = tokio::join!(
+                    fade(&self.host, &addr, vol, first, FADE_TICK, None),
+                    self.host.measure_db(&addr)
+                );
                 if !dipped {
                     return;
                 }
                 let Some(level) = level.filter(|l| *l >= SILENCE_DB) else {
-                    fade(&addr, first, vol, RESTORE_TICK, None).await;
+                    fade(&self.host, &addr, first, vol, RESTORE_TICK, None).await;
                     return;
                 };
                 let target = duck_target(vol, level).min(first);
                 if target >= vol {
                     return;
                 }
-                if fade(&addr, first, target, FADE_TICK, None).await {
+                if fade(&self.host, &addr, first, target, FADE_TICK, None).await {
                     info!(
                         from = vol,
                         to = target,
@@ -257,7 +281,7 @@ impl Media {
                     inner.ducked_from = Some(vol);
                     inner.ducked_to = Some(target);
                     inner.spoke_at = Some(Instant::now());
-                    write_duck(&Ducked {
+                    self.host.write_note(&Ducked {
                         addr,
                         from: vol,
                         to: target,
@@ -274,7 +298,7 @@ impl Media {
                 tokio::time::sleep(RESTORE_HOLD).await;
                 let mut inner = self.inner.lock().await;
                 if self.speech.load(Ordering::SeqCst) == my_gen {
-                    inner.restore_volume(&self.speech).await;
+                    inner.restore_volume(&self.host, &self.speech).await;
                 }
             }
         }
@@ -282,7 +306,8 @@ impl Media {
 
     /// Called when the daemon stops so a duck never outlives it.
     pub async fn reset(&self) {
-        self.inner.lock().await.restore_volume(&self.speech).await;
+        let mut inner = self.inner.lock().await;
+        inner.restore_volume(&self.host, &self.speech).await;
     }
 
     /// Called when the link drops. Music that was playing through the
@@ -290,7 +315,7 @@ impl Media {
     /// resumes it like one put back after being taken out.
     pub async fn link_dropped(&self) {
         let mut inner = self.inner.lock().await;
-        inner.restore_volume(&self.speech).await;
+        inner.restore_volume(&self.host, &self.speech).await;
         let Some((at, names)) = inner.last_playing.take() else {
             return;
         };
@@ -309,7 +334,7 @@ impl Media {
     /// that is idle does: music paused by hand stays paused.
     pub async fn note_playback(&self) {
         let mut inner = self.inner.lock().await;
-        if let Some(names) = inner.playing_players().await {
+        if let Some(names) = inner.playing_players(&self.host).await {
             inner.last_playing = (!names.is_empty()).then(|| (Instant::now(), names));
         }
     }
@@ -323,7 +348,7 @@ impl Media {
         }
         if inner.spoke_at.is_some_and(|t| t.elapsed() > DUCK_WATCHDOG) {
             warn!("no end of speech reported — restoring the volume");
-            inner.restore_volume(&self.speech).await;
+            inner.restore_volume(&self.host, &self.speech).await;
         }
     }
 
@@ -332,20 +357,20 @@ impl Media {
     /// has moved since, in which case it is somebody's choice now.
     pub async fn recover_duck(&self) {
         // The sink shows up a moment after the connect edge.
-        let Some(note) = read_duck() else {
+        let Some(note) = self.host.read_note() else {
             return;
         };
-        if !wait_for_sink(&note.addr).await {
+        if !wait_for_sink(&self.host, &note.addr).await {
             return;
         }
         let mut inner = self.inner.lock().await;
         if inner.ducked_from.is_some() {
             return;
         }
-        let Some(note) = read_duck() else {
+        let Some(note) = self.host.read_note() else {
             return;
         };
-        let Some(now) = current_volume(&note.addr).await else {
+        let Some(now) = self.host.volume(&note.addr).await else {
             return;
         };
         if now.abs_diff(note.to) > 1 {
@@ -354,17 +379,17 @@ impl Media {
                 ducked_to = note.to,
                 "volume moved since — dropping the note"
             );
-            clear_duck();
+            self.host.clear_note();
             return;
         }
         let gen_now = self.speech.load(Ordering::SeqCst);
         let stop = Some((Arc::clone(&self.speech), gen_now));
-        if fade(&note.addr, now, note.from, RESTORE_TICK, stop).await {
+        if fade(&self.host, &note.addr, now, note.from, RESTORE_TICK, stop).await {
             info!(
                 to = note.from,
                 "undid a duck left behind by an earlier session"
             );
-            clear_duck();
+            self.host.clear_note();
         } else if self.speech.load(Ordering::SeqCst) != gen_now {
             // Speech came in meanwhile: the note's duck is ours now, so
             // that the volume ends up back at the level before it.
@@ -377,14 +402,14 @@ impl Media {
 }
 
 impl Inner {
-    async fn restore_volume(&mut self, speech: &Arc<AtomicU64>) {
+    async fn restore_volume<H: Host>(&mut self, host: &H, speech: &Arc<AtomicU64>) {
         let Some(addr) = self.addr.clone() else {
             return;
         };
         let Some(vol) = self.ducked_from else {
             return;
         };
-        let Some(from) = current_volume(&addr).await else {
+        let Some(from) = host.volume(&addr).await else {
             // The sink went with the link. The note on disk stays for
             // `recover_duck` to finish this once it is back.
             debug!("no sink to restore on — keeping the note");
@@ -403,14 +428,14 @@ impl Inner {
             && from.abs_diff(to) > 1
         {
             debug!(from, to, "volume moved during the duck — leaving it alone");
-            self.forget_duck();
+            self.forget_duck(host);
             return;
         }
         let gen_now = speech.load(Ordering::SeqCst);
         let stop = Some((Arc::clone(speech), gen_now));
-        if fade(&addr, from, vol, RESTORE_TICK, stop).await {
+        if fade(host, &addr, from, vol, RESTORE_TICK, stop).await {
             info!(to = vol, "speech ended — volume restored");
-            self.forget_duck();
+            self.forget_duck(host);
         } else if speech.load(Ordering::SeqCst) != gen_now {
             debug!("speech again while restoring");
             self.cut_short = true;
@@ -419,47 +444,29 @@ impl Inner {
 
     /// Only after a fade that worked: a sink that went away mid-restore
     /// must stay on the list, or the duck is lost for good.
-    fn forget_duck(&mut self) {
+    fn forget_duck<H: Host>(&mut self, host: &H) {
         self.ducked_from = None;
         self.ducked_to = None;
         self.cut_short = false;
         self.spoke_at = None;
-        clear_duck();
-    }
-
-    async fn connection(&mut self) -> Option<Connection> {
-        if self.conn.is_none() {
-            match Connection::session().await {
-                Ok(c) => self.conn = Some(c),
-                Err(e) => {
-                    warn!(error = %e, "session bus unavailable — no media control");
-                    return None;
-                }
-            }
-        }
-        self.conn.clone()
+        host.clear_note();
     }
 
     /// One per track: a mirror plays the same title, and `play` skips a
     /// player that is already back by the time it gets to it.
     /// `None` while the buds have no sink to look at.
-    async fn playing_players(&mut self) -> Option<Vec<String>> {
+    async fn playing_players<H: Host>(&mut self, host: &H) -> Option<Vec<String>> {
         let addr = self.addr.clone()?;
-        let running = tokio::task::spawn_blocking(move || audio::sink_state_for(&addr))
-            .await
-            .ok()
-            .flatten()?;
-        if !running {
+        if !host.sink_running(&addr).await? {
             return Some(Vec::new());
         }
-        let conn = self.connection().await?;
         let mut names = Vec::new();
         let mut tracks: Vec<String> = Vec::new();
-        for name in players(&conn).await {
-            if status(&conn, &name).await.as_deref() != Some("Playing") {
+        for name in host.players().await {
+            if host.status(&name).await.as_deref() != Some("Playing") {
                 continue;
             }
-            let track = title(&conn, &name).await;
+            let track = host.title(&name).await;
             if track.as_ref().is_some_and(|t| tracks.contains(t)) {
                 continue;
             }
@@ -471,35 +478,26 @@ impl Inner {
 
     /// Ducking silence only makes the volume jump in the OSD and mixer.
     /// Both must agree: the sink carries audio and a player says Playing.
-    async fn music_playing(&mut self) -> bool {
+    async fn music_playing<H: Host>(&mut self, host: &H) -> bool {
         let Some(addr) = self.addr.clone() else {
             return false;
         };
-        let running = tokio::task::spawn_blocking(move || audio::sink_running_for(&addr))
-            .await
-            .unwrap_or(false);
-        if !running {
+        if host.sink_running(&addr).await != Some(true) {
             return false;
         }
-        let Some(conn) = self.connection().await else {
-            return false;
-        };
-        for name in players(&conn).await {
-            if status(&conn, &name).await.as_deref() == Some("Playing") {
+        for name in host.players().await {
+            if host.status(&name).await.as_deref() == Some("Playing") {
                 return true;
             }
         }
         false
     }
 
-    async fn pause_playing(&mut self) -> Vec<String> {
-        let Some(conn) = self.connection().await else {
-            return Vec::new();
-        };
+    async fn pause_playing<H: Host>(&mut self, host: &H) -> Vec<String> {
         let mut playing = Vec::new();
-        for name in players(&conn).await {
-            if status(&conn, &name).await.as_deref() == Some("Playing") {
-                let track = title(&conn, &name).await;
+        for name in host.players().await {
+            if host.status(&name).await.as_deref() == Some("Playing") {
+                let track = host.title(&name).await;
                 playing.push((name, track));
             }
         }
@@ -514,10 +512,10 @@ impl Inner {
                 debug!(player = %name, "mirrors a track already paused — skipped");
                 continue;
             }
-            if status(&conn, name).await.as_deref() != Some("Playing") {
+            if host.status(name).await.as_deref() != Some("Playing") {
                 continue;
             }
-            if let Err(e) = call(&conn, name, "Pause").await {
+            if let Err(e) = host.call(name, "Pause").await {
                 debug!(player = %name, error = %e, "pause failed");
                 continue;
             }
@@ -531,7 +529,7 @@ impl Inner {
                 if done.contains(other) {
                     continue;
                 }
-                if status(&conn, other).await.as_deref() != Some("Playing") {
+                if host.status(other).await.as_deref() != Some("Playing") {
                     done.push(other.clone());
                     tracks.extend(other_track.clone());
                 }
@@ -540,24 +538,117 @@ impl Inner {
         paused
     }
 
-    async fn play(&mut self, names: &[String]) -> Vec<String> {
-        let Some(conn) = self.connection().await else {
-            return Vec::new();
-        };
+    async fn play<H: Host>(&mut self, host: &H, names: &[String]) -> Vec<String> {
         let mut resumed = Vec::new();
         for name in names {
             // Paused by someone else in the meantime, or already brought
             // back by a player we resumed before it.
-            if status(&conn, name).await.as_deref() != Some("Paused") {
+            if host.status(name).await.as_deref() != Some("Paused") {
                 continue;
             }
-            match call(&conn, name, "Play").await {
+            match host.call(name, "Play").await {
                 Ok(()) => resumed.push(name.clone()),
                 Err(e) => debug!(player = %name, error = %e, "play failed"),
             }
             tokio::time::sleep(SETTLE).await;
         }
         resumed
+    }
+}
+
+/// The real thing: `pactl` and `pw-record`, MPRIS on the session bus,
+/// and the note in `$XDG_STATE_HOME`.
+#[derive(Default)]
+pub struct System {
+    conn: Mutex<Option<Connection>>,
+}
+
+impl System {
+    async fn connection(&self) -> Option<Connection> {
+        let mut conn = self.conn.lock().await;
+        if conn.is_none() {
+            match Connection::session().await {
+                Ok(c) => *conn = Some(c),
+                Err(e) => {
+                    warn!(error = %e, "session bus unavailable — no media control");
+                    return None;
+                }
+            }
+        }
+        conn.clone()
+    }
+}
+
+impl Host for System {
+    async fn sink(&self, addr: &str) -> Option<SinkInfo> {
+        let addr = addr.to_string();
+        tokio::task::spawn_blocking(move || audio::sink_for(&addr))
+            .await
+            .ok()
+            .flatten()
+    }
+
+    async fn sink_running(&self, addr: &str) -> Option<bool> {
+        let addr = addr.to_string();
+        tokio::task::spawn_blocking(move || audio::sink_state_for(&addr))
+            .await
+            .ok()
+            .flatten()
+    }
+
+    async fn volume(&self, addr: &str) -> Option<u8> {
+        let addr = addr.to_string();
+        tokio::task::spawn_blocking(move || audio::snapshot(&addr).volume_percent)
+            .await
+            .ok()
+            .flatten()
+    }
+
+    async fn set_volume_tenths(&self, sink: &SinkInfo, tenths: u16) -> bool {
+        let sink = sink.clone();
+        tokio::task::spawn_blocking(move || audio::set_volume_tenths(&sink, tenths).is_ok())
+            .await
+            .unwrap_or(false)
+    }
+
+    async fn measure_db(&self, addr: &str) -> Option<f64> {
+        let addr = addr.to_string();
+        tokio::task::spawn_blocking(move || measure_db(&addr))
+            .await
+            .ok()
+            .flatten()
+    }
+
+    async fn players(&self) -> Vec<String> {
+        match self.connection().await {
+            Some(conn) => players(&conn).await,
+            None => Vec::new(),
+        }
+    }
+
+    async fn status(&self, player: &str) -> Option<String> {
+        status(&self.connection().await?, player).await
+    }
+
+    async fn title(&self, player: &str) -> Option<String> {
+        title(&self.connection().await?, player).await
+    }
+
+    async fn call(&self, player: &str, method: &str) -> Result<(), String> {
+        let conn = self.connection().await.ok_or("no session bus")?;
+        call(&conn, player, method).await.map_err(|e| e.to_string())
+    }
+
+    fn read_note(&self) -> Option<Ducked> {
+        read_duck()
+    }
+
+    fn write_note(&self, d: &Ducked) {
+        write_duck(d);
+    }
+
+    fn clear_note(&self) {
+        clear_duck();
     }
 }
 
@@ -607,8 +698,8 @@ async fn call(conn: &Connection, name: &str, method: &str) -> zbus::Result<()> {
 /// a crash, a logout, a SIGTERM — would otherwise leave the sink quiet
 /// for good: PipeWire remembers the level per device, so the next
 /// session starts quiet and nothing knows why.
-#[derive(serde::Serialize, serde::Deserialize)]
-struct Ducked {
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Ducked {
     addr: String,
     from: u8,
     to: u8,
@@ -691,17 +782,14 @@ fn resume_settle(since_pause: Option<Duration>) -> Duration {
     }
 }
 
-async fn airpods_are_output(addr: &str) -> bool {
-    let addr = addr.to_string();
-    tokio::task::spawn_blocking(move || audio::sink_for(&addr).is_some_and(|s| s.is_default))
-        .await
-        .unwrap_or(false)
+async fn airpods_are_output<H: Host>(host: &H, addr: &str) -> bool {
+    host.sink(addr).await.is_some_and(|s| s.is_default)
 }
 
-async fn wait_for_airpods_output(addr: &str) -> bool {
+async fn wait_for_airpods_output<H: Host>(host: &H, addr: &str) -> bool {
     let deadline = Instant::now() + SINK_WAIT;
     loop {
-        if airpods_are_output(addr).await {
+        if airpods_are_output(host, addr).await {
             return true;
         }
         if Instant::now() >= deadline {
@@ -711,14 +799,10 @@ async fn wait_for_airpods_output(addr: &str) -> bool {
     }
 }
 
-async fn wait_for_sink(addr: &str) -> bool {
+async fn wait_for_sink<H: Host>(host: &H, addr: &str) -> bool {
     let deadline = Instant::now() + SINK_WAIT;
     loop {
-        let a = addr.to_string();
-        let found = tokio::task::spawn_blocking(move || audio::sink_for(&a).is_some())
-            .await
-            .unwrap_or(false);
-        if found {
+        if host.sink(addr).await.is_some() {
             return true;
         }
         if Instant::now() >= deadline {
@@ -726,14 +810,6 @@ async fn wait_for_sink(addr: &str) -> bool {
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
-}
-
-async fn current_volume(addr: &str) -> Option<u8> {
-    let addr = addr.to_string();
-    tokio::task::spawn_blocking(move || audio::snapshot(&addr).volume_percent)
-        .await
-        .ok()
-        .flatten()
 }
 
 /// PipeWire maps volume percent to gain cubically: dB = 60 · log10(v).
@@ -750,32 +826,26 @@ fn duck_first(vol: u8) -> u8 {
 }
 
 /// RMS level of what is playing to the AirPods, before the sink volume.
-async fn measure_db(addr: &str) -> Option<f64> {
-    let addr = addr.to_string();
-    tokio::task::spawn_blocking(move || {
-        let sink = audio::sink_for(&addr)?;
-        let mut child = audio::capture_cmd(&sink.name, 44_100, 2)?
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .ok()?;
-        let mut out = child.stdout.take()?;
-        let want = (44_100.0 * 4.0 * MEASURE.as_secs_f64()) as usize;
-        let mut buf = vec![0u8; want];
-        let mut got = 0;
-        while got < want {
-            match std::io::Read::read(&mut out, &mut buf[got..]) {
-                Ok(0) | Err(_) => break,
-                Ok(n) => got += n,
-            }
+fn measure_db(addr: &str) -> Option<f64> {
+    let sink = audio::sink_for(addr)?;
+    let mut child = audio::capture_cmd(&sink.name, 44_100, 2)?
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+    let mut out = child.stdout.take()?;
+    let want = (44_100.0 * 4.0 * MEASURE.as_secs_f64()) as usize;
+    let mut buf = vec![0u8; want];
+    let mut got = 0;
+    while got < want {
+        match std::io::Read::read(&mut out, &mut buf[got..]) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => got += n,
         }
-        let _ = child.kill();
-        let _ = child.wait();
-        loud_db(buf[..got].as_chunks::<2>().0)
-    })
-    .await
-    .ok()
-    .flatten()
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    loud_db(buf[..got].as_chunks::<2>().0)
 }
 
 /// 80th-percentile block RMS in dBFS.
@@ -801,41 +871,37 @@ fn loud_db(samples: &[[u8; 2]]) -> Option<f64> {
 
 /// Stops early, and reports failure, once `stop`'s counter has moved on
 /// from the value given with it.
-async fn fade(
+async fn fade<H: Host>(
+    host: &H,
     addr: &str,
     from: u8,
     to: u8,
     tick: Duration,
     stop: Option<(Arc<AtomicU64>, u64)>,
 ) -> bool {
-    let addr = addr.to_string();
-    tokio::task::spawn_blocking(move || {
-        let Some(sink) = audio::sink_for(&addr) else {
+    let Some(sink) = host.sink(addr).await else {
+        return false;
+    };
+    let (mut v, end) = (i32::from(from) * 10, i32::from(to) * 10);
+    let step = if end < v {
+        -FADE_STEP_TENTHS
+    } else {
+        FADE_STEP_TENTHS
+    };
+    while (end - v).abs() > FADE_STEP_TENTHS {
+        if stop
+            .as_ref()
+            .is_some_and(|(n, at)| n.load(Ordering::SeqCst) != *at)
+        {
             return false;
-        };
-        let (mut v, end) = (i32::from(from) * 10, i32::from(to) * 10);
-        let step = if end < v {
-            -FADE_STEP_TENTHS
-        } else {
-            FADE_STEP_TENTHS
-        };
-        while (end - v).abs() > FADE_STEP_TENTHS {
-            if stop
-                .as_ref()
-                .is_some_and(|(n, at)| n.load(Ordering::SeqCst) != *at)
-            {
-                return false;
-            }
-            v += step;
-            if audio::set_volume_tenths(&sink, v as u16).is_err() {
-                return false;
-            }
-            std::thread::sleep(tick);
         }
-        audio::set_volume(&sink, to).is_ok()
-    })
-    .await
-    .unwrap_or(false)
+        v += step;
+        if !host.set_volume_tenths(&sink, v as u16).await {
+            return false;
+        }
+        tokio::time::sleep(tick).await;
+    }
+    host.set_volume_tenths(&sink, u16::from(to) * 10).await
 }
 
 #[cfg(test)]
@@ -965,3 +1031,4 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+
