@@ -25,7 +25,7 @@ const HOP_MS: f32 = 560.0;
 const HOP_L_FROM: f32 = 110.0;
 const HOP_R_FROM: f32 = 180.0;
 const LED_FROM: f32 = 260.0;
-const LED_MS: f32 = 320.0;
+pub const LED_MS: f32 = 320.0;
 
 /// The products during the entry: how high each bud hops (logical px)
 /// and how far the case's charging light has come on.
@@ -42,6 +42,15 @@ impl Art {
         right: 0.0,
         led: 1.0,
     };
+}
+
+pub fn ease_in_out_cubic(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    if t < 0.5 {
+        4.0 * t * t * t
+    } else {
+        1.0 - (-2.0 * t + 2.0).powi(3) / 2.0
+    }
 }
 
 pub fn ease_out_cubic(t: f32) -> f32 {
@@ -91,6 +100,14 @@ pub struct Gauge {
     pub text: f32,
     pub bolt: f32,
     pub stroke: f32,
+    /// The number `text` is replacing, when a value changes; `None`
+    /// when it replaces the "—".
+    pub prev: Option<u8>,
+    /// How green a charging ring has turned.
+    pub green: f32,
+    pub alpha: f32,
+    /// How far a split L or R readout still sits towards the middle.
+    pub inset: f32,
 }
 
 impl Gauge {
@@ -99,6 +116,10 @@ impl Gauge {
         text: 1.0,
         bolt: 1.0,
         stroke: STROKE,
+        prev: None,
+        green: 1.0,
+        alpha: 1.0,
+        inset: 0.0,
     };
 }
 
@@ -110,12 +131,62 @@ pub fn gauge(ms: f32, i: usize, low: bool) -> Gauge {
     Gauge {
         fill: ease_out_quint(t / RING_MS),
         text: (t / SWAP_MS).clamp(0.0, 1.0),
-        bolt: ((((t - BOLT_FROM_MS) / BOLT_STEP_MS).floor() + 1.0) / BOLT_STEPS).clamp(0.0, 1.0),
+        bolt: bolt(t - BOLT_FROM_MS),
         stroke: if low && (0.0..1.0).contains(&pulse) {
             STROKE + PULSE_PX * (std::f32::consts::PI * pulse).sin()
         } else {
             STROKE
         },
+        ..Gauge::REST
+    }
+}
+
+/// How long a change while the card is up takes to play out.
+pub const UPDATE_MS: f32 = 460.0;
+const TWEEN_MS: f32 = 450.0;
+const DIGITS_MS: f32 = 260.0;
+const GREEN_MS: f32 = 260.0;
+const SPLIT_MS: f32 = 360.0;
+/// L and R come apart from 24 px either side of the middle to 40.
+pub const SPLIT_INSET: f32 = 16.0;
+
+/// How far a ring has moved from its old value to its new one.
+pub fn tween(ms: f32) -> f32 {
+    ease_in_out_cubic(ms / TWEEN_MS)
+}
+
+/// How far the digits have changed (0 to 1) `ms` into a change.
+pub fn digits(ms: f32) -> f32 {
+    (ms / DIGITS_MS).clamp(0.0, 1.0)
+}
+
+/// A charging ring turning green.
+pub fn green(ms: f32) -> f32 {
+    ease_in_out_cubic(ms / GREEN_MS)
+}
+
+/// A bolt coming in, in its four steps.
+pub fn bolt(ms: f32) -> f32 {
+    (((ms / BOLT_STEP_MS).floor() + 1.0) / BOLT_STEPS).clamp(0.0, 1.0)
+}
+
+/// L and R coming apart or together: the leaving layout's opacity, the
+/// arriving one's, and how far the arriving one has slid into place.
+pub fn split(ms: f32) -> (f32, f32, f32) {
+    let u = (ms / SPLIT_MS).clamp(0.0, 1.0);
+    let inn = ((u - 0.35) / 0.65).clamp(0.0, 1.0);
+    (1.0 - (u / 0.4).clamp(0.0, 1.0), inn, ease_out_cubic(inn))
+}
+
+/// The old number goes up and out in the first 45 %, the new one comes
+/// up from below in the rest.
+pub fn swap_digits(u: f32, new: bool) -> (f32, f32) {
+    if new {
+        let v = ((u - 0.45) / 0.55).clamp(0.0, 1.0);
+        (v, DRIFT_PX * (1.0 - ease_out_cubic(v)))
+    } else {
+        let v = (u / 0.45).clamp(0.0, 1.0);
+        (1.0 - v, -DRIFT_PX * ease_out_cubic(v))
     }
 }
 
@@ -361,6 +432,22 @@ mod tests {
             assert_eq!((q.dy, q.scale), (0.0, 1.0));
         }
         assert!(calm_entry(CALM_MS).is_none() && calm_exit(CALM_MS, Pose::REST).is_none());
+    }
+
+    #[test]
+    fn updates_play_out_in_time() {
+        assert_eq!((tween(0.0), tween(TWEEN_MS)), (0.0, 1.0));
+        assert_eq!((green(0.0), green(GREEN_MS)), (0.0, 1.0));
+        assert_eq!(bolt(-1.0), 0.0);
+        assert_eq!(bolt(BOLT_MS), 1.0);
+        let (out, inn, slid) = split(SPLIT_MS);
+        assert_eq!((out, inn, slid), (0.0, 1.0, 1.0));
+        assert_eq!(split(0.0), (1.0, 0.0, 0.0));
+        assert!(UPDATE_MS >= TWEEN_MS.max(SPLIT_MS).max(BOLT_MS).max(GREEN_MS));
+        for i in 0..=100 {
+            let u = i as f32 / 100.0;
+            assert!(swap_digits(u, false).0 == 0.0 || swap_digits(u, true).0 == 0.0);
+        }
     }
 
     #[test]

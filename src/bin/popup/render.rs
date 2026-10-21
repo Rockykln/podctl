@@ -4,7 +4,7 @@
 use podctl::model::Mode;
 use tiny_skia::*;
 
-use crate::anim::{Gauge, swap_text};
+use crate::anim::{Gauge, swap_digits, swap_text};
 use crate::art::{Art, draw_case, draw_max, draw_pair};
 use crate::paint::*;
 
@@ -328,15 +328,19 @@ fn faded(c: Color, alpha: f32) -> Color {
     c
 }
 
-/// How many readouts the card shows, left to right.
-pub fn readout_count(snap: &Snapshot) -> usize {
+/// What the readouts show, left to right.
+pub fn readout_pods(snap: &Snapshot) -> Vec<Pod> {
     if snap.art.is_max() {
-        1
-    } else if merged(snap.left, snap.right).is_some() {
-        2
+        vec![snap.left]
+    } else if let Some(both) = merged(snap.left, snap.right) {
+        vec![both, snap.case]
     } else {
-        3
+        vec![snap.left, snap.right, snap.case]
     }
+}
+
+pub fn readout_count(snap: &Snapshot) -> usize {
+    readout_pods(snap).len()
 }
 
 /// The readouts, readout `i` as `gauge(i, low)` has it.
@@ -371,8 +375,9 @@ pub fn draw_readouts(
         readout(pm, pal, s, ca, base, None, both, g(0, both));
         readout(pm, pal, s, cb, base, None, snap.case, g(1, snap.case));
     } else {
-        readout(pm, pal, s, ca - 40.0, base, Some("L"), l, g(0, l));
-        readout(pm, pal, s, ca + 40.0, base, Some("R"), r, g(1, r));
+        let (gl, gr) = (g(0, l), g(1, r));
+        readout(pm, pal, s, ca - 40.0 + gl.inset, base, Some("L"), l, gl);
+        readout(pm, pal, s, ca + 40.0 - gr.inset, base, Some("R"), r, gr);
         readout(pm, pal, s, cb, base, None, snap.case, g(2, snap.case));
     }
 }
@@ -446,6 +451,22 @@ fn ring_color(pal: &Pal, p: Pod) -> Color {
     }
 }
 
+/// The ring's colour with `green` of the way from what it was before
+/// the case began to charge.
+fn ring_color_at(pal: &Pal, p: Pod, green: f32) -> Color {
+    if !p.charging || green >= 1.0 {
+        return ring_color(pal, p);
+    }
+    let before = ring_color(
+        pal,
+        Pod {
+            charging: false,
+            ..p
+        },
+    );
+    mix(before, pal.green, green)
+}
+
 fn bolt(cx: f32, cy: f32, h: f32) -> Path {
     let w = h * 0.62;
     let (x, y) = (cx - w / 2.0, cy - h / 2.0);
@@ -487,14 +508,15 @@ fn readout(
     let bolt_w = if p.charging { 9.0 } else { 0.0 };
     let total = lab_w + ring_d + 6.0 + pct_w + bolt_w;
     let mut x = cx - total / 2.0;
+    let a = g.alpha;
     if let Some(l) = label {
-        text(pm, t, l, x, base, lab_px, 0.5, pal.sub, 0.0);
+        text(pm, t, l, x, base, lab_px, 0.5, faded(pal.sub, a), 0.0);
         x += lab_w;
     }
     let rc = (x + ring_d / 2.0, base - 4.6);
     let rr = ring_d / 2.0 - 1.3;
     if let Some(full) = arc(rc.0, rc.1, rr, 0.0, std::f32::consts::TAU) {
-        stroke(pm, &full, pal.track, g.stroke, LineCap::Butt, t);
+        stroke(pm, &full, faded(pal.track, a), g.stroke, LineCap::Butt, t);
     }
     if let Some(l) = p.level {
         let a0 = -std::f32::consts::FRAC_PI_2;
@@ -502,7 +524,8 @@ fn readout(
         if f > 0.005
             && let Some(a) = arc(rc.0, rc.1, rr, a0, a0 + f * std::f32::consts::TAU)
         {
-            stroke(pm, &a, ring_color(pal, p), g.stroke, LineCap::Round, t);
+            let c = faded(ring_color_at(pal, p, g.green), g.alpha);
+            stroke(pm, &a, c, g.stroke, LineCap::Round, t);
         }
     }
     x += ring_d + 6.0;
@@ -511,11 +534,52 @@ fn readout(
         Some(_) => pal.text,
         None => pal.sub,
     };
+    let tc = faded(tc, a);
     if g.text >= 1.0 || p.level.is_none() {
         text(pm, t, &pct, x, base, pct_px, 0.55, tc, 0.0);
+    } else if let Some(prev) = g.prev {
+        let (old, ody) = swap_digits(g.text, false);
+        if old > 0.0 {
+            let was = format!("{prev}%");
+            text(
+                pm,
+                t,
+                &was,
+                x,
+                base + ody,
+                pct_px,
+                0.55,
+                faded(tc, old),
+                0.0,
+            );
+        }
+        let (new, ndy) = swap_digits(g.text, true);
+        if new > 0.0 {
+            text(
+                pm,
+                t,
+                &pct,
+                x,
+                base + ndy,
+                pct_px,
+                0.55,
+                faded(tc, new),
+                0.0,
+            );
+        }
     } else {
         let (dash, _) = swap_text(g.text, false);
-        text(pm, t, "—", x, base, pct_px, 0.55, faded(pal.sub, dash), 0.0);
+        text(
+            pm,
+            t,
+            "—",
+            x,
+            base,
+            pct_px,
+            0.55,
+            faded(pal.sub, dash * a),
+            0.0,
+        );
         let (num, dy) = swap_text(g.text, true);
         if num > 0.0 {
             text(pm, t, &pct, x, base + dy, pct_px, 0.55, faded(tc, num), 0.0);
@@ -526,7 +590,7 @@ fn readout(
         fill(
             pm,
             &bolt(x + 5.5, base - 4.6, 10.0),
-            faded(pal.green, g.bolt),
+            faded(pal.green, g.bolt * a),
             t,
         );
     }

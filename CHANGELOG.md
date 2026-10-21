@@ -269,6 +269,11 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
   play the same way, and the status line changes without two texts ever
   overlapping. The Wayland bubble keeps three buffers, so a frame no
   longer waits a quarter of a second for one to come back.
+- Changes while the bubble is up play out too: a ring slides to its new
+  level as the old number leaves upwards and the new one comes in from
+  below, a case put on charge turns green and lights up, and the shared
+  reading for both buds splits into left and right when they drift
+  apart, and back again. `--demo --updates` shows all of it.
 - **Less motion when the desktop asks for it.** `motion` in `popup.toml`
   (`auto`, the default, `full`, `reduced`) follows GNOME's animations
   switch, KDE's animation speed and the portal's reduced-motion key; the

@@ -98,8 +98,10 @@ impl Layers {
     /// Each part on a thread of its own: one after the other they take
     /// longer than the entry waits for its first hop.
     pub fn build(snap: &Snapshot, pal: &Pal, s: f32) -> Layers {
+        // The case dark and lit either way, so a case that begins to
+        // charge while the card is up can light without a rebuild.
         let mut jobs = Part::products(snap);
-        if let Some(i) = jobs.iter().position(|p| *p == Part::Case { led: true }) {
+        if let Some(i) = jobs.iter().position(|p| matches!(p, Part::Case { .. })) {
             jobs[i] = Part::Case { led: false };
             jobs.push(Part::Case { led: true });
         }
@@ -187,7 +189,11 @@ mod tests {
         ] {
             let snap = Snapshot::sample_for(model);
             let want = render::render(&snap, &pal, scale);
-            let got = Layers::build(&snap, &pal, scale).compose(Art::REST, &|pm| {
+            let art = Art {
+                led: if snap.case.charging { 1.0 } else { 0.0 },
+                ..Art::REST
+            };
+            let got = Layers::build(&snap, &pal, scale).compose(art, &|pm| {
                 render::draw_status(pm, snap.status(), &pal, scale, 1.0, 0.0);
                 render::draw_readouts(pm, &snap, &pal, scale, &|_, _| Gauge::REST);
             });
@@ -203,13 +209,13 @@ mod tests {
     }
 
     #[test]
-    fn a_charging_case_has_its_light_apart() {
+    fn the_case_light_is_a_layer_of_its_own() {
         let mut snap = Snapshot::sample_for(Model::Pro2C);
         snap.case.charging = true;
         let l = Layers::build(&snap, &dark(), 2.0);
         let led = l.led.as_ref().expect("lit case differs from the dark one");
         assert!(led.pm.width() < 60 && led.pm.height() < 60);
         snap.case.charging = false;
-        assert!(Layers::build(&snap, &dark(), 2.0).led.is_none());
+        assert!(Layers::build(&snap, &dark(), 2.0).led.is_some());
     }
 }

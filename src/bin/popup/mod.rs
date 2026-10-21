@@ -91,7 +91,8 @@ async fn main() -> ExitCode {
             Some(Some(m)) => is_calm(m).await,
             None => is_calm(MotionPick::Auto).await,
         };
-        let out = thread::spawn(move || demo(&theme, calm, want, hold)).join();
+        let updates = args.iter().any(|a| a == "--updates");
+        let out = thread::spawn(move || demo(&theme, calm, updates, want, hold)).join();
         return match out {
             Ok(Ok(())) => ExitCode::SUCCESS,
             Ok(Err(e)) => fail(&format!("demo: {e:#}"), exitcode::UNAVAILABLE),
@@ -356,6 +357,31 @@ struct Card {
     status_from: Option<(Instant, &'static str)>,
     /// Less motion asked for: new values just appear.
     calm: bool,
+    /// A change while the card is up: when, and the card before it.
+    update: Option<(Instant, Snapshot)>,
+    charge_at: Option<Instant>,
+    /// `bgra` shows an older snapshot. Drawing the card whole takes a
+    /// good part of a second at 2×; while the layers make the frames it
+    /// waits until they are done.
+    stale: bool,
+}
+
+/// One readout through a change from `old` to `new`, `ms` in.
+fn changing(old: Pod, new: Pod, ms: f32) -> anim::Gauge {
+    let mut g = anim::Gauge::REST;
+    if let (Some(o), Some(n)) = (old.level, new.level)
+        && o != n
+    {
+        let shown = o as f32 + (n as f32 - o as f32) * anim::tween(ms);
+        g.fill = if n == 0 { 1.0 } else { shown / n as f32 };
+        g.text = anim::digits(ms);
+        g.prev = Some(o);
+    }
+    if new.charging && !old.charging {
+        g.green = anim::green(ms);
+        g.bolt = anim::bolt(ms);
+    }
+    g
 }
 
 fn has_values(s: &Snapshot) -> bool {
@@ -364,8 +390,8 @@ fn has_values(s: &Snapshot) -> bool {
 
 /// What the layers are drawn from; the values and the status line are
 /// drawn on top per frame.
-fn layer_key(s: &Snapshot) -> (String, Art, bool) {
-    (s.name.clone(), s.art, s.case.charging)
+fn layer_key(s: &Snapshot) -> (String, Art) {
+    (s.name.clone(), s.art)
 }
 
 impl Card {
@@ -389,6 +415,9 @@ impl Card {
             values_at: None,
             status_from: None,
             calm: false,
+            update: None,
+            charge_at: None,
+            stale: false,
         };
         c.draw();
         c
@@ -421,18 +450,62 @@ impl Card {
             now.saturating_duration_since(self.lit_at).as_secs_f32() * 1000.0 < anim::KNOB_MS;
         let n = render::readout_count(&self.snap);
         let since = |t: Instant| now.saturating_duration_since(t).as_secs_f32() * 1000.0;
+        let changing = self
+            .update
+            .as_ref()
+            .is_some_and(|(t, _)| since(*t) < anim::UPDATE_MS);
         // Before its start the timeline counts as running too.
-        knob || self
-            .values_at
-            .is_some_and(|t| t > now || anim::gauges_moving(since(t), n))
+        knob || changing
+            || self
+                .values_at
+                .is_some_and(|t| t > now || anim::gauges_moving(since(t), n))
             || self
                 .status_from
                 .is_some_and(|(t, _)| anim::status_swap(since(t)).is_some())
     }
 
+    /// The readouts `ms` into a change from `old`. Where L and R come
+    /// apart or together the two layouts cross over; the case readout
+    /// stays where it is.
+    fn draw_change(&self, pm: &mut tiny_skia::Pixmap, old: &Snapshot, ms: f32) {
+        let (pal, s) = (&self.theme, self.scale);
+        let (was, now) = (render::readout_pods(old), render::readout_pods(&self.snap));
+        if was.len() == now.len() {
+            render::draw_readouts(pm, &self.snap, pal, s, &|i, _| changing(was[i], now[i], ms));
+            return;
+        }
+        let (out, inn, slid) = anim::split(ms);
+        let case_old = was.len() - 1;
+        let case_new = now.len() - 1;
+        let splitting = now.len() > was.len();
+        render::draw_readouts(pm, old, pal, s, &|i, _| anim::Gauge {
+            alpha: if i == case_old { 0.0 } else { out },
+            inset: if splitting {
+                0.0
+            } else {
+                anim::SPLIT_INSET * (1.0 - out)
+            },
+            ..anim::Gauge::REST
+        });
+        render::draw_readouts(pm, &self.snap, pal, s, &|i, _| {
+            if i == case_new {
+                return changing(was[case_old], now[case_new], ms);
+            }
+            anim::Gauge {
+                alpha: inn,
+                inset: if splitting {
+                    anim::SPLIT_INSET * (1.0 - slid)
+                } else {
+                    0.0
+                },
+                ..anim::Gauge::REST
+            }
+        });
+    }
+
     /// The status line and the readouts as they are at `now`.
     fn overlay(&self, now: Instant) -> impl Fn(&mut tiny_skia::Pixmap) + '_ {
-        let ms = |t: Instant| {
+        let ms = move |t: Instant| {
             if t > now {
                 -(t - now).as_secs_f32() * 1000.0
             } else {
@@ -451,6 +524,12 @@ impl Card {
                     render::draw_status(pm, self.snap.status(), pal, s, b, bdy);
                 }
                 None => render::draw_status(pm, self.snap.status(), pal, s, 1.0, 0.0),
+            }
+            if let Some((t, old)) = &self.update
+                && ms(*t) < anim::UPDATE_MS
+            {
+                self.draw_change(pm, old, ms(*t));
+                return;
             }
             render::draw_readouts(pm, &self.snap, pal, s, &|i, low| match values {
                 Some(ms) => anim::gauge(ms, i, low),
@@ -501,6 +580,21 @@ impl Card {
         let art = art.or_else(|| self.settling(now).then_some(anim::Art::REST));
         let _ = self.layers();
         let knob = self.knob(now);
+        // The layers hold the case light either way; it shows only on a
+        // charging case, coming on where the charge began on screen.
+        let art = art.map(|mut a| {
+            a.led = match self.charge_at {
+                _ if !self.snap.case.charging => 0.0,
+                Some(t) => a.led.min(anim::ease_out_cubic(
+                    now.saturating_duration_since(t).as_secs_f32() * 1000.0 / anim::LED_MS,
+                )),
+                None => a.led,
+            };
+            a
+        });
+        if self.stale && (art.is_none() || self.layers.is_none()) {
+            self.draw();
+        }
         let mut moving = match (art, &self.layers) {
             (Some(a), Some(l)) => Some(render::to_bgra_premul(&l.compose(a, &self.overlay(now)))),
             _ => None,
@@ -552,6 +646,7 @@ impl Card {
         (self.w, self.h) = (d.pm.width(), d.pm.height());
         self.bgra = render::to_bgra_premul(&d.pm);
         self.drawn = Some(d);
+        self.stale = false;
     }
 
     /// Start lighting the close button up or down; frames draw only the
@@ -599,10 +694,23 @@ impl Card {
         if !self.calm && self.snap.status() != snap.status() {
             self.status_from = Some((now, self.snap.status()));
         }
+        if !self.calm && has_values(&self.snap) && has_values(&snap) {
+            if render::readout_pods(&self.snap) != render::readout_pods(&snap) {
+                self.update = Some((now, self.snap.clone()));
+            }
+            if snap.case.charging && !self.snap.case.charging {
+                self.charge_at = Some(now);
+            }
+        }
         let rebuild = layer_key(&self.snap) != layer_key(&snap)
             && (self.layers.is_some() || self.pending.is_some());
         self.snap = snap;
-        self.draw();
+        let layered = self.layers.is_some() && !rebuild;
+        if layered && self.settling(now) {
+            self.stale = true;
+        } else {
+            self.draw();
+        }
         if rebuild {
             self.start_layers();
         }
@@ -1283,23 +1391,50 @@ fn frame_at(art: Art, theme: &Theme, scale: f32, at: &str) -> Result<tiny_skia::
     .ok_or_else(wrong)
 }
 
-fn demo(theme: &Theme, calm: bool, want: Option<String>, hold: Duration) -> anyhow::Result<()> {
+type Change = fn(&mut Snapshot);
+
+/// `updates`: the levels change while the card is up, as the design's
+/// update sequence has it, to see those changes play.
+fn demo(
+    theme: &Theme,
+    calm: bool,
+    updates: bool,
+    want: Option<String>,
+    hold: Duration,
+) -> anyhow::Result<()> {
     let pick = BackendPick {
         name: want.clone().unwrap_or_else(|| "wl".into()),
         explicit: want.is_some(),
     };
     // Kept alive, or the cycle reads the closed channel as Quit.
-    let (_tx, rx) = mpsc::channel::<Cmd>();
+    let (tx, rx) = mpsc::channel::<Cmd>();
+    let mut snap = Snapshot::sample();
+    if updates {
+        snap.case.charging = false;
+        let mut s = snap.clone();
+        let tx = tx.clone();
+        thread::spawn(move || {
+            let steps: [(u64, Change); 4] = [
+                (1100, |s| s.case.charging = true),
+                (2000, |s| {
+                    (s.left.level, s.right.level) = (Some(78), Some(76))
+                }),
+                (2900, |s| s.left.level = Some(18)),
+                (4200, |s| s.left.level = Some(76)),
+            ];
+            let t0 = Instant::now();
+            for (at, change) in steps {
+                thread::sleep(Duration::from_millis(at).saturating_sub(t0.elapsed()));
+                change(&mut s);
+                if tx.send(Cmd::Refresh(s.clone())).is_err() {
+                    return;
+                }
+            }
+        });
+    }
     let mut scale = 1.0;
-    show_cycle(
-        &rx,
-        &pick,
-        theme,
-        calm,
-        hold,
-        Snapshot::sample(),
-        &mut scale,
-    );
+    show_cycle(&rx, &pick, theme, calm, hold, snap, &mut scale);
+    drop(tx);
     eprintln!("podctl-popup: scale {scale}");
     Ok(())
 }
@@ -1374,7 +1509,7 @@ fn print_usage() {
         "  podctl-popup --dump <file.png> [--theme auto|dark|light] [--model <slug>] [--scale <n>] [--at entry|exit|dismiss|values:<ms>] [--backdrop]"
     );
     println!(
-        "  podctl-popup --demo [--backend wl|x11|notify] [--theme auto|dark|light] [--motion auto|full|reduced] [--hold <ms>]"
+        "  podctl-popup --demo [--backend wl|x11|notify] [--theme auto|dark|light] [--motion auto|full|reduced] [--hold <ms>] [--updates]"
     );
     println!("  podctl-popup                               (run; watches the daemon)");
 }
