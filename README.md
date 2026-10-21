@@ -213,7 +213,7 @@ podctl --json <cmd>           machine-readable response (every command)
 | `podctl debug [--no-redact]` | diagnostic report (DSGVO-redacted by default) |
 | `podctl tray <start\|stop\|status\|restart>` | status-bar icon (podctl-tray) |
 | `podctl popup` | show the case-open bubble now (podctl-popup) |
-| `podctl reboot` | restart podctld + tray + popup |
+| `podctl reboot` | restart the running podctld, tray and popup |
 | `podctl install [--with-tray] [--with-popup]` / `podctl uninstall` | installer / rollback |
 | `podctl version` (`-V`) | CLI + daemon version |
 | `podctl help [cmd]` | this list / detailed page |

@@ -46,6 +46,10 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
   cannot keep up, it sends the state again instead of leaving a gap.
 
 ### Fixed
+- **`podctl reboot` started services that had been stopped on purpose.**
+  It restarted every installed unit, and `restart` starts a stopped one
+  too — next to a daemon run some other way, that is a second daemon.
+  It restarts what runs or has failed and names what it left alone.
 - **`podctl status` kept showing battery, in-ear state, listening mode
   and settings after the AirPods disconnected.** The link to the buds
   breaks a moment before BlueZ reports the disconnect, and the clean-up

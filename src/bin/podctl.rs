@@ -259,6 +259,7 @@ fn reboot() -> i32 {
 
     let units = ["podctld", "podctl-tray", "podctl-popup"];
     let mut restarted = 0;
+    let mut stopped = 0;
     let mut failed = false;
     for u in units {
         let unit = format!("{u}.service");
@@ -270,6 +271,16 @@ fn reboot() -> i32 {
             .map(|s| s.success())
             .unwrap_or(false);
         if !installed {
+            continue;
+        }
+        let state = Command::new("systemctl")
+            .args(["--user", "is-active", &unit])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default();
+        if !wants_restart(&state) {
+            println!("{PROG}: {u} is not running, left alone (systemctl --user start {u})");
+            stopped += 1;
             continue;
         }
         match Command::new("systemctl")
@@ -287,7 +298,11 @@ fn reboot() -> i32 {
         }
     }
 
-    if restarted == 0 {
+    if restarted == 0 && stopped > 0 && !failed {
+        eprintln!("{PROG}: reboot: none of podctl's services is running.");
+        return exitcode::UNAVAILABLE;
+    }
+    if restarted == 0 && !failed {
         eprintln!("{PROG}: reboot: no podctl systemd user services found.");
         eprintln!(
             "hint: install them with 'podctl install' (optionally --with-tray --with-popup)."
@@ -299,6 +314,16 @@ fn reboot() -> i32 {
     } else {
         exitcode::OK
     }
+}
+
+/// A unit someone stopped stays stopped: starting it could put a second
+/// daemon next to one run some other way. A failed one is what `reboot`
+/// is for.
+fn wants_restart(state: &str) -> bool {
+    matches!(
+        state,
+        "active" | "activating" | "reloading" | "deactivating" | "failed"
+    )
 }
 
 fn pop_flag(args: &mut Vec<String>, flag: &str) -> bool {
@@ -748,4 +773,17 @@ const SIG_DFL: usize = 0;
 unsafe extern "C" {
     #[link_name = "signal"]
     fn libc_signal(sig: i32, handler: usize) -> usize;
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn reboot_leaves_a_stopped_service_alone() {
+        for state in ["active", "activating", "failed"] {
+            assert!(super::wants_restart(state), "{state}");
+        }
+        for state in ["inactive", "unknown", ""] {
+            assert!(!super::wants_restart(state), "{state:?}");
+        }
+    }
 }

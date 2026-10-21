@@ -698,9 +698,11 @@ running podctl-popup.
 const REBOOT: &str = "\
 podctl reboot — restart podctl
 
-Restarts the installed systemd user services (podctld, then podctl-tray and
-podctl-popup if present) so a fresh build or a wedged daemon comes back
-cleanly. No root required. Units that are not installed are skipped.
+Restarts podctl's systemd user services (podctld, then podctl-tray and
+podctl-popup) that are running or have failed, so a fresh build or a
+wedged daemon comes back cleanly. A service that is not running stays
+that way; with none running, reboot changes nothing and exits 69. No
+root required; units that are not installed are skipped.
 
     podctl reboot
 ";

@@ -101,8 +101,9 @@ precedence over the package's, so later `pacman -Syu` upgrades would
 have no effect. Enable the packaged services instead —
 `systemctl --user enable --now podctld` — or pass `--force`.
 
-`podctl reboot` restarts the installed user services by hand, for
-instance after replacing the binaries yourself.
+`podctl reboot` restarts the user services that are running (or have
+failed) by hand, for instance after replacing the binaries yourself; a
+service you stopped stays stopped.
 
 ### Prebuilt binaries
 

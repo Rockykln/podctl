@@ -202,8 +202,10 @@ to show the bubble now (model, connection, battery, mode) \(em the same
 bubble shown on case-open, mode change, or connect.
 .TP
 .B reboot
-Restart the installed systemd user services
-.RB ( podctld ", " podctl-tray ", " podctl-popup ).
+Restart the systemd user services
+.RB ( podctld ", " podctl-tray ", " podctl-popup )
+that are running or have failed; one that is not running stays that
+way, and with none running it exits 69.
 No root required; units that are not installed are skipped.
 .TP
 .BR "install " [ --yes "] [" --force "] [" --no-daemon "] [" --no-completion "] [" --no-manpages "] [" --no-tray "] [" --no-popup "] [" --with-tray "] [" --with-popup ]
