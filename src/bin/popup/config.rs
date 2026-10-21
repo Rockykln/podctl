@@ -30,6 +30,33 @@ impl Pick {
     }
 }
 
+/// `auto` follows the desktop's light/dark preference.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ThemePick {
+    Auto,
+    Dark,
+    Light,
+}
+
+impl ThemePick {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ThemePick::Auto => "auto",
+            ThemePick::Dark => "dark",
+            ThemePick::Light => "light",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "auto" => Some(ThemePick::Auto),
+            "dark" => Some(ThemePick::Dark),
+            "light" => Some(ThemePick::Light),
+            _ => None,
+        }
+    }
+}
+
 /// Bounds for the tunables. A `duration_ms = 0` typo would make the
 /// bubble flash and vanish; an unbounded one would pin it to the screen
 /// with no way to dismiss it.
@@ -41,7 +68,7 @@ const ANIM_MAX_MS: u32 = 2_000;
 pub struct Config {
     pub enabled: bool,
     pub backend: Pick,
-    pub theme: String,
+    pub theme: ThemePick,
     pub duration_ms: u64,
     pub anim_ms: u32,
     /// RandR output (e.g. `eDP-1`) to centre the X11 bubble on. `None`
@@ -54,7 +81,7 @@ impl Default for Config {
         Self {
             enabled: true,
             backend: Pick::Auto,
-            theme: "dark".into(),
+            theme: ThemePick::Auto,
             // Five seconds was too tight to read the rings and register
             // the mode line; six and a half then outstayed its welcome
             // on a bubble that now opens with the lid.
@@ -85,10 +112,8 @@ fn from_text(text: &str) -> Config {
     if let Some(v) = kv.get("backend").and_then(|s| Pick::parse(s)) {
         cfg.backend = v;
     }
-    if let Some(v) = kv.get("theme")
-        && (v == "dark" || v == "light")
-    {
-        cfg.theme = v.clone();
+    if let Some(v) = kv.get("theme").and_then(|s| ThemePick::parse(s)) {
+        cfg.theme = v;
     }
     if let Some(v) = kv.get("duration_ms").and_then(|s| s.parse::<u64>().ok()) {
         cfg.duration_ms = v.clamp(DURATION_MIN_MS, DURATION_MAX_MS);
@@ -189,6 +214,14 @@ anim_ms = 150
         );
         assert_eq!(from_text("output = \"\"\n").output, None);
         assert_eq!(Config::default().output, None);
+    }
+
+    #[test]
+    fn theme_defaults_to_auto() {
+        assert_eq!(Config::default().theme, ThemePick::Auto);
+        assert_eq!(from_text("theme = light").theme, ThemePick::Light);
+        assert_eq!(from_text("theme = \"dark\"").theme, ThemePick::Dark);
+        assert_eq!(from_text("theme = sepia").theme, ThemePick::Auto);
     }
 
     #[test]

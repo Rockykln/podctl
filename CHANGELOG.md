@@ -235,6 +235,11 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
   so `fontdue` is gone. `podctl-popup --dump` takes `--model`, `--scale`
   and `--backdrop`, `--demo` takes `--hold`, and a test compares all 28 renders with the
   reference images in `tests/golden`.
+- **The bubble follows the desktop's light or dark style.** `theme` in
+  `popup.toml` takes `auto`, now the default, besides `dark` and
+  `light`. It reads the setting from the desktop portal (KDE, GNOME and
+  others) and picks up a change from the next bubble on. Without a
+  portal it stays dark, as before.
 - The duck for speech starts as soon as the AirPods report it, by the
   smallest step, while the music's level is measured; it used to wait
   for the measurement first. About 0.7 s earlier, down after 1.3 s.

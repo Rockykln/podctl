@@ -153,7 +153,7 @@ Everything about the bubble is tunable in `~/.config/podctl/popup.toml`
 ```
 enabled     = true      # false disables the bubble entirely
 backend     = "auto"    # auto | wl | x11 | notify
-theme       = "dark"    # dark | light
+theme       = "auto"    # auto (desktop style) | dark | light
 duration_ms = 5500      # time on screen, 500 … 60000
 anim_ms     = 200       # slide in/out, 0 … 2000
 output      = ""        # X11: monitor to centre on, e.g. "eDP-1"

@@ -30,12 +30,8 @@ pub const LOW_PCT: u8 = 20;
 pub type Theme = Pal;
 
 impl Pal {
-    pub fn by_name(name: &str) -> Self {
-        if name.eq_ignore_ascii_case("light") {
-            light()
-        } else {
-            dark()
-        }
+    pub fn of(is_dark: bool) -> Self {
+        if is_dark { dark() } else { light() }
     }
 }
 

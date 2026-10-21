@@ -5,8 +5,11 @@ mod backend;
 mod config;
 mod paint;
 mod render;
+mod scheme;
 
 use std::process::ExitCode;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::thread::{self, sleep};
 use std::time::{Duration, Instant};
@@ -23,7 +26,7 @@ use podctl::{Request, Response, WatchRole};
 use anim::{FRAME, Slide};
 use art::Art;
 use backend::{Backend, Frame};
-use config::Pick;
+use config::{Pick, ThemePick};
 use render::{BUF_H, BUF_W, Pod, Snapshot, Theme};
 
 /// The buffer carries the card's shadow, 24 px on every side, so at
@@ -46,7 +49,22 @@ async fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    let theme = Theme::by_name(flag(&args, "--theme").unwrap_or("dark"));
+    let dumping = flag(&args, "--dump").is_some();
+    let pick = match flag(&args, "--theme") {
+        Some(v) => match ThemePick::parse(v) {
+            Some(p) => p,
+            None => {
+                return fail(
+                    &format!("theme '{v}' (auto, dark or light)"),
+                    exitcode::USAGE,
+                );
+            }
+        },
+        // A dump stays the same on every desktop unless asked otherwise.
+        None if dumping => ThemePick::Dark,
+        None => ThemePick::Auto,
+    };
+    let theme = Theme::of(is_dark(pick).await);
 
     if let Some(path) = flag(&args, "--dump") {
         return match dump(path, &theme, &args) {
@@ -98,14 +116,18 @@ async fn run() -> ExitCode {
         .to_string(),
         explicit: cfg.backend != Pick::Auto,
     };
-    let theme = Theme::by_name(&cfg.theme);
+    let dark = Arc::new(AtomicBool::new(is_dark(cfg.theme).await));
+    if cfg.theme == ThemePick::Auto {
+        tokio::spawn(scheme::follow(dark.clone()));
+    }
     let hold = Duration::from_millis(cfg.duration_ms);
     let anim_ms = cfg.anim_ms;
     let visible = Duration::from_millis(config::visible_ms(&cfg));
 
     info!(
         backend = %pick.name,
-        theme = %cfg.theme,
+        theme = cfg.theme.as_str(),
+        dark = dark.load(Ordering::Relaxed),
         visible_ms = visible.as_millis() as u64,
         "podctl-popup ready"
     );
@@ -118,7 +140,7 @@ async fn run() -> ExitCode {
     }
 
     let (tx, rx) = mpsc::channel::<Cmd>();
-    let render = thread::spawn(move || render_loop(rx, &pick, theme, anim_ms, hold));
+    let render = thread::spawn(move || render_loop(rx, &pick, &dark, anim_ms, hold));
 
     tokio::select! {
         _ = watch(&tx, visible) => {}
@@ -217,7 +239,22 @@ struct BackendPick {
     explicit: bool,
 }
 
-fn render_loop(rx: Receiver<Cmd>, pick: &BackendPick, theme: Theme, anim_ms: u32, hold: Duration) {
+/// Without a portal, `auto` keeps the bubble dark as it always was.
+async fn is_dark(pick: ThemePick) -> bool {
+    match pick {
+        ThemePick::Dark => true,
+        ThemePick::Light => false,
+        ThemePick::Auto => scheme::current().await.unwrap_or(true),
+    }
+}
+
+fn render_loop(
+    rx: Receiver<Cmd>,
+    pick: &BackendPick,
+    dark: &AtomicBool,
+    anim_ms: u32,
+    hold: Duration,
+) {
     while let Ok(cmd) = rx.recv() {
         let snap = match cmd {
             Cmd::Show(s) => s,
@@ -226,6 +263,8 @@ fn render_loop(rx: Receiver<Cmd>, pick: &BackendPick, theme: Theme, anim_ms: u32
             Cmd::Refresh(_) | Cmd::Hide => continue,
             Cmd::Quit => return,
         };
+        // A change of desktop scheme shows from the next bubble on.
+        let theme = Theme::of(dark.load(Ordering::Relaxed));
         if matches!(
             show_cycle(&rx, pick, &theme, anim_ms, hold, snap),
             Outcome::Quit
@@ -813,9 +852,11 @@ fn print_usage() {
     println!();
     println!("usage:");
     println!(
-        "  podctl-popup --dump <file.png> [--theme dark|light] [--model <slug>] [--scale <n>] [--backdrop]"
+        "  podctl-popup --dump <file.png> [--theme auto|dark|light] [--model <slug>] [--scale <n>] [--backdrop]"
     );
-    println!("  podctl-popup --demo [--backend wl|x11|notify] [--theme dark|light] [--hold <ms>]");
+    println!(
+        "  podctl-popup --demo [--backend wl|x11|notify] [--theme auto|dark|light] [--hold <ms>]"
+    );
     println!("  podctl-popup                               (run; watches the daemon)");
 }
 
