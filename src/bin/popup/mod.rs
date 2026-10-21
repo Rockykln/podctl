@@ -1,7 +1,9 @@
 mod anim;
+mod art;
 mod assets;
 mod backend;
 mod config;
+mod paint;
 mod render;
 
 use std::process::ExitCode;
@@ -19,11 +21,14 @@ use podctl::model::{Battery, DeviceState, Event};
 use podctl::{Request, Response, WatchRole};
 
 use anim::{FRAME, Slide};
+use art::Art;
 use backend::{Backend, Frame};
 use config::Pick;
-use render::{CARD_H, CARD_W, Pod, Snapshot, Theme};
+use render::{BUF_H, BUF_W, Pod, Snapshot, Theme};
 
-const REST_MARGIN: i32 = 24;
+/// The buffer carries the card's shadow, 24 px on every side, so at
+/// rest the card itself sits that far above the screen edge.
+const REST_MARGIN: i32 = 0;
 const DEMO_ANIM_MS: u32 = 200;
 const DEMO_HOLD_MS: u64 = 5_000;
 const DEBOUNCE_MS: u64 = 500;
@@ -44,7 +49,7 @@ async fn main() -> ExitCode {
     let theme = Theme::by_name(flag(&args, "--theme").unwrap_or("dark"));
 
     if let Some(path) = flag(&args, "--dump") {
-        return match dump(path, &theme) {
+        return match dump(path, &theme, &args) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => fail(&format!("dump: {e}"), exitcode::OSERR),
         };
@@ -52,9 +57,12 @@ async fn main() -> ExitCode {
 
     if args.iter().any(|a| a == "--demo") {
         let want = flag(&args, "--backend").map(str::to_string);
+        let hold = flag(&args, "--hold")
+            .and_then(|v| v.parse::<u64>().ok())
+            .map_or(Duration::from_millis(DEMO_HOLD_MS), Duration::from_millis);
         // The notification backend drives zbus on a runtime of its own,
         // which panics if this thread is already running one.
-        let out = thread::spawn(move || demo(&theme, want)).join();
+        let out = thread::spawn(move || demo(&theme, want, hold)).join();
         return match out {
             Ok(Ok(())) => ExitCode::SUCCESS,
             Ok(Err(e)) => fail(&format!("demo: {e:#}"), exitcode::UNAVAILABLE),
@@ -255,7 +263,7 @@ fn apply(cmd: Cmd, bgra: &mut Vec<u8>, theme: &Theme, be: &mut dyn Backend) -> A
     };
     let (title, body) = labels(&snap);
     be.set_labels(&title, &body);
-    *bgra = render::to_bgra_premul(&render::render(&snap, theme));
+    *bgra = render::to_bgra_premul(&render::render(&snap, theme, 1.0));
     Applied::Redrawn { reset }
 }
 
@@ -281,7 +289,7 @@ fn labels(snap: &Snapshot) -> (String, String) {
     } else {
         "Disconnected".into()
     };
-    (snap.model.clone(), body)
+    (snap.name.clone(), body)
 }
 
 /// Apply every queued command. `Show` redraws and asks the hold timer
@@ -315,7 +323,7 @@ fn show_cycle(
     hold: Duration,
     snap: Snapshot,
 ) -> Outcome {
-    let mut bgra = render::to_bgra_premul(&render::render(&snap, theme));
+    let mut bgra = render::to_bgra_premul(&render::render(&snap, theme, 1.0));
     // Slides included — the notification backend hands this to the server
     // as the expire timeout, and a bubble the server retires early is
     // exactly the "gone too soon" the hold is meant to prevent.
@@ -333,7 +341,7 @@ fn show_cycle(
     let (title, body) = labels(&snap);
     be.set_labels(&title, &body);
 
-    let hidden = -(CARD_H as f32);
+    let hidden = -(BUF_H as f32);
     let rest = REST_MARGIN as f32;
 
     let mut last = hidden;
@@ -612,8 +620,13 @@ fn apply_status(snap: &mut Snapshot, ds: DeviceState) {
     snap.connected = ds.connected;
     // Sticky model: a Status from the daemon's startup window can be
     // Unknown — don't overwrite a model we already know.
-    if ds.capabilities.model != podctl::caps::Model::Unknown {
-        snap.model = ds.capabilities.model.label().to_string();
+    let model = ds.capabilities.model;
+    if model != podctl::caps::Model::Unknown {
+        snap.art = Art::of(model);
+        snap.name = model.label().to_string();
+    }
+    if let Some(name) = ds.name.filter(|n| !n.trim().is_empty()) {
+        snap.name = name;
     }
     snap.mode = ds.settings.mode;
     apply_battery(snap, &ds.battery);
@@ -684,24 +697,46 @@ async fn await_term() {
     }
 }
 
-fn dump(path: &str, theme: &Theme) -> std::io::Result<()> {
-    let pm = render::render(&Snapshot::sample(), theme);
+fn dump(path: &str, theme: &Theme, args: &[String]) -> std::io::Result<()> {
+    let bad = |m: String| std::io::Error::new(std::io::ErrorKind::InvalidInput, m);
+    let art = match flag(args, "--model") {
+        Some(slug) => Art::by_slug(slug).ok_or_else(|| {
+            let known: Vec<&str> = Art::ALL.iter().map(|a| a.slug()).collect();
+            bad(format!(
+                "unknown model '{slug}' (one of: {})",
+                known.join(", ")
+            ))
+        })?,
+        None => Art::Pro2C,
+    };
+    let scale = match flag(args, "--scale") {
+        Some(v) => v
+            .parse::<f32>()
+            .ok()
+            .filter(|s| (0.5..=4.0).contains(s))
+            .ok_or_else(|| bad(format!("scale '{v}' (0.5 to 4)")))?,
+        None => 1.0,
+    };
+    let mut pm = render::render(&Snapshot::sample_for(art), theme, scale);
+    if args.iter().any(|a| a == "--backdrop") {
+        pm = render::on_backdrop(&pm, theme.dark);
+    }
     let png = pm
         .encode_png()
         .map_err(|e| std::io::Error::other(e.to_string()))?;
     std::fs::write(path, png)
 }
 
-fn demo(theme: &Theme, want: Option<String>) -> anyhow::Result<()> {
+fn demo(theme: &Theme, want: Option<String>, hold: Duration) -> anyhow::Result<()> {
     let snap = Snapshot::sample();
-    let pm = render::render(&snap, theme);
+    let pm = render::render(&snap, theme, 1.0);
     let bgra = render::to_bgra_premul(&pm);
     let pick = want.as_deref().unwrap_or("wl");
-    let mut be = open_backend(pick, want.is_some(), Duration::from_millis(DEMO_HOLD_MS))?;
+    let mut be = open_backend(pick, want.is_some(), hold)?;
     eprintln!("podctl-popup: backend {}", short(be.kind()));
     let (title, body) = labels(&snap);
     be.set_labels(&title, &body);
-    present(be.as_mut(), &bgra)?;
+    present(be.as_mut(), &bgra, hold)?;
     be.close()?;
     Ok(())
 }
@@ -731,7 +766,7 @@ fn open_backend(
             _ => Box::new(backend::notify::Notify::new()),
         };
         be.set_hold(on_screen);
-        match be.open(CARD_W, CARD_H) {
+        match be.open(BUF_W, BUF_H) {
             Ok(()) => return Ok(be),
             Err(e) => last = e.context(format!("{kind} backend")),
         }
@@ -739,13 +774,13 @@ fn open_backend(
     Err(last)
 }
 
-fn present(be: &mut dyn Backend, bgra: &[u8]) -> anyhow::Result<()> {
-    let hidden = -(CARD_H as f32);
+fn present(be: &mut dyn Backend, bgra: &[u8], hold: Duration) -> anyhow::Result<()> {
+    let hidden = -(BUF_H as f32);
     for m in Slide::new(hidden, REST_MARGIN as f32, DEMO_ANIM_MS) {
         push(be, bgra, m)?;
         sleep(FRAME);
     }
-    for _ in 0..(DEMO_HOLD_MS / 100) {
+    for _ in 0..(hold.as_millis() / 100) {
         push(be, bgra, REST_MARGIN as f32)?;
         sleep(Duration::from_millis(100));
     }
@@ -777,19 +812,23 @@ fn print_usage() {
     println!("podctl-popup — AirPods case-open bubble");
     println!();
     println!("usage:");
-    println!("  podctl-popup --dump <file.png> [--theme dark|light]");
-    println!("  podctl-popup --demo [--backend wl|x11|notify] [--theme dark|light]");
+    println!(
+        "  podctl-popup --dump <file.png> [--theme dark|light] [--model <slug>] [--scale <n>] [--backdrop]"
+    );
+    println!("  podctl-popup --demo [--backend wl|x11|notify] [--theme dark|light] [--hold <ms>]");
     println!("  podctl-popup                               (run; watches the daemon)");
 }
 
 #[cfg(test)]
 mod tests {
     use super::labels;
+    use crate::art::Art;
     use crate::render::{Pod, Snapshot};
 
     fn snap() -> Snapshot {
         Snapshot {
-            model: "AirPods Pro 2".into(),
+            name: "AirPods Pro 2".into(),
+            art: Art::Pro2C,
             connected: true,
             mode: Some(podctl::model::Mode::Transparency),
             left: Pod {

@@ -224,6 +224,17 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
   never existed.
 
 ### Changed
+- **The case-open bubble is redrawn.** Each model is drawn as it looks,
+  buds and case on one millimetre scale (AirPods Max on its own), the
+  buds level with the middle of the case, and the finger notch on every
+  Pro case. The title is the name you gave the
+  buds, cut with an ellipsis instead of shrunk; the line under it is the
+  listening mode or "Connecting…". Both buds share one value when they
+  are within 5 points; red means at or below 20 %, green charging, and
+  there is no red frame any more. Text is drawn from the font's outlines,
+  so `fontdue` is gone. `podctl-popup --dump` takes `--model`, `--scale`
+  and `--backdrop`, `--demo` takes `--hold`, and a test compares all 28 renders with the
+  reference images in `tests/golden`.
 - The duck for speech starts as soon as the AirPods report it, by the
   smallest step, while the music's level is measured; it used to wait
   for the measurement first. About 0.7 s earlier, down after 1.3 s.

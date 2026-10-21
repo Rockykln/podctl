@@ -54,7 +54,7 @@ futures-util = { version = "0.3", default-features = false, features = ["std"] }
 # no GTK/Qt. The Apple-style case-open bubble is drawn into a CPU pixmap
 # and handed to a raw wl_shm / xcb backend.
 tiny-skia = "0.12"
-fontdue = "0.9"
+ttf-parser = "0.25"
 wayland-client = "0.31"
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 x11rb = { version = "0.14", features = ["randr", "shape"] }
@@ -67,6 +67,11 @@ x11rb = { version = "0.14", features = ["randr", "shape"] }
 [dev-dependencies]
 # A paused clock for the timing of the media logic.
 tokio = { version = "1", features = ["test-util"] }
+
+# The popup's drawing is pixel work; unoptimised it takes half a minute
+# per frame, and the golden-image test draws 28 of them.
+[profile.test]
+opt-level = 2
 
 [profile.release]
 lto = "thin"
