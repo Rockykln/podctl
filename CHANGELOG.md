@@ -251,6 +251,13 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
   turns into a hand (`cursor-shape-v1` on Wayland, the cursor font's
   hand on X11). Only the card takes clicks, the shadow around it lets
   them through; on X11 the whole bubble used to be click-through.
+- **The bubble moves in time, not in frames.** It rises 20 px into place
+  on a spring while it fades in, fades out 10 px downwards after the hold,
+  and a click shrinks it a little as it fades. The window stays put and
+  the card moves inside it, paced by the compositor's frame callbacks on
+  Wayland. Where nothing can blend (the notification fallback, X without
+  a compositor) the card simply appears. `anim_ms` in `popup.toml` is no
+  longer read.
 - `output` in `popup.toml` works on Wayland too. On X11 the bubble now
   goes to the monitor under the pointer before the primary one.
 - The bubble draws about five times faster: shadows are blurred only

@@ -8,14 +8,12 @@ use std::time::Duration;
 use anyhow::Result;
 
 /// A frame the backend uploads: premultiplied BGRA of `w`×`h` device
-/// pixels (the size passed to `open` times `scale`), plus the current
-/// bottom gap in logical pixels (the animation drives this value each
-/// tick).
+/// pixels, the size passed to `open` times `scale`. The window stays
+/// put; all movement is inside the frame.
 pub struct Frame<'a> {
     pub bgra: &'a [u8],
     pub w: u32,
     pub h: u32,
-    pub margin_bottom: i32,
 }
 
 /// Cheap hash over a frame's pixels, so a backend can tell an unchanged
@@ -58,6 +56,16 @@ pub trait Backend {
         1.0
     }
     fn push_frame(&mut self, f: &Frame) -> Result<()>;
+    /// Whether frames that differ in motion and opacity show as such. A
+    /// notification or an X server without a compositor gets one still
+    /// frame instead.
+    fn animates(&self) -> bool {
+        true
+    }
+    /// Wait until the server is ready for the next frame.
+    fn wait_frame(&mut self) {
+        std::thread::sleep(crate::anim::FRAME);
+    }
     /// Pointer input that arrived since the last call; never blocks.
     fn input(&mut self) -> Vec<Input> {
         Vec::new()

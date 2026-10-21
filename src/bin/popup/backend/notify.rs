@@ -82,6 +82,10 @@ impl Backend for Notify {
 
     /// Text only: a notification server lays out an image as it likes,
     /// and GNOME squeezed the wide card into a cropped square.
+    fn animates(&self) -> bool {
+        false
+    }
+
     fn push_frame(&mut self, f: &Frame) -> Result<()> {
         let fp = fingerprint(f.bgra);
         if self.id != 0 && fp == self.fp {

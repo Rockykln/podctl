@@ -6,6 +6,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use wayland_client::globals::{GlobalListContents, registry_queue_init};
 use wayland_client::protocol::{
     wl_buffer::WlBuffer,
+    wl_callback::{self, WlCallback},
     wl_compositor::WlCompositor,
     wl_output::{self, WlOutput},
     wl_pointer::{self, WlPointer},
@@ -91,6 +92,7 @@ struct State {
     enter_serial: u32,
     over: Option<Hit>,
     inputs: Vec<Input>,
+    frame_due: bool,
 }
 
 impl State {
@@ -182,7 +184,9 @@ impl Backend for WlLayer {
         );
         layer.set_size(w, h);
         layer.set_anchor(Anchor::Bottom);
-        layer.set_margin(0, 0, 24, 0);
+        // The room the entry rises from hangs below the screen edge, so
+        // the card at rest sits where it always did.
+        layer.set_margin(0, 0, -(crate::anim::RISE as i32), 0);
         layer.set_keyboard_interactivity(zwlr_layer_surface_v1::KeyboardInteractivity::None);
         surface.commit();
 
@@ -239,6 +243,18 @@ impl Backend for WlLayer {
         }
     }
 
+    fn wait_frame(&mut self) {
+        let Some(win) = self.win.as_mut() else { return };
+        // A surface nobody sees gets no callback; the motion then runs
+        // on at the fallback pace.
+        let deadline = Instant::now() + FRAME_WAIT;
+        while win.state.frame_due && Instant::now() < deadline {
+            if read_into(&win.conn, &mut win.queue, &mut win.state, READ_SLICE).is_err() {
+                return;
+            }
+        }
+    }
+
     fn input(&mut self) -> Vec<Input> {
         let Some(win) = self.win.as_mut() else {
             return Vec::new();
@@ -285,10 +301,11 @@ impl Backend for WlLayer {
             ptr::copy_nonoverlapping(f.bgra.as_ptr(), pool.map.add(off), len.min(f.bgra.len()));
         }
 
-        win.layer.set_margin(0, 0, f.margin_bottom, 0);
         win.surface.set_buffer_scale(pool.buffer_scale);
         win.surface.attach(Some(&pool.bufs[slot].wl), 0, 0);
         win.surface.damage_buffer(0, 0, f.w as i32, f.h as i32);
+        win.surface.frame(&win.qh, ());
+        win.state.frame_due = true;
         win.surface.commit();
         pool.bufs[slot].busy = true;
         win.cur = 1 - slot;
@@ -422,6 +439,8 @@ const READ_SLICE: Duration = Duration::from_millis(25);
 /// How long the surface may take to be configured before the bubble
 /// gives up and the next backend gets a turn.
 const CONFIGURE_WAIT: Duration = Duration::from_secs(2);
+/// The longest a frame waits for the compositor's go.
+const FRAME_WAIT: Duration = Duration::from_millis(40);
 /// How long to wait for the scale after the configure before drawing
 /// at the one the bubble had last time.
 const SCALE_WAIT: Duration = Duration::from_millis(100);
@@ -568,6 +587,21 @@ delegate_noop!(State: ignore WlShm);
 delegate_noop!(State: ignore WlShmPool);
 delegate_noop!(State: ignore WpFractionalScaleManagerV1);
 delegate_noop!(State: ignore WlRegion);
+
+impl Dispatch<WlCallback, ()> for State {
+    fn event(
+        st: &mut Self,
+        _: &WlCallback,
+        ev: wl_callback::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wl_callback::Event::Done { .. } = ev {
+            st.frame_due = false;
+        }
+    }
+}
 delegate_noop!(State: ignore WpCursorShapeManagerV1);
 delegate_noop!(State: ignore WpCursorShapeDeviceV1);
 

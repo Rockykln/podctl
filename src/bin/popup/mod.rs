@@ -11,7 +11,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
-use std::thread::{self, sleep};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use tokio::signal::unix::{SignalKind, signal};
@@ -23,16 +23,12 @@ use podctl::exitcode;
 use podctl::model::{Battery, DeviceState, Event};
 use podctl::{Request, Response, WatchRole};
 
-use anim::{FRAME, Slide};
+use anim::{Pose, RISE};
 use art::Art;
 use backend::{Backend, Frame, Input};
 use config::{Pick, ThemePick};
 use render::{BUF_H, BUF_W, Pod, Snapshot, Theme};
 
-/// The buffer carries the card's shadow, 24 px on every side, so at
-/// rest the card itself sits that far above the screen edge.
-const REST_MARGIN: i32 = 0;
-const DEMO_ANIM_MS: u32 = 200;
 const DEMO_HOLD_MS: u64 = 5_000;
 const DEBOUNCE_MS: u64 = 500;
 const AUTO_MODE_WINDOW: Duration = Duration::from_secs(3);
@@ -126,7 +122,6 @@ async fn run() -> ExitCode {
         tokio::spawn(scheme::follow(dark.clone()));
     }
     let hold = Duration::from_millis(cfg.duration_ms);
-    let anim_ms = cfg.anim_ms;
     let visible = Duration::from_millis(config::visible_ms(&cfg));
 
     info!(
@@ -145,7 +140,7 @@ async fn run() -> ExitCode {
     }
 
     let (tx, rx) = mpsc::channel::<Cmd>();
-    let render = thread::spawn(move || render_loop(rx, &pick, &dark, anim_ms, hold));
+    let render = thread::spawn(move || render_loop(rx, &pick, &dark, hold));
 
     tokio::select! {
         _ = watch(&tx, visible) => {}
@@ -253,13 +248,7 @@ async fn is_dark(pick: ThemePick) -> bool {
     }
 }
 
-fn render_loop(
-    rx: Receiver<Cmd>,
-    pick: &BackendPick,
-    dark: &AtomicBool,
-    anim_ms: u32,
-    hold: Duration,
-) {
+fn render_loop(rx: Receiver<Cmd>, pick: &BackendPick, dark: &AtomicBool, hold: Duration) {
     // Drawn ahead at the last bubble's scale; usually the next one shows
     // on the same screen and nothing has to be drawn twice.
     let mut scale = 1.0;
@@ -274,7 +263,7 @@ fn render_loop(
         // A change of desktop scheme shows from the next bubble on.
         let theme = Theme::of(dark.load(Ordering::Relaxed));
         if matches!(
-            show_cycle(&rx, pick, &theme, anim_ms, hold, snap, &mut scale),
+            show_cycle(&rx, pick, &theme, hold, snap, &mut scale),
             Outcome::Quit
         ) {
             return;
@@ -301,7 +290,8 @@ enum Applied {
     Stop(Outcome),
 }
 
-/// The card as backends take it, drawn for one scale.
+/// The card drawn for one scale, and the frame it is placed in: the
+/// frame keeps the room below the card the entry rises from.
 struct Card {
     snap: Snapshot,
     theme: Theme,
@@ -311,6 +301,8 @@ struct Card {
     bgra: Vec<u8>,
     w: u32,
     h: u32,
+    frame: Vec<u8>,
+    frame_h: u32,
 }
 
 impl Card {
@@ -324,9 +316,51 @@ impl Card {
             bgra: Vec::new(),
             w: 0,
             h: 0,
+            frame: Vec::new(),
+            frame_h: 0,
         };
         c.draw();
         c
+    }
+
+    /// Place the card in the frame as `pose` has it. Offset and opacity
+    /// are row copies and a multiply; only the shrink of a dismissal
+    /// needs a real transform.
+    fn compose(&mut self, pose: Pose) {
+        let (w, h) = (self.w as usize, self.h as usize);
+        self.frame_h = render::buf_px(BUF_W, BUF_H + RISE as u32, self.scale).1;
+        let fh = self.frame_h as usize;
+        self.frame.clear();
+        self.frame.resize(w * fh * 4, 0);
+        if pose.scale != 1.0 {
+            let (Some(src), Some(mut dst)) = (
+                tiny_skia::PixmapRef::from_bytes(&self.bgra, self.w, self.h),
+                tiny_skia::PixmapMut::from_bytes(&mut self.frame, self.w, self.frame_h),
+            ) else {
+                return;
+            };
+            let (cx, cy) = (w as f32 / 2.0, h as f32 / 2.0);
+            let t = tiny_skia::Transform::from_translate(cx, cy + pose.dy * self.scale)
+                .pre_scale(pose.scale, pose.scale)
+                .pre_translate(-cx, -cy);
+            let paint = tiny_skia::PixmapPaint {
+                opacity: pose.alpha,
+                quality: tiny_skia::FilterQuality::Bilinear,
+                ..Default::default()
+            };
+            dst.draw_pixmap(0, 0, src, &paint, t, None);
+            return;
+        }
+        let dy = (pose.dy * self.scale).round().max(0.0) as usize;
+        let rows = h.min(fh.saturating_sub(dy));
+        let n = rows * w * 4;
+        self.frame[dy * w * 4..dy * w * 4 + n].copy_from_slice(&self.bgra[..n]);
+        if pose.alpha < 1.0 {
+            let a = (pose.alpha.clamp(0.0, 1.0) * 256.0) as u32;
+            for b in &mut self.frame {
+                *b = ((*b as u32 * a) >> 8) as u8;
+            }
+        }
     }
 
     fn draw(&mut self) {
@@ -486,16 +520,15 @@ fn show_cycle(
     rx: &Receiver<Cmd>,
     pick: &BackendPick,
     theme: &Theme,
-    anim_ms: u32,
     hold: Duration,
     snap: Snapshot,
     scale: &mut f32,
 ) -> Outcome {
     let mut card = Card::new(snap, theme, *scale);
-    // Slides included — the notification backend hands this to the server
+    // Entry and exit included — the notification backend hands this to the server
     // as the expire timeout, and a bubble the server retires early is
     // exactly the "gone too soon" the hold is meant to prevent.
-    let on_screen = hold + 2 * Duration::from_millis(anim_ms as u64);
+    let on_screen = hold + Duration::from_millis((anim::ENTRY_MS + anim::EXIT_MS) as u64);
     let mut be = match open_backend(&pick.name, pick.explicit, on_screen) {
         Ok(b) => b,
         Err(e) => {
@@ -511,14 +544,17 @@ fn show_cycle(
     card.fit(be.as_ref());
     *scale = card.scale;
 
-    let hidden = -(BUF_H as f32);
-    let rest = REST_MARGIN as f32;
-
-    let mut last = hidden;
+    // A server that cannot blend (a notification, X without a
+    // compositor) gets the card standing still.
+    let moves = be.animates();
+    let mut pose = Pose::REST;
     let mut stop = None;
-    for m in Slide::new(hidden, rest, anim_ms) {
-        last = m;
-        if push(be.as_mut(), &mut card, m).is_err() {
+    let t0 = Instant::now();
+    let mut frames = 0u32;
+    while let Some(p) = moves.then(|| anim::entry(ms_since(t0))).flatten() {
+        frames += 1;
+        pose = p;
+        if push(be.as_mut(), &mut card, pose).is_err() {
             let _ = be.close();
             return Outcome::Done;
         }
@@ -526,13 +562,19 @@ fn show_cycle(
             stop = Some(o);
             break;
         }
-        sleep(FRAME);
+        be.wait_frame();
     }
+    debug!(frames, ms = ms_since(t0), "entry");
+    let mut clicked = false;
 
     let outcome = match stop {
         Some(o) => o,
         None => {
-            last = rest;
+            pose = Pose::REST;
+            if push(be.as_mut(), &mut card, pose).is_err() {
+                let _ = be.close();
+                return Outcome::Done;
+            }
             let mut timer = Hold::new(Instant::now(), hold);
             let mut o = Outcome::Done;
             // Nothing moves while the bubble stands still, so it waits
@@ -552,10 +594,13 @@ fn show_cycle(
                             redraw |= card.set_hover(false);
                         }
                         Input::OverClose(on) => redraw |= card.set_hover(on),
-                        Input::Click => break 'hold,
+                        Input::Click => {
+                            clicked = true;
+                            break 'hold;
+                        }
                     }
                 }
-                if redraw && push(be.as_mut(), &mut card, rest).is_err() {
+                if redraw && push(be.as_mut(), &mut card, Pose::REST).is_err() {
                     let _ = be.close();
                     return o;
                 }
@@ -591,7 +636,7 @@ fn show_cycle(
                 if reset {
                     timer.restart(Instant::now(), hold);
                 }
-                if push(be.as_mut(), &mut card, rest).is_err() {
+                if push(be.as_mut(), &mut card, Pose::REST).is_err() {
                     let _ = be.close();
                     return o;
                 }
@@ -600,14 +645,20 @@ fn show_cycle(
         }
     };
 
-    for m in Slide::new(last, hidden, anim_ms) {
-        if push(be.as_mut(), &mut card, m).is_err() {
+    let leave = if clicked { anim::dismiss } else { anim::exit };
+    let t0 = Instant::now();
+    while let Some(p) = moves.then(|| leave(ms_since(t0), pose)).flatten() {
+        if push(be.as_mut(), &mut card, p).is_err() {
             break;
         }
-        sleep(FRAME);
+        be.wait_frame();
     }
     let _ = be.close();
     outcome
+}
+
+fn ms_since(t0: Instant) -> f32 {
+    t0.elapsed().as_secs_f32() * 1000.0
 }
 
 async fn watch(tx: &Sender<Cmd>, visible: Duration) {
@@ -906,7 +957,10 @@ fn dump(path: &str, theme: &Theme, args: &[String]) -> std::io::Result<()> {
             .ok_or_else(|| bad(format!("scale '{v}' (0.5 to 4)")))?,
         None => 1.0,
     };
-    let mut pm = render::render(&Snapshot::sample_for(art), theme, scale);
+    let mut pm = match flag(args, "--at") {
+        Some(at) => frame_at(art, theme, scale, at).map_err(bad)?,
+        None => render::render(&Snapshot::sample_for(art), theme, scale),
+    };
     if args.iter().any(|a| a == "--backdrop") {
         pm = render::on_backdrop(&pm, theme.dark);
     }
@@ -914,6 +968,38 @@ fn dump(path: &str, theme: &Theme, args: &[String]) -> std::io::Result<()> {
         .encode_png()
         .map_err(|e| std::io::Error::other(e.to_string()))?;
     std::fs::write(path, png)
+}
+
+/// One frame of the motion, as `<phase>:<ms>` names it (`entry:120`,
+/// `exit:100`, `dismiss:60`), in the frame the window shows.
+fn frame_at(art: Art, theme: &Theme, scale: f32, at: &str) -> Result<tiny_skia::Pixmap, String> {
+    let wrong = || format!("at '{at}' (entry|exit|dismiss:<ms>)");
+    let (phase, ms) = at.split_once(':').ok_or_else(wrong)?;
+    let ms: f32 = ms.parse().map_err(|_| wrong())?;
+    let pose = match phase {
+        "entry" => anim::entry(ms),
+        "exit" => anim::exit(ms, Pose::REST),
+        "dismiss" => anim::dismiss(ms, Pose::REST),
+        _ => return Err(wrong()),
+    }
+    .unwrap_or(match phase {
+        "entry" => Pose::REST,
+        _ => Pose {
+            alpha: 0.0,
+            ..Pose::REST
+        },
+    });
+    let mut card = Card::new(Snapshot::sample_for(art), theme, scale);
+    card.compose(pose);
+    let mut rgba = std::mem::take(&mut card.frame);
+    for px in rgba.as_chunks_mut::<4>().0 {
+        px.swap(0, 2);
+    }
+    tiny_skia::Pixmap::from_vec(
+        rgba,
+        tiny_skia::IntSize::from_wh(card.w, card.frame_h).ok_or_else(wrong)?,
+    )
+    .ok_or_else(wrong)
 }
 
 fn demo(theme: &Theme, want: Option<String>, hold: Duration) -> anyhow::Result<()> {
@@ -924,15 +1010,7 @@ fn demo(theme: &Theme, want: Option<String>, hold: Duration) -> anyhow::Result<(
     // Kept alive, or the cycle reads the closed channel as Quit.
     let (_tx, rx) = mpsc::channel::<Cmd>();
     let mut scale = 1.0;
-    show_cycle(
-        &rx,
-        &pick,
-        theme,
-        DEMO_ANIM_MS,
-        hold,
-        Snapshot::sample(),
-        &mut scale,
-    );
+    show_cycle(&rx, &pick, theme, hold, Snapshot::sample(), &mut scale);
     eprintln!("podctl-popup: scale {scale}");
     Ok(())
 }
@@ -962,7 +1040,7 @@ fn open_backend(
             _ => Box::new(backend::notify::Notify::new()),
         };
         be.set_hold(on_screen);
-        match be.open(BUF_W, BUF_H) {
+        match be.open(BUF_W, BUF_H + RISE as u32) {
             Ok(()) => return Ok(be),
             Err(e) => last = e.context(format!("{kind} backend")),
         }
@@ -970,13 +1048,13 @@ fn open_backend(
     Err(last)
 }
 
-fn push(be: &mut dyn Backend, card: &mut Card, margin: f32) -> anyhow::Result<()> {
+fn push(be: &mut dyn Backend, card: &mut Card, pose: Pose) -> anyhow::Result<()> {
     card.fit(be);
+    card.compose(pose);
     be.push_frame(&Frame {
-        bgra: &card.bgra,
+        bgra: &card.frame,
         w: card.w,
-        h: card.h,
-        margin_bottom: margin.round() as i32,
+        h: card.frame_h,
     })
 }
 
@@ -995,7 +1073,7 @@ fn print_usage() {
     println!();
     println!("usage:");
     println!(
-        "  podctl-popup --dump <file.png> [--theme auto|dark|light] [--model <slug>] [--scale <n>] [--backdrop]"
+        "  podctl-popup --dump <file.png> [--theme auto|dark|light] [--model <slug>] [--scale <n>] [--at entry|exit|dismiss:<ms>] [--backdrop]"
     );
     println!(
         "  podctl-popup --demo [--backend wl|x11|notify] [--theme auto|dark|light] [--hold <ms>]"

@@ -147,6 +147,10 @@ impl Backend for X11Or {
         self.win.as_ref().map_or(1.0, |w| w.scale)
     }
 
+    fn animates(&self) -> bool {
+        self.win.as_ref().is_some_and(|w| !w.shape_to_card)
+    }
+
     fn input(&mut self) -> Vec<Input> {
         let Some(win) = self.win.as_mut() else {
             return Vec::new();
@@ -175,8 +179,9 @@ impl Backend for X11Or {
 
         let m = win.mon;
         let x = (m.x + ((m.w - win.w as i32) / 2).max(0)) as i16;
-        let margin = (f.margin_bottom as f32 * win.scale).round() as i32;
-        let y = (m.y + (m.h - win.h as i32 - margin).clamp(-(win.h as i32), m.h)) as i16;
+        // The room the entry rises from reaches below the monitor's edge.
+        let room = (crate::anim::RISE * win.scale).round() as i32;
+        let y = (m.y + m.h - win.h as i32 + room) as i16;
 
         if !win.mapped {
             win.conn.map_window(win.window)?;

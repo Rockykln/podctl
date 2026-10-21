@@ -62,7 +62,6 @@ impl ThemePick {
 /// with no way to dismiss it.
 const DURATION_MIN_MS: u64 = 500;
 const DURATION_MAX_MS: u64 = 60_000;
-const ANIM_MAX_MS: u32 = 2_000;
 
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -70,7 +69,6 @@ pub struct Config {
     pub backend: Pick,
     pub theme: ThemePick,
     pub duration_ms: u64,
-    pub anim_ms: u32,
     /// Output (e.g. `eDP-1`) to show the bubble on. `None` leaves it to
     /// the compositor on Wayland; on X11 the monitor under the pointer,
     /// then the RandR primary.
@@ -87,7 +85,6 @@ impl Default for Config {
             // the mode line; six and a half then outstayed its welcome
             // on a bubble that now opens with the lid.
             duration_ms: 5500,
-            anim_ms: 200,
             output: None,
         }
     }
@@ -119,9 +116,6 @@ fn from_text(text: &str) -> Config {
     if let Some(v) = kv.get("duration_ms").and_then(|s| s.parse::<u64>().ok()) {
         cfg.duration_ms = v.clamp(DURATION_MIN_MS, DURATION_MAX_MS);
     }
-    if let Some(v) = kv.get("anim_ms").and_then(|s| s.parse::<u32>().ok()) {
-        cfg.anim_ms = v.min(ANIM_MAX_MS);
-    }
     if let Some(v) = kv.get("output")
         && !v.is_empty()
     {
@@ -130,9 +124,9 @@ fn from_text(text: &str) -> Config {
     cfg
 }
 
-/// Total time the bubble occupies the screen: hold plus both slides.
+/// Total time the bubble occupies the screen: hold plus entry and exit.
 pub fn visible_ms(cfg: &Config) -> u64 {
-    cfg.duration_ms + 2 * cfg.anim_ms as u64
+    cfg.duration_ms + (crate::anim::ENTRY_MS + crate::anim::EXIT_MS) as u64
 }
 
 fn parse_bool(s: &str) -> Option<bool> {
@@ -169,7 +163,6 @@ mod tests {
         assert!(c.enabled);
         assert_eq!(c.backend, Pick::Auto);
         assert_eq!(c.duration_ms, 5500);
-        assert_eq!(c.anim_ms, 200);
     }
 
     #[test]
@@ -179,7 +172,6 @@ enabled = false
 backend = \"x11\"
 theme = light
 duration_ms = 3000
-anim_ms = 150
 ";
         let kv = parse_flat(text);
         assert_eq!(kv.get("backend").unwrap(), "x11");
@@ -195,16 +187,15 @@ anim_ms = 150
             from_text("duration_ms = 999999").duration_ms,
             DURATION_MAX_MS
         );
-        assert_eq!(from_text("anim_ms = 99999").anim_ms, ANIM_MAX_MS);
         // A negative value isn't a u64 — the field keeps its default.
         assert_eq!(from_text("duration_ms = -1").duration_ms, 5500);
         assert_eq!(from_text("duration_ms = 3000").duration_ms, 3000);
     }
 
     #[test]
-    fn visible_covers_both_slides() {
+    fn visible_covers_entry_and_exit() {
         let c = Config::default();
-        assert_eq!(visible_ms(&c), c.duration_ms + 2 * c.anim_ms as u64);
+        assert_eq!(visible_ms(&c), c.duration_ms + 920);
     }
 
     #[test]
