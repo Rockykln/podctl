@@ -164,9 +164,10 @@ pub fn version_mismatch() -> Option<String> {
 /// runtime: the tray and the bubble. They each had their own copy, with
 /// their own timeouts.
 pub mod async_io {
+    use std::path::Path;
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
+
     use tokio::net::UnixStream;
-    use tokio::net::unix::OwnedReadHalf;
     use tokio::time::timeout;
 
     use super::{Error, WRITE_TIMEOUT, timeout_for};
@@ -195,16 +196,17 @@ pub mod async_io {
 
     /// Subscribe to the event stream. The caller reads the lines: the
     /// acknowledgement, then the current state, then one event each.
-    pub async fn watch(role: WatchRole) -> Result<Lines<BufReader<OwnedReadHalf>>, Error> {
-        let stream = UnixStream::connect(socket_path())
-            .await
-            .map_err(Error::Io)?;
-        let (rx, mut tx) = stream.into_split();
-        write_request(&mut tx, &Request::Watch { role }).await?;
-        // Nothing is sent on a watch connection after this, and the
-        // daemon reads the half to notice a hangup.
-        drop(tx);
-        Ok(BufReader::new(rx).lines())
+    pub async fn watch(role: WatchRole) -> Result<Lines<BufReader<UnixStream>>, Error> {
+        watch_at(&socket_path(), role).await
+    }
+
+    async fn watch_at(path: &Path, role: WatchRole) -> Result<Lines<BufReader<UnixStream>>, Error> {
+        let mut stream = UnixStream::connect(path).await.map_err(Error::Io)?;
+        write_request(&mut stream, &Request::Watch { role }).await?;
+        // Nothing more is sent, but the write half stays open: the daemon
+        // takes its end for a client that left and hangs up. Dropping it
+        // here kept the bubble and the tray from ever hearing an event.
+        Ok(BufReader::new(stream).lines())
     }
 
     async fn write_request<W>(tx: &mut W, req: &Request) -> Result<(), Error>
@@ -222,6 +224,37 @@ pub mod async_io {
             .map_err(|_| Error::Timeout(WRITE_TIMEOUT))?
             .map_err(Error::Io)?;
         Ok(())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use tokio::net::UnixListener;
+
+        #[tokio::test]
+        async fn a_watch_keeps_its_end_open() {
+            let dir = std::env::temp_dir().join(format!("podctl-watch-{}", std::process::id()));
+            let _ = std::fs::create_dir_all(&dir);
+            let path = dir.join("sock");
+            let _ = std::fs::remove_file(&path);
+            let listener = UnixListener::bind(&path).unwrap();
+
+            let lines = watch_at(&path, WatchRole::Popup).await.unwrap();
+            let (conn, _) = listener.accept().await.unwrap();
+            let mut from_client = BufReader::new(conn).lines();
+            let req = from_client.next_line().await.unwrap().unwrap();
+            assert!(req.contains("\"watch\""), "{req}");
+            // The daemon's side of a live subscription: nothing more to
+            // read, and no end of stream either.
+            let more = timeout(
+                std::time::Duration::from_millis(200),
+                from_client.next_line(),
+            )
+            .await;
+            assert!(more.is_err(), "the client closed its end: {more:?}");
+            drop(lines);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 }
 
