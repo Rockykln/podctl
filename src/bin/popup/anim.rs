@@ -216,6 +216,37 @@ pub fn exit(ms: f32, from: Pose) -> Option<Pose> {
     })
 }
 
+/// The close button lights up and back down over this long.
+pub const KNOB_MS: f32 = 120.0;
+/// A click holds the button down this long before the card goes.
+pub const PRESS_MS: f32 = 60.0;
+const PRESS_SCALE: f32 = 0.994;
+
+/// The card while the button is held down, `ms` in.
+pub fn press(ms: f32) -> Option<Pose> {
+    (ms < PRESS_MS).then(|| Pose {
+        scale: 1.0 + (PRESS_SCALE - 1.0) * ease_out_cubic(ms / PRESS_MS),
+        ..Pose::REST
+    })
+}
+
+/// With less motion asked for, the card only fades, in and out alike.
+pub const CALM_MS: f32 = 150.0;
+
+pub fn calm_entry(ms: f32) -> Option<Pose> {
+    (ms < CALM_MS).then(|| Pose {
+        alpha: (ms / CALM_MS).max(0.0),
+        ..Pose::REST
+    })
+}
+
+pub fn calm_exit(ms: f32, from: Pose) -> Option<Pose> {
+    (ms < CALM_MS).then(|| Pose {
+        alpha: from.alpha * (1.0 - (ms / CALM_MS).max(0.0)),
+        ..from
+    })
+}
+
 /// Closed by a click: a little smaller and out.
 pub fn dismiss(ms: f32, from: Pose) -> Option<Pose> {
     (ms < DISMISS_MS).then(|| {
@@ -319,6 +350,17 @@ mod tests {
         }
         assert_eq!(swap_text(1.0, true), (1.0, 0.0));
         assert!(status_swap(260.0).is_none());
+    }
+
+    #[test]
+    fn the_calm_way_only_fades() {
+        for ms in [0.0, 40.0, 100.0, 149.0] {
+            let p = calm_entry(ms).unwrap();
+            assert_eq!((p.dy, p.scale), (0.0, 1.0));
+            let q = calm_exit(ms, Pose::REST).unwrap();
+            assert_eq!((q.dy, q.scale), (0.0, 1.0));
+        }
+        assert!(calm_entry(CALM_MS).is_none() && calm_exit(CALM_MS, Pose::REST).is_none());
     }
 
     #[test]

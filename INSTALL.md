@@ -154,6 +154,7 @@ Everything about the bubble is tunable in `~/.config/podctl/popup.toml`
 enabled     = true      # false disables the bubble entirely
 backend     = "auto"    # auto | wl | x11 | notify
 theme       = "auto"    # auto (desktop style) | dark | light
+motion      = "auto"    # auto (desktop setting) | full | reduced
 duration_ms = 5500      # time on screen, 500 … 60000
 output      = ""        # monitor to show on, e.g. "eDP-1"
 ```
@@ -169,6 +170,11 @@ usually the one in use. On X11 the bubble is centred on a single monitor:
 under the pointer, else the RandR primary. Without a compositing manager
 (no picom/xcompmgr) the window is clipped to the card, since an X server
 on its own ignores the alpha channel and would paint a black rectangle.
+
+With `motion = auto` the bubble only fades in and out when the desktop
+asks for less motion: GNOME with animations off, KDE with the animation
+speed set to instant (`AnimationDurationFactor = 0`), or the portal's
+`reduced-motion` setting.
 
 A click on the card closes the bubble, and while the pointer rests on it
 the bubble stays; once it leaves, at least 1.5 s remain. Only the card

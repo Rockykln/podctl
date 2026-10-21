@@ -178,14 +178,14 @@ impl Drawn {
         self.at
     }
 
-    /// The close button area, lit or not.
-    pub fn close_patch(&self, pal: &Pal, hover: bool) -> Pixmap {
+    /// The close button area as `k` has it.
+    pub fn close_patch(&self, pal: &Pal, k: Knob) -> Pixmap {
         let s = scale_of(&self.pm);
         set_scale(s);
         let mut pm = self.under.clone();
         let t =
             Transform::from_scale(s, s).post_translate(-(self.at.0 as f32), -(self.at.1 as f32));
-        close_btn(&mut pm, pal, t, hover);
+        close_btn(&mut pm, pal, t, k);
         pm
     }
 }
@@ -296,7 +296,7 @@ fn plate(
     let under = pm
         .clone_rect(IntRect::from_xywh(at.0 as i32, at.1 as i32, side, side).expect("non-empty"))
         .expect("inside the card");
-    close_btn(pm, pal, t, false);
+    close_btn(pm, pal, t, Knob::REST);
     (under, at)
 }
 
@@ -532,19 +532,38 @@ fn readout(
     }
 }
 
-fn close_btn(pm: &mut Pixmap, pal: &Pal, t: Transform, hover: bool) {
+/// The close button between rest, lit under the pointer, and pressed.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Knob {
+    pub lit: f32,
+    pub pressed: f32,
+}
+
+impl Knob {
+    pub const REST: Knob = Knob {
+        lit: 0.0,
+        pressed: 0.0,
+    };
+}
+
+fn close_btn(pm: &mut Pixmap, pal: &Pal, t: Transform, k: Knob) {
     let (cx, cy) = (CLOSE_X, CLOSE_Y);
-    let (face, mark) = if hover {
-        let face = if pal.dark {
+    let (mut face, mut mark, mut r) = (pal.fill3, pal.sub, CLOSE_R);
+    if k != Knob::REST {
+        let lit = if pal.dark {
             hex(0x4A4A4F, 255)
         } else {
             hex(0xDCDCE1, 255)
         };
-        (face, mix(pal.sub, pal.text, 0.5))
-    } else {
-        (pal.fill3, pal.sub)
-    };
-    fill(pm, &oval(cx, cy, CLOSE_R, CLOSE_R), face, t);
+        face = mix(
+            mix(pal.fill3, lit, k.lit),
+            hex(0x000000, 255),
+            0.12 * k.pressed,
+        );
+        mark = mix(pal.sub, mix(pal.sub, pal.text, 0.5), k.lit);
+        r = CLOSE_R * (1.0 - 0.06 * k.pressed);
+    }
+    fill(pm, &oval(cx, cy, r, r), face, t);
     let d = 3.6;
     let mut pb = PathBuilder::new();
     pb.move_to(cx - d, cy - d);
@@ -621,7 +640,7 @@ mod tests {
         for scale in [1.0, 1.25, 1.75, 2.0] {
             for pal in [dark(), light()] {
                 let d = render_card(&Snapshot::sample(), &pal, scale);
-                let patch = d.close_patch(&pal, false);
+                let patch = d.close_patch(&pal, Knob::REST);
                 let (x0, y0) = d.close_at();
                 let w = d.pm.width() as usize;
                 let row = patch.width() as usize * 4;
@@ -629,7 +648,11 @@ mod tests {
                     let at = ((y0 as usize + y) * w + x0 as usize) * 4;
                     assert_eq!(line, &d.pm.data()[at..at + row], "scale {scale}, row {y}");
                 }
-                assert_ne!(d.close_patch(&pal, true).data(), patch.data());
+                let lit = Knob {
+                    lit: 1.0,
+                    pressed: 0.0,
+                };
+                assert_ne!(d.close_patch(&pal, lit).data(), patch.data());
             }
         }
     }

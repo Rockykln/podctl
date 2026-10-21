@@ -269,6 +269,12 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
   play the same way, and the status line changes without two texts ever
   overlapping. The Wayland bubble keeps three buffers, so a frame no
   longer waits a quarter of a second for one to come back.
+- **Less motion when the desktop asks for it.** `motion` in `popup.toml`
+  (`auto`, the default, `full`, `reduced`) follows GNOME's animations
+  switch, KDE's animation speed and the portal's reduced-motion key; the
+  bubble then only fades in and out, and its values just appear.
+- The close button lights up and back down over 120 ms, and a click holds
+  it down for a moment before the bubble shrinks away.
 - `output` in `popup.toml` works on Wayland too. On X11 the bubble now
   goes to the monitor under the pointer before the primary one.
 - The bubble draws about five times faster: shadows are blurred only

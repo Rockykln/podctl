@@ -30,6 +30,34 @@ impl Pick {
     }
 }
 
+/// `auto` follows the desktop: GNOME's animations switch, KDE's
+/// animation speed, the portal's reduced-motion key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MotionPick {
+    Auto,
+    Full,
+    Reduced,
+}
+
+impl MotionPick {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MotionPick::Auto => "auto",
+            MotionPick::Full => "full",
+            MotionPick::Reduced => "reduced",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "auto" => Some(MotionPick::Auto),
+            "full" => Some(MotionPick::Full),
+            "reduced" => Some(MotionPick::Reduced),
+            _ => None,
+        }
+    }
+}
+
 /// `auto` follows the desktop's light/dark preference.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ThemePick {
@@ -68,6 +96,7 @@ pub struct Config {
     pub enabled: bool,
     pub backend: Pick,
     pub theme: ThemePick,
+    pub motion: MotionPick,
     pub duration_ms: u64,
     /// Output (e.g. `eDP-1`) to show the bubble on. `None` leaves it to
     /// the compositor on Wayland; on X11 the monitor under the pointer,
@@ -81,6 +110,7 @@ impl Default for Config {
             enabled: true,
             backend: Pick::Auto,
             theme: ThemePick::Auto,
+            motion: MotionPick::Auto,
             // Five seconds was too tight to read the rings and register
             // the mode line; six and a half then outstayed its welcome
             // on a bubble that now opens with the lid.
@@ -112,6 +142,9 @@ fn from_text(text: &str) -> Config {
     }
     if let Some(v) = kv.get("theme").and_then(|s| ThemePick::parse(s)) {
         cfg.theme = v;
+    }
+    if let Some(v) = kv.get("motion").and_then(|s| MotionPick::parse(s)) {
+        cfg.motion = v;
     }
     if let Some(v) = kv.get("duration_ms").and_then(|s| s.parse::<u64>().ok()) {
         cfg.duration_ms = v.clamp(DURATION_MIN_MS, DURATION_MAX_MS);
@@ -214,6 +247,14 @@ duration_ms = 3000
         assert_eq!(from_text("theme = light").theme, ThemePick::Light);
         assert_eq!(from_text("theme = \"dark\"").theme, ThemePick::Dark);
         assert_eq!(from_text("theme = sepia").theme, ThemePick::Auto);
+    }
+
+    #[test]
+    fn motion_defaults_to_auto() {
+        assert_eq!(Config::default().motion, MotionPick::Auto);
+        assert_eq!(from_text("motion = reduced").motion, MotionPick::Reduced);
+        assert_eq!(from_text("motion = \"full\"").motion, MotionPick::Full);
+        assert_eq!(from_text("motion = none").motion, MotionPick::Auto);
     }
 
     #[test]

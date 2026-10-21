@@ -27,7 +27,7 @@ use podctl::{Request, Response, WatchRole};
 use anim::{Pose, RISE};
 use art::Art;
 use backend::{Backend, Frame, Input};
-use config::{Pick, ThemePick};
+use config::{MotionPick, Pick, ThemePick};
 use layers::Layers;
 use render::{BUF_H, BUF_W, Pod, Snapshot, Theme};
 
@@ -86,7 +86,12 @@ async fn main() -> ExitCode {
             .map_or(Duration::from_millis(DEMO_HOLD_MS), Duration::from_millis);
         // The notification backend drives zbus on a runtime of its own,
         // which panics if this thread is already running one.
-        let out = thread::spawn(move || demo(&theme, want, hold)).join();
+        let calm = match flag(&args, "--motion").map(MotionPick::parse) {
+            Some(None) => return fail("motion (auto, full or reduced)", exitcode::USAGE),
+            Some(Some(m)) => is_calm(m).await,
+            None => is_calm(MotionPick::Auto).await,
+        };
+        let out = thread::spawn(move || demo(&theme, calm, want, hold)).join();
         return match out {
             Ok(Ok(())) => ExitCode::SUCCESS,
             Ok(Err(e)) => fail(&format!("demo: {e:#}"), exitcode::UNAVAILABLE),
@@ -123,8 +128,12 @@ async fn run() -> ExitCode {
         explicit: cfg.backend != Pick::Auto,
     };
     let dark = Arc::new(AtomicBool::new(is_dark(cfg.theme).await));
-    if cfg.theme == ThemePick::Auto {
-        tokio::spawn(scheme::follow(dark.clone()));
+    let calm = Arc::new(AtomicBool::new(is_calm(cfg.motion).await));
+    if cfg.theme == ThemePick::Auto || cfg.motion == MotionPick::Auto {
+        tokio::spawn(scheme::follow(
+            (cfg.theme == ThemePick::Auto).then(|| dark.clone()),
+            (cfg.motion == MotionPick::Auto).then(|| calm.clone()),
+        ));
     }
     let hold = Duration::from_millis(cfg.duration_ms);
     let visible = Duration::from_millis(config::visible_ms(&cfg));
@@ -133,6 +142,8 @@ async fn run() -> ExitCode {
         backend = %pick.name,
         theme = cfg.theme.as_str(),
         dark = dark.load(Ordering::Relaxed),
+        motion = cfg.motion.as_str(),
+        calm = calm.load(Ordering::Relaxed),
         visible_ms = visible.as_millis() as u64,
         "podctl-popup ready"
     );
@@ -145,7 +156,7 @@ async fn run() -> ExitCode {
     }
 
     let (tx, rx) = mpsc::channel::<Cmd>();
-    let render = thread::spawn(move || render_loop(rx, &pick, &dark, hold));
+    let render = thread::spawn(move || render_loop(rx, &pick, &dark, &calm, hold));
 
     tokio::select! {
         _ = watch(&tx, visible) => {}
@@ -244,6 +255,14 @@ struct BackendPick {
     explicit: bool,
 }
 
+async fn is_calm(pick: MotionPick) -> bool {
+    match pick {
+        MotionPick::Full => false,
+        MotionPick::Reduced => true,
+        MotionPick::Auto => scheme::reduced_motion().await,
+    }
+}
+
 /// Without a portal, `auto` keeps the bubble dark as it always was.
 async fn is_dark(pick: ThemePick) -> bool {
     match pick {
@@ -253,7 +272,13 @@ async fn is_dark(pick: ThemePick) -> bool {
     }
 }
 
-fn render_loop(rx: Receiver<Cmd>, pick: &BackendPick, dark: &AtomicBool, hold: Duration) {
+fn render_loop(
+    rx: Receiver<Cmd>,
+    pick: &BackendPick,
+    dark: &AtomicBool,
+    calm: &AtomicBool,
+    hold: Duration,
+) {
     // Drawn ahead at the last bubble's scale; usually the next one shows
     // on the same screen and nothing has to be drawn twice.
     let mut scale = 1.0;
@@ -268,7 +293,15 @@ fn render_loop(rx: Receiver<Cmd>, pick: &BackendPick, dark: &AtomicBool, hold: D
         // A change of desktop scheme shows from the next bubble on.
         let theme = Theme::of(dark.load(Ordering::Relaxed));
         if matches!(
-            show_cycle(&rx, pick, &theme, hold, snap, &mut scale),
+            show_cycle(
+                &rx,
+                pick,
+                &theme,
+                calm.load(Ordering::Relaxed),
+                hold,
+                snap,
+                &mut scale
+            ),
             Outcome::Quit
         ) {
             return;
@@ -302,7 +335,12 @@ struct Card {
     theme: Theme,
     scale: f32,
     drawn: Option<render::Drawn>,
-    hover: bool,
+    /// The close button: lit (towards `lit_to`, from `lit_from` at
+    /// `lit_at`) and pressed.
+    lit_to: bool,
+    lit_from: f32,
+    lit_at: Instant,
+    pressed: f32,
     bgra: Vec<u8>,
     w: u32,
     h: u32,
@@ -316,6 +354,8 @@ struct Card {
     /// before it last changed: both play out over the next frames.
     values_at: Option<Instant>,
     status_from: Option<(Instant, &'static str)>,
+    /// Less motion asked for: new values just appear.
+    calm: bool,
 }
 
 fn has_values(s: &Snapshot) -> bool {
@@ -335,7 +375,10 @@ impl Card {
             theme: *theme,
             scale,
             drawn: None,
-            hover: false,
+            lit_to: false,
+            lit_from: 0.0,
+            lit_at: Instant::now(),
+            pressed: 0.0,
             bgra: Vec::new(),
             w: 0,
             h: 0,
@@ -345,6 +388,7 @@ impl Card {
             pending: None,
             values_at: None,
             status_from: None,
+            calm: false,
         };
         c.draw();
         c
@@ -357,12 +401,29 @@ impl Card {
         }
     }
 
-    /// Whether the values or the status line are still on their way in.
+    fn lit(&self, now: Instant) -> f32 {
+        let to = if self.lit_to { 1.0 } else { 0.0 };
+        let u = now.saturating_duration_since(self.lit_at).as_secs_f32() * 1000.0 / anim::KNOB_MS;
+        self.lit_from + (to - self.lit_from) * anim::ease_out_cubic(u)
+    }
+
+    fn knob(&self, now: Instant) -> render::Knob {
+        render::Knob {
+            lit: self.lit(now),
+            pressed: self.pressed,
+        }
+    }
+
+    /// Whether the values, the status line or the close button are
+    /// still on their way somewhere.
     fn settling(&self, now: Instant) -> bool {
+        let knob =
+            now.saturating_duration_since(self.lit_at).as_secs_f32() * 1000.0 < anim::KNOB_MS;
         let n = render::readout_count(&self.snap);
         let since = |t: Instant| now.saturating_duration_since(t).as_secs_f32() * 1000.0;
         // Before its start the timeline counts as running too.
-        self.values_at
+        knob || self
+            .values_at
             .is_some_and(|t| t > now || anim::gauges_moving(since(t), n))
             || self
                 .status_from
@@ -439,16 +500,16 @@ impl Card {
         let now = Instant::now();
         let art = art.or_else(|| self.settling(now).then_some(anim::Art::REST));
         let _ = self.layers();
-        let moving = match (art, &self.layers) {
-            (Some(a), Some(l)) => {
-                let mut bgra = render::to_bgra_premul(&l.compose(a, &self.overlay(now)));
-                if self.hover {
-                    self.patch_close(&mut bgra);
-                }
-                Some(bgra)
-            }
+        let knob = self.knob(now);
+        let mut moving = match (art, &self.layers) {
+            (Some(a), Some(l)) => Some(render::to_bgra_premul(&l.compose(a, &self.overlay(now)))),
             _ => None,
         };
+        if knob != render::Knob::REST {
+            let mut bgra = moving.take().unwrap_or_else(|| self.bgra.clone());
+            self.patch_close(&mut bgra, knob);
+            moving = Some(bgra);
+        }
         let src = moving.as_deref().unwrap_or(&self.bgra);
         let (w, h) = (self.w as usize, self.h as usize);
         self.frame_h = render::buf_px(BUF_W, BUF_H + RISE as u32, self.scale).1;
@@ -491,29 +552,34 @@ impl Card {
         (self.w, self.h) = (d.pm.width(), d.pm.height());
         self.bgra = render::to_bgra_premul(&d.pm);
         self.drawn = Some(d);
-        if self.hover {
-            let mut bgra = std::mem::take(&mut self.bgra);
-            self.patch_close(&mut bgra);
-            self.bgra = bgra;
-        }
     }
 
-    /// Light the close button or not, without drawing the whole card.
+    /// Start lighting the close button up or down; frames draw only the
+    /// button again, not the whole card.
     fn set_hover(&mut self, on: bool) -> bool {
-        if self.hover == on {
+        if self.lit_to == on {
             return false;
         }
-        self.hover = on;
-        let mut bgra = std::mem::take(&mut self.bgra);
-        self.patch_close(&mut bgra);
-        self.bgra = bgra;
+        let now = Instant::now();
+        self.lit_from = if self.calm {
+            if on { 0.0 } else { 1.0 }
+        } else {
+            self.lit(now)
+        };
+        // Less motion: the button switches at once.
+        self.lit_at = if self.calm {
+            now - Duration::from_secs(1)
+        } else {
+            now
+        };
+        self.lit_to = on;
         true
     }
 
-    /// Put the close button, lit as `hover` says, into a card's pixels.
-    fn patch_close(&self, bgra: &mut [u8]) {
+    /// Put the close button, as `k` has it, into a card's pixels.
+    fn patch_close(&self, bgra: &mut [u8], k: render::Knob) {
         let Some(d) = &self.drawn else { return };
-        let patch = d.close_patch(&self.theme, self.hover);
+        let patch = d.close_patch(&self.theme, k);
         let (x0, y0) = d.close_at();
         let row = patch.width() as usize * 4;
         let src = render::to_bgra_premul(&patch);
@@ -527,10 +593,10 @@ impl Card {
 
     fn set(&mut self, snap: Snapshot) {
         let now = Instant::now();
-        if !has_values(&self.snap) && has_values(&snap) {
+        if !self.calm && !has_values(&self.snap) && has_values(&snap) {
             self.values_at = Some(now);
         }
-        if self.snap.status() != snap.status() {
+        if !self.calm && self.snap.status() != snap.status() {
             self.status_from = Some((now, self.snap.status()));
         }
         let rebuild = layer_key(&self.snap) != layer_key(&snap)
@@ -662,10 +728,12 @@ impl Hold {
     }
 }
 
+/// `calm`: the desktop asks for less motion; the card then only fades.
 fn show_cycle(
     rx: &Receiver<Cmd>,
     pick: &BackendPick,
     theme: &Theme,
+    calm: bool,
     hold: Duration,
     snap: Snapshot,
     scale: &mut f32,
@@ -695,21 +763,29 @@ fn show_cycle(
     // A server that cannot blend (a notification, X without a
     // compositor) gets the card standing still.
     let moves = be.animates();
-    if moves {
+    card.calm = calm;
+    if moves && !calm {
         card.wait_layers(LAYER_WAIT);
     }
     let mut pose = Pose::REST;
     let mut stop = None;
     let t0 = Instant::now();
-    if moves {
+    if moves && !calm {
         card.mapped(t0);
     }
+    let enter = |ms: f32| {
+        if calm {
+            anim::calm_entry(ms)
+        } else {
+            anim::entry(ms)
+        }
+    };
     let mut frames = 0u32;
-    while let Some(p) = moves.then(|| anim::entry(ms_since(t0))).flatten() {
+    while let Some(p) = moves.then(|| enter(ms_since(t0))).flatten() {
         frames += 1;
         pose = p;
-        let art = anim::art(ms_since(t0));
-        if push_moving(be.as_mut(), &mut card, pose, Some(art)).is_err() {
+        let art = (!calm).then(|| anim::art(ms_since(t0)));
+        if push_moving(be.as_mut(), &mut card, pose, art).is_err() {
             let _ = be.close();
             return Outcome::Done;
         }
@@ -812,7 +888,22 @@ fn show_cycle(
         }
     };
 
-    let leave = if clicked { anim::dismiss } else { anim::exit };
+    if clicked && !calm && moves {
+        let t0 = Instant::now();
+        while let Some(p) = anim::press(ms_since(t0)) {
+            card.pressed = ms_since(t0) / anim::PRESS_MS;
+            if push(be.as_mut(), &mut card, p).is_err() {
+                break;
+            }
+            pose = p;
+            be.wait_frame();
+        }
+    }
+    let leave = match (calm, clicked) {
+        (true, _) => anim::calm_exit,
+        (false, true) => anim::dismiss,
+        (false, false) => anim::exit,
+    };
     let t0 = Instant::now();
     while let Some(p) = moves.then(|| leave(ms_since(t0), pose)).flatten() {
         if push(be.as_mut(), &mut card, p).is_err() {
@@ -1192,7 +1283,7 @@ fn frame_at(art: Art, theme: &Theme, scale: f32, at: &str) -> Result<tiny_skia::
     .ok_or_else(wrong)
 }
 
-fn demo(theme: &Theme, want: Option<String>, hold: Duration) -> anyhow::Result<()> {
+fn demo(theme: &Theme, calm: bool, want: Option<String>, hold: Duration) -> anyhow::Result<()> {
     let pick = BackendPick {
         name: want.clone().unwrap_or_else(|| "wl".into()),
         explicit: want.is_some(),
@@ -1200,7 +1291,15 @@ fn demo(theme: &Theme, want: Option<String>, hold: Duration) -> anyhow::Result<(
     // Kept alive, or the cycle reads the closed channel as Quit.
     let (_tx, rx) = mpsc::channel::<Cmd>();
     let mut scale = 1.0;
-    show_cycle(&rx, &pick, theme, hold, Snapshot::sample(), &mut scale);
+    show_cycle(
+        &rx,
+        &pick,
+        theme,
+        calm,
+        hold,
+        Snapshot::sample(),
+        &mut scale,
+    );
     eprintln!("podctl-popup: scale {scale}");
     Ok(())
 }
@@ -1275,7 +1374,7 @@ fn print_usage() {
         "  podctl-popup --dump <file.png> [--theme auto|dark|light] [--model <slug>] [--scale <n>] [--at entry|exit|dismiss|values:<ms>] [--backdrop]"
     );
     println!(
-        "  podctl-popup --demo [--backend wl|x11|notify] [--theme auto|dark|light] [--hold <ms>]"
+        "  podctl-popup --demo [--backend wl|x11|notify] [--theme auto|dark|light] [--motion auto|full|reduced] [--hold <ms>]"
     );
     println!("  podctl-popup                               (run; watches the daemon)");
 }
