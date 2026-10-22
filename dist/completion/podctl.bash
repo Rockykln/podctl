@@ -70,6 +70,11 @@ _podctl() {
             1) COMPREPLY=( $(compgen -W "on off" -- "$cur") );;
             esac
             ;;
+        auto-anc|anc-strength)
+            case $argpos in
+            1) COMPREPLY=( $(compgen -W "less-noise default more-noise" -- "$cur") );;
+            esac
+            ;;
         pair)
             case $argpos in
             1) COMPREPLY=( $(compgen -W "--yes -y" -- "$cur") );;

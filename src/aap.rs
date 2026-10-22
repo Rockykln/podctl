@@ -225,6 +225,28 @@ pub mod wire {
         })
     }
 
+    /// The Adaptive Audio slider. The buds keep three stops and round
+    /// anything else to the nearest; the byte runs against the words,
+    /// 100 lets the least noise through.
+    pub const AUTO_ANC_STOPS: [(&str, u8); 3] =
+        [("less-noise", 100), ("default", 50), ("more-noise", 0)];
+
+    pub fn auto_anc_stop(level: u8) -> u8 {
+        match level {
+            0..=24 => 0,
+            25..=74 => 50,
+            _ => 100,
+        }
+    }
+
+    pub fn auto_anc_name(b: u8) -> &'static str {
+        let stop = auto_anc_stop(b);
+        AUTO_ANC_STOPS
+            .iter()
+            .find(|(_, v)| *v == stop)
+            .map_or("default", |(name, _)| name)
+    }
+
     /// Every on/off setting: 1 is on, 2 is off, 0 is neither — unlike
     /// the mic selection, where 0 is a value.
     pub fn switch_byte(on: bool) -> u8 {

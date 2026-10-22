@@ -157,7 +157,7 @@ fn settings_line(s: &DeviceState) -> String {
         parts.push(format!("one-bud-anc {}", on_off(v)));
     }
     if let Some(v) = set.auto_anc_level {
-        parts.push(format!("auto-anc {v}"));
+        parts.push(format!("auto-anc {}", podctl::aap::wire::auto_anc_name(v)));
     }
     if let Some(v) = set.chime_volume {
         parts.push(format!("chime {v}"));
@@ -533,7 +533,7 @@ AirPods Pro (2nd gen, USB-C)  \"My AirPods\"  connected · AAP up · 0s ago
   in-ear    both in ear   case lid closed
 
   listening mode anc · conv on
-  settings  ear on · mic auto · one-bud-anc off · auto-anc 50 · chime 100
+  settings  ear on · mic auto · one-bud-anc off · auto-anc default · chime 100
   audio     60%  high  aac  [default sink]
             codecs: sbc, aac
   bluetooth AA:BB:CC:DD:EE:01  rssi -52 dBm  auto-connect on

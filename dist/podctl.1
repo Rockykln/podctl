@@ -87,8 +87,11 @@ Change the Bluetooth name.
 .BI "one-bud-anc, obanc " "on|off"
 Keep ANC active when only one bud is being worn (Pro 2).
 .TP
-.BI "auto-anc, anc-strength " "0..100"
-AutoANC / Adaptive Audio strength (Pro 2).
+.BI "auto-anc, anc-strength " "less-noise|default|more-noise"
+How much outside noise Adaptive lets in, as the slider under Adaptive
+Audio on iOS. It only acts in Adaptive, so podctl switches there
+first. The buds know these three stops; a number 0..100 is rounded to
+the nearest, 100 being less-noise.
 .TP
 .BI "chime, chime-volume " "0..100"
 System tone / chime volume.

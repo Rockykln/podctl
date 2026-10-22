@@ -42,6 +42,11 @@ entries when upgrading from 0.3.0.
 - **`podctl pair` pairs what you name.** It used to pair and trust the
   first unpaired device that looked like AirPods. It lists what it found
   and pairs the address you give, or the only candidate with `--yes`.
+- **`podctl auto-anc` takes `less-noise`, `default` or `more-noise`**,
+  the slider under Adaptive Audio on iOS, and switches to
+  Adaptive first, the one mode it acts in. The buds keep only these
+  three stops; a number still works and is rounded as they round it.
+  The help had the direction backwards: 100 lets the least noise in.
 - **Error messages have one shape**: `podctl: mode: unknown value 'foo'
   (expected off, anc, transparency, adaptive)` with `hint:` on the next
   line, and the daemon's own errors name the command too

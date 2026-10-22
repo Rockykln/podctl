@@ -16,7 +16,7 @@ _podctl() {
         'tone-on-press:sound on press'
         'rename:change the bluetooth name'
         'one-bud-anc:keep ANC with one bud in'
-        'auto-anc:AutoANC strength (Pro 2)'
+        'auto-anc:how much noise Adaptive lets in'
         'chime:volume of the buds tones'
         'connect:bring the link up'
         'disconnect:drop the link'
@@ -126,6 +126,11 @@ _podctl() {
         one-bud-anc|obanc)
             case $argpos in
                 1) compadd on off ;;
+            esac
+            ;;
+        auto-anc|anc-strength)
+            case $argpos in
+                1) compadd less-noise default more-noise ;;
             esac
             ;;
         pair)

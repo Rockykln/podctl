@@ -224,6 +224,9 @@ fn run(mut args: Vec<String>) -> Result<i32, CliError> {
         }
         None => parse_verb(&verb, &args[1..])?,
     };
+    if let Request::SetAutoAncLevel { .. } = request {
+        adaptive_first(&verb)?;
+    }
     // Fifteen seconds of silence otherwise, with nothing to say whether
     // anything is happening.
     if let Request::Pair { address: None, .. } = &request {
@@ -546,7 +549,7 @@ fn parse_verb(verb: &str, rest: &[String]) -> Result<Request, CliError> {
             level: parse_percent(rest, verb)?,
         },
         "auto-anc" | "anc-strength" => Request::SetAutoAncLevel {
-            level: parse_percent(rest, verb)?,
+            level: parse_auto_anc(rest, verb)?,
         },
 
         "watch" | "w" => Request::Watch {
@@ -627,6 +630,46 @@ fn parse_press_side(raw: Option<&str>) -> Result<PressSide, CliError> {
         "left" | "l" => Ok(PressSide::Left),
         "right" | "r" => Ok(PressSide::Right),
         other => Err(bad_value("press", 0, other)),
+    }
+}
+
+/// A stop by name, or a number as before, rounded to the stop the buds
+/// would round it to so the state says what they hold.
+fn parse_auto_anc(rest: &[String], verb: &str) -> Result<u8, CliError> {
+    use podctl::aap::wire::{AUTO_ANC_STOPS, auto_anc_stop};
+    let raw = require_arg(rest, verb)?;
+    if let Some((_, level)) = AUTO_ANC_STOPS.iter().find(|(name, _)| *name == raw) {
+        return Ok(*level);
+    }
+    match raw.parse::<u8>() {
+        Ok(v) if v <= 100 => Ok(auto_anc_stop(v)),
+        _ => Err(bad_value(verb, 0, raw)),
+    }
+}
+
+/// The slider only does anything in Adaptive, so setting it switches
+/// there first, as iOS shows it only under Adaptive.
+fn adaptive_first(verb: &str) -> Result<(), CliError> {
+    let s = current_state(verb)?;
+    if !s.aap_linked || !s.capabilities.has_adaptive || s.settings.mode == Some(Mode::Adaptive) {
+        return Ok(());
+    }
+    match try_daemon(
+        verb,
+        &Request::SetMode {
+            mode: Mode::Adaptive,
+        },
+    )? {
+        Some(Response::Err(info)) => Err(CliError::new(
+            exit_code_for(info.code),
+            with_verb(verb, &info.message),
+        )),
+        Some(_) => {
+            eprintln!("{PROG}: {}", with_verb(verb, "switched to adaptive"));
+            Ok(())
+        }
+        // The setting needs the daemon too and will say so.
+        None => Ok(()),
     }
 }
 
@@ -950,6 +993,22 @@ mod tests {
         );
         s.audio.volume_percent = None;
         assert!(step_request(Step::Volume(5), &s).is_err());
+    }
+
+    #[test]
+    fn auto_anc_takes_names_and_rounds_numbers() {
+        let parse = |a: &str| super::parse_auto_anc(&[a.to_string()], "auto-anc").ok();
+        assert_eq!(parse("less-noise"), Some(100));
+        assert_eq!(parse("default"), Some(50));
+        assert_eq!(parse("more-noise"), Some(0));
+        assert_eq!(parse("10"), Some(0));
+        assert_eq!(parse("25"), Some(50));
+        assert_eq!(parse("74"), Some(50));
+        assert_eq!(parse("75"), Some(100));
+        assert_eq!(parse("101"), None);
+        assert_eq!(parse("more"), None);
+        assert_eq!(podctl::aap::wire::auto_anc_name(100), "less-noise");
+        assert_eq!(podctl::aap::wire::auto_anc_name(0), "more-noise");
     }
 
     #[test]

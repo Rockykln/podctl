@@ -140,7 +140,7 @@ const TAIL: &str = "\
 EXAMPLES
     podctl status                 # everything we know, live from the buds
     podctl m anc                  # noise cancellation
-    podctl auto-anc 60            # adaptive ANC at 60 %
+    podctl auto-anc less-noise    # Adaptive lets less noise in
     podctl watch                  # streams events while you wear them
     podctl meter                  # live dB meter on the playback sink
     podctl v 60                   # volume 60 %
@@ -161,7 +161,7 @@ podctl status — everything we know
       in-ear    both in ear   case lid closed
 
       listening mode anc · conv on
-      settings  ear on · mic auto · one-bud-anc off · auto-anc 50 · chime 100
+      settings  ear on · mic auto · one-bud-anc off · auto-anc default · chime 100
       audio     60%  high  aac  [default sink]
                 codecs: sbc, aac
       bluetooth AA:BB:CC:DD:EE:01  rssi -52 dBm  auto-connect on
@@ -514,14 +514,20 @@ case open/close. Range 0..100. Note: AirPods firmware may quantise.
 ";
 
 const AUTO_ANC: &str = "\
-podctl auto-anc — AutoANC / Adaptive Audio strength
+podctl auto-anc — how much noise Adaptive lets in
 
-    podctl auto-anc 0        # let the buds decide
-    podctl auto-anc 50
-    podctl auto-anc 100
+    less-noise   closer to noise cancellation
+    default      where the buds start out
+    more-noise   closer to transparency
 
-Sets how aggressively the Pro 2 mixes ANC with transparency in
-'Adaptive' mode. Range 0..100.
+The slider under Adaptive Audio on iOS. It only acts in
+Adaptive, so podctl switches there first. The buds know these three
+stops; a number 0..100 still works and is rounded to the nearest, 100
+being less-noise. Adaptive follows the room, so the difference shows
+in a loud place, not a quiet one.
+
+    podctl auto-anc less-noise
+    podctl auto-anc default
 ";
 
 const COMPLETION: &str = "\

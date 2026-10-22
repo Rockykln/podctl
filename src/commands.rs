@@ -163,8 +163,9 @@ pub const COMMANDS: &[Cmd] = &[
         "change the bluetooth name", Ready),
     cmd!("one-bud-anc", &["obanc"], BUDS, &[req("on|off", ON_OFF)], &[],
         "keep ANC with one bud in", Ready),
-    cmd!("auto-anc", &["anc-strength"], BUDS, &[req("0..100", &[])], &[],
-        "AutoANC strength (Pro 2)", Ready),
+    cmd!("auto-anc", &["anc-strength"], BUDS,
+        &[req("less-noise|default|more-noise", &["less-noise", "default", "more-noise"])], &[],
+        "how much noise Adaptive lets in", Ready),
     cmd!("chime", &["chime-volume"], BUDS, &[req("0..100", &[])], &[],
         "volume of the bud's tones", Ready),
 

@@ -183,7 +183,7 @@ podctl --json <cmd>           machine-readable response (every command)
 | `podctl tone <on\|off>` | acoustic feedback on press — *AAP id TBD* |
 | `podctl rename "name"` | bluetooth name |
 | `podctl one-bud-anc <on\|off>` | keep ANC active when only one bud is in |
-| `podctl auto-anc <0..100>` | AutoANC / Adaptive Audio strength |
+| `podctl auto-anc <less-noise\|default\|more-noise>` | how much noise Adaptive lets in (switches to Adaptive) |
 | `podctl chime <0..100>` | system tone / chime volume |
 
 ### Bluetooth
