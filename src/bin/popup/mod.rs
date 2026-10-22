@@ -34,6 +34,9 @@ use render::{BUF_H, BUF_W, Pod, Snapshot, Theme};
 const DEMO_HOLD_MS: u64 = 5_000;
 const DEBOUNCE_MS: u64 = 500;
 const AUTO_MODE_WINDOW: Duration = Duration::from_secs(3);
+/// Closed in the case, the buds still connect for a moment, a few
+/// seconds after the lid went down; that is no reason to show up.
+const LID_SHUT_QUIET: Duration = Duration::from_secs(10);
 const BACKOFF_INITIAL_MS: u64 = 500;
 const BACKOFF_MAX_MS: u64 = 30_000;
 /// After the pointer leaves the card the bubble stays at least this long,
@@ -191,6 +194,8 @@ struct ShowOpts {
     allow: bool,
     /// Connected before this event's fresh Status was applied.
     was_connected: bool,
+    /// The lid went down a moment ago.
+    lid_shut: bool,
 }
 
 /// Session lock state, asked at most once a second. A bubble triggers a
@@ -1092,13 +1097,15 @@ async fn serve(
         return false;
     };
     let mut pending_open: Option<Instant> = None;
-    let mut ear_changed: Option<Instant> = None;
+    let mut auto_mode_since: Option<Instant> = None;
+    let mut lid_shut_at: Option<Instant> = None;
     let mut locked = LockState::default();
     loop {
         let tick = pending_open.map(tokio::time::Instant::from_std);
         tokio::select! {
             _ = async { sleep_until(tick.unwrap()).await }, if tick.is_some() => {
                 pending_open = None;
+                info!("showing: case opened");
                 let _ = tx.send(Cmd::Show(snap.clone()));
                 *shown_until = Some(Instant::now() + visible);
             }
@@ -1109,12 +1116,17 @@ async fn serve(
                 }
                 if let Ok(Response::Event(ev)) = serde_json::from_str::<Response>(&l) {
                     // Inserting or removing a bud makes the AirPods switch
-                    // mode on their own; that is no reason to pop up.
-                    if matches!(ev, Event::InEar(_)) {
-                        ear_changed = Some(Instant::now());
+                    // mode on their own, and on connect they report one,
+                    // a stale "off" first at times; neither is a reason
+                    // to pop up.
+                    if matches!(ev, Event::InEar(_) | Event::Connected { .. }) {
+                        auto_mode_since = Some(Instant::now());
+                    }
+                    if let Event::CaseLid { open } = ev {
+                        lid_shut_at = (!open).then(Instant::now);
                     }
                     if let Event::Mode { mode } = ev
-                        && ear_changed.is_some_and(|t| t.elapsed() < AUTO_MODE_WINDOW)
+                        && auto_mode_since.is_some_and(|t| t.elapsed() < AUTO_MODE_WINDOW)
                     {
                         snap.mode = Some(mode);
                         if is_shown(shown_until) {
@@ -1139,6 +1151,7 @@ async fn serve(
                         visible,
                         allow: matches!(ev, Event::ShowPopup) || !locked.get().await,
                         was_connected,
+                        lid_shut: lid_shut_at.is_some_and(|t| t.elapsed() < LID_SHUT_QUIET),
                     };
                     if !opts.allow {
                         debug!(?ev, "session locked — not showing");
@@ -1193,7 +1206,7 @@ fn handle_event(
                     // landed, so it has been showing three em-dashes.
                     // Restart the hold: the numbers get the full window,
                     // not whatever was left of it.
-                    debug!("first levels arrived, hold starts over");
+                    info!("showing: first levels");
                     show_now(tx, snap, pending_open, shown_until, visible);
                 } else {
                     let _ = tx.send(Cmd::Refresh(snap.clone()));
@@ -1215,7 +1228,9 @@ fn handle_event(
         }
         Event::Connected { .. } => {
             snap.connected = true;
-            if !opts.was_connected && opts.allow {
+            if opts.lid_shut {
+                debug!("connected with the lid just shut, not showing");
+            } else if !opts.was_connected && opts.allow {
                 info!("showing: connected");
                 show_now(tx, snap, pending_open, shown_until, visible);
             }
@@ -1524,6 +1539,9 @@ fn push_moving(
         w: card.w,
         h: card.frame_h,
     })
+    .inspect_err(
+        |e| warn!(backend = be.kind(), error = %e, "hiding: a frame did not reach the screen"),
+    )
 }
 
 fn flag<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
@@ -1566,6 +1584,7 @@ mod tests {
             visible: Duration::from_secs(6),
             allow: true,
             was_connected,
+            lid_shut: false,
         };
         let mut run = |ev: Event, was| {
             handle_event(
@@ -1611,6 +1630,53 @@ mod tests {
         );
         let shows = rx.try_iter().filter(|c| matches!(c, Cmd::Show(_))).count();
         assert_eq!(shows, 2, "first mode and the real change only");
+    }
+
+    #[test]
+    fn buds_that_connect_in_a_shut_case_do_not_bring_the_bubble_back() {
+        use super::{Cmd, ShowOpts, handle_event};
+        use podctl::model::Event;
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut snap = snap();
+        snap.connected = false;
+        let (mut pending, mut until, mut low) = (None, None, false);
+        let connected = || Event::Connected {
+            name: "Test AirPods".into(),
+            address: "AA:BB:CC:DD:EE:01".into(),
+        };
+        let opts = |lid_shut| ShowOpts {
+            visible: Duration::from_secs(6),
+            allow: true,
+            was_connected: false,
+            lid_shut,
+        };
+        handle_event(
+            &tx,
+            &mut snap,
+            connected(),
+            &mut pending,
+            &mut until,
+            &mut low,
+            opts(true),
+        );
+        assert_eq!(
+            rx.try_iter().filter(|c| matches!(c, Cmd::Show(_))).count(),
+            0
+        );
+        snap.connected = false;
+        handle_event(
+            &tx,
+            &mut snap,
+            connected(),
+            &mut pending,
+            &mut until,
+            &mut low,
+            opts(false),
+        );
+        assert_eq!(
+            rx.try_iter().filter(|c| matches!(c, Cmd::Show(_))).count(),
+            1
+        );
     }
 
     #[test]
