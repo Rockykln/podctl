@@ -5,437 +5,304 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+Scripts and long-running clients need to adapt to the first six
+entries when upgrading from 0.3.0.
+- **`--json` has one shape for every command**:
+  `{"schema":1,"ok":true,"kind":"state","data":{…}}`, one object on one
+  line, so `watch` and `meter` stream newline-delimited JSON. There were
+  three shapes before (`{"kind":…}`, `{"daemon":…}` for `version`,
+  `{"ble":true}` for `ble`) and `debug --json` ignored the flag.
+  `--pretty` indents it. Errors are an envelope with `ok: false`, the
+  message and the hint, on standard output. Documented in the man page
+  under JSON OUTPUT.
+- **JSON spells values the way the command line takes them**, so
+  `podctl mode "$(podctl status --json | jq -r .data.settings.mode)"`
+  works; it used to print `noise_cancellation` or `always_left`, which
+  the CLI rejects. The old spellings are still read back.
+- **Exit codes tell failures apart.** Every failure from the daemon
+  exited 69. Errors carry a kind now (`unavailable`, `unsupported`,
+  `not_implemented`, `backend`, `internal`, `usage`), seen by the shell
+  as 69, 1, 1, 71, 70 and 64 and in JSON as `data.code`. Surplus
+  arguments, an option a verb does not take and `podctl help nope` are
+  usage errors (64): `podctl rename Test AirPods` now says to quote the
+  name instead of renaming to "Test".
+- **The socket protocol is at 2**, so `podctl`, `podctld`, the tray and
+  the bubble have to be the same version. A 0.3 daemon answers a 0.4
+  `podctl mode anc` with "malformed request"; run `podctl reboot` after
+  an upgrade.
+- **`podctl status` was rewritten.** One label column with the command
+  names as labels (`ear`, `loud-reduction`, `auto-connect`), one line
+  per bud with a bar on a terminal and plain columns in a pipe, and the
+  charging state as a word instead of a two-cell bolt. `trusted` is
+  gone: it is the same BlueZ flag as `auto-connect`. Disconnected, it
+  shows the levels the case last announced over bluetooth LE, with
+  their age. `podctl battery` prints the same rows; `podctl list` cuts
+  a long name instead of shifting the columns.
+- **`podctl pair` pairs what you name.** It used to pair and trust the
+  first unpaired device that looked like AirPods. It lists what it found
+  and pairs the address you give, or the only candidate with `--yes`.
+- **Error messages have one shape**: `podctl: mode: unknown value 'foo'
+  (expected off, anc, transparency, adaptive)` with `hint:` on the next
+  line. A mistyped command names the one you meant, `pending` answers
+  print `pending: <reason>` instead of `ok (pending: …)`, and
+  `meter --interval abc` or `0` is a usage error instead of a silent
+  100 ms or a busy loop.
+- **The command line comes from one table** (`src/commands.rs`). Help,
+  the three completion scripts, argument checks and the man page were
+  hand-kept copies that had drifted: `podctl m <TAB>` and `podctl
+  --json mode <TAB>` completed nothing, the internal `debug
+  emit-case-lid` was offered to everyone. `podctl completion <shell>`
+  writes the script from the table, the bash one no longer needs the
+  bash-completion package, and a test holds `dist/` and the man page to
+  it.
+- `PODS_NO_LR` is now `PODCTL_NO_LR` (the old name still works).
+- **The case-open bubble is redrawn.** Each model is drawn as it looks,
+  buds and case on one millimetre scale (AirPods Max on its own), with
+  the finger notch on every Pro case. The title is the name you gave
+  the buds, cut with an ellipsis; the line under it is the listening
+  mode or "Connecting…". Both buds share one value when within 5
+  points; red is at or below 20 %, green charging, and the red frame is
+  gone. `anim_ms` in `popup.toml` is no longer read.
+- **The bubble is sharp on scaled screens.** On Wayland it draws at the
+  scale of the output it lands on, fractional scales such as 1.25 or
+  1.75 included (`fractional-scale-v1` with `viewporter`); on X11 at
+  `Xft.dpi` / 96. It used to draw at 1× and leave the stretching to the
+  compositor. Shadows are blurred only where they fall: a card at 2×
+  takes 0.3 s instead of 1.7 s, and a bubble that stands still no
+  longer pushes sixty identical frames a second.
+- **The bubble moves in time.** It rises into place on a spring while it
+  fades in, the buds hop once, the rings fill in turn, and changes while
+  it is up (a ring sliding to a new level, a case put on charge, the
+  shared value splitting into left and right) play out too. Where
+  nothing can blend (notification fallback, X without a compositor) the
+  card simply appears. `podctl-popup --demo --updates` shows it.
+- **The bubble answers to the pointer.** A click closes it; while the
+  pointer rests on it the bubble stays, and at least 1.5 s remain after
+  it leaves. The close button lights up and the pointer turns into a
+  hand. Only the card takes clicks, the shadow lets them through (on
+  X11 the whole bubble used to be click-through). `output` in
+  `popup.toml` works on Wayland too; on X11 the bubble goes to the
+  monitor under the pointer before the primary one.
+- **The tray icon is its own**: both buds over a level bar, red at 20 %
+  and below, a bolt while charging, faded when not connected. The
+  theme's headphones looked the same either way and swapped to a laptop
+  battery glyph at low levels. The icons are written to the tray's
+  runtime directory at start, so nothing new has to be installed;
+  `podctl-tray --demo` shows them. On GNOME they are drawn bolder for
+  the 16 px panel.
+- **The tray menu is rebuilt.** Name and model on top, a line per bud
+  and the case, the modes in iPhone order, submenus for volume, audio
+  output and the microphone. What the model cannot do is hidden, not
+  greyed out; not connected it offers Connect first and the last levels
+  the case announced. The double click is gone, because it ran the
+  single-click action first; the middle click toggles the mode.
+- **The tray reports failures.** A tray whose daemon is gone no longer
+  looks like disconnected AirPods: the menu says podctld is not running
+  and offers to start it, and every failing action says why in a
+  notification. Scrolling steps from a fresh reading and adds touchpad
+  steps up to one notch instead of jumping to 0 or 100. The menu waits
+  at most 300 ms for a busy daemon (it could wait 10 s). The icon comes
+  back after a panel restart, and a missing tray host no longer sends
+  the tray into a restart loop. `podctl tray status` named `mode-cycle`
+  as the default left click; it is `popup`.
+- The low-battery warning is per bud and comes in two steps (20 % and
+  10 %, critical), names the bud, replaces the previous one and does not
+  return when the other bud goes into the case for a moment. The tray's
+  red state no longer stays off for a low bud while only the case
+  charges. The tray unit gets its own runtime directory and a tighter
+  sandbox (`ProtectHome=read-only`, `MemoryDenyWriteExecute`, Unix
+  sockets only).
+- The duck for speech starts as soon as the AirPods report it, by the
+  smallest step, while the music's level is measured; about 0.7 s
+  earlier than before.
+- **Release binaries are stripped**: 79 MB down to 13.5 MB for all four
+  together. `fontdue` and `thiserror` are no longer dependencies.
+
 ### Added
 - **Release tarballs for aarch64** (Asahi Linux, ARM laptops) next to
   x86_64, each with a build attestation from GitHub
   (`gh attestation verify`), a CycloneDX SBOM, and the dependency list
   embedded in the binaries by `cargo auditable`. A release is only built
   once the tests pass and the tag matches `Cargo.toml`.
-- **Music that stopped with the link comes back with a bud.** When the
-  AirPods disconnect while something plays through them, a bud in ear
-  after the reconnect resumes it, as when one goes back in after being
-  taken out — within 5 minutes, and not on the reconnect itself: opening
-  the case connects them while they are still in a hand. Music paused
-  before the link dropped stays paused.
-- **`podctl debug` carries the logs.** The report ends with the last 40
-  journal lines of `podctld`, the tray and the bubble, through the same
-  redaction as the rest: the host name, the user name, serial numbers
-  and MAC addresses are taken out of them. It also names the firmware
-  of both buds and the case, reads the capabilities from the daemon
-  instead of guessing them from the Bluetooth modalias, and lists
-  `tone`, `press-vol` and `ear-det-setting`, which were missing.
-- **`podctl -v`** logs what the CLI itself does on stderr — which
-  socket it tried and what the error was, what it asked the daemon and
-  what came back, which `pactl` calls it ran. Until now the CLI said
-  nothing about its own work, and "it is not talking to the daemon" had
-  no trail at all.
-- **`PODCTL_LOG`** sets the level for every podctl process and takes
-  precedence over `RUST_LOG`, so a `RUST_LOG=trace` left behind in a
-  shell no longer makes everything started from it chatty.
 - **The daemon introduces itself.** `podctl version` and `podctl debug`
-  show which `podctld` is on the socket and which protocol it speaks,
-  and when that is not the one the binary belongs to, every command
-  that runs into it says so: *"podctld is 0.3.0 (protocol 1), this is
-  0.4.0 (protocol 2) — restart the services with 'podctl reboot'"*. The
-  tray says it as a notification, the bubble in its log. Before this, a
-  tray or CLI left running across an upgrade simply stopped working,
-  with "malformed request" as the only clue.
-- **A `watch` stream opens with the current state**, so a subscriber no
-  longer needs a second connection for it — an event could slip through
-  between the two. If the daemon has to drop events for a client that
-  cannot keep up, it sends the state again instead of leaving a gap.
+  show which `podctld` is on the socket and which protocol it speaks.
+  When that is not the binary's own, every command that runs into it
+  says so: *"podctld is 0.3.0 (protocol 1), this is 0.4.0 (protocol 2)
+  — restart the services with 'podctl reboot'"*. The tray notifies, the
+  bubble logs it. Before, a tray or CLI left running across an upgrade
+  just stopped working.
+- **A `watch` stream opens with the current state**, so a subscriber
+  needs no second connection for it. If the daemon has to drop events
+  for a client that cannot keep up, it sends the state again.
+- **Music that stopped with the link comes back with a bud.** When the
+  AirPods disconnect while something plays, a bud put in within 5
+  minutes after the reconnect resumes it — not on the reconnect itself,
+  since opening the case connects them while still in a hand. Music
+  paused before stays paused.
+- **`podctl -v`** logs what the CLI itself does on stderr: which socket
+  it tried, what it asked the daemon, which `pactl` calls it ran.
+- **`PODCTL_LOG`** sets the level for every podctl process and takes
+  precedence over `RUST_LOG`.
+- **`podctl debug` carries the logs.** The report ends with the last 40
+  journal lines of `podctld`, the tray and the bubble, redacted like the
+  rest (host name, user name, serial numbers, MAC addresses). It also
+  names the firmware of both buds and the case, reads capabilities from
+  the daemon instead of guessing from the modalias, lists `tone`,
+  `press-vol` and `ear-det-setting`, and says when the systemd user
+  manager cannot be reached (under `sudo`, over ssh without lingering,
+  in containers) instead of reporting every variable as unset.
+- **`theme = "auto"`** in `popup.toml`, now the default besides `dark`
+  and `light`: the bubble follows the desktop's light or dark style via
+  the portal and picks up a change from the next bubble. Without a
+  portal it stays dark.
+- **`motion`** in `popup.toml` (`auto`, `full`, `reduced`). `auto`
+  follows GNOME's animations switch, KDE's animation speed and the
+  portal's reduced-motion key; reduced motion only fades.
+- **The bubble shows on GNOME as itself.** GNOME lets no program float a
+  window, so it used to fall back to XWayland or a plain notification.
+  A shell extension for GNOME 46–51 (`contrib/gnome-shell-extension/`)
+  now shows the frames podctl-popup draws, at the monitor's scale, with
+  hover and click, and holds back GNOME's volume OSD meanwhile.
+  `podctl install` offers it, `podctl install --gnome-extension`
+  switches it on alone (the way for a distro package, whose release
+  archive carries it), `backend = "gnome"` picks it by name, and `podctl
+  debug` says whether it runs.
+- `podctl-popup --dump` takes `--model`, `--scale` and `--backdrop`,
+  `--demo` takes `--hold` and `--motion`; a test compares all 28
+  renders with the reference images in `tests/golden`.
 
 ### Fixed
-- **`podctl pair` could leave a pairing that did not last.** On an
-  adapter that is not pairable — Debian's default — BlueZ paired without
-  keeping a key, and the AirPods were forgotten at the next disconnect.
-  pair now makes the adapter pairable for the moment, puts it back, and
-  says so when BlueZ still kept no key instead of reporting success.
+- **`podctl pair` could leave a pairing that did not last, and failed
+  through the daemon.** On an adapter that is not pairable (Debian's
+  default) BlueZ paired without a key and forgot the AirPods at the next
+  disconnect; pair now makes the adapter pairable for the moment and
+  says so when BlueZ still kept no key. Through a running daemon it
+  always failed with "Resource temporarily unavailable (os error 11)":
+  the scan takes twelve seconds, the CLI gave up after ten. Already
+  paired AirPods are named as such instead of "no new AirPods spotted".
+- **A connect that BlueZ turns down says what to do**:
+  "br-connection-page-timeout" reads as the AirPods not answering, with
+  the hint to open the case. `connect` and other BlueZ commands used to
+  fail with an empty reason, because `bluetoothctl` prints it on stdout.
+- **Paired AirPods could be missing from `podctl list` and `unpair`**
+  until their first connect after the adapter came up (no Modalias yet);
+  they are known by name until then. BlueZ 5.86 and later also print
+  some lines of `bluetoothctl devices` in grey, and those devices were
+  skipped altogether: in `list`, and in `pair`, which then did not see
+  that the AirPods were already paired.
 - **The bubble could stay up for good** while the AirPods reconnected or
-  paired: every repeated mode or connect event started its time over.
-  Only a real change shows it now. A pointer resting on it holds it for
-  30 s at most, and on X11 the bubble checks where the pointer really is
-  when the leave event never came. Showing and hiding are logged with
-  their reason.
-- `podctl pair` says AirPods are already paired instead of "no new
-  AirPods spotted", asks back with exit code 64 instead of 69 when it
-  needs to be told which, and announces the 15 s it really takes.
-- The tray said "Not paired" after logging in until the AirPods first
-  connected: it asked the daemon before the daemon had found them, and
-  nothing told it later. The daemon now sends its whole state to every
-  watcher when the AirPods turn up without connecting.
-- A connect that BlueZ turns down says what to do instead of passing on
-  its code: "br-connection-page-timeout" now reads as the AirPods not
-  answering, with the hint to open the case or take them out.
-- Paired AirPods that had not connected since the adapter came up could
-  be missing from `podctl list` and `unpair`: BlueZ gives them no
-  Modalias yet, so they are known by name until it does.
-- **A tray whose daemon was gone looked like disconnected AirPods**, and
-  a click on Connect failed without a word. The menu now says podctld is
-  not running and offers to start it, and every action from the icon or
-  the menu that fails says why in a notification.
-- A double click on the tray icon ran the single-click action first, so
-  it opened the bubble and changed the mode. The double click is gone;
-  the middle click toggles the mode.
-- Scrolling on the tray icon stepped from a volume that could be long
-  out of date, and a touchpad sent it to 0 or 100 in one swipe. Small
-  steps now add up to one notch, and a new scroll starts from a fresh
-  reading.
-- Opening the tray menu could wait up to 10 s for a busy daemon; it
-  waits 300 ms at most and shows what it has.
-- The tray's red "needs attention" state stayed off for a low bud while
-  only the case was charging.
-- `podctl tray status` named `mode-cycle` as the default left click; it
-  is `popup`. It now reads the file with the tray's own parser.
-- **`podctl reboot` started services that had been stopped on purpose.**
-  It restarted every installed unit, and `restart` starts a stopped one
-  too — next to a daemon run some other way, that is a second daemon.
-  It restarts what runs or has failed and names what it left alone.
-- **`podctl status` kept showing battery, in-ear state, listening mode
-  and settings after the AirPods disconnected.** The link to the buds
-  breaks a moment before BlueZ reports the disconnect, and the clean-up
-  that follows only ran while the link task was still around, and it
-  waited for the next poll of BlueZ, up to 3 s. Now only what podctl
-  stores itself (ear detection, microphone) is left, a moment after the
-  link breaks.
-- **The duck for speech ended up at the wrong level.** Speaking again
-  while the volume came back up started a second duck from that halfway
-  level, so it never returned to where it was; the same happened during
-  the restore after a crash. New speech now stops the restore and goes
-  back down, and the level from before is kept. A link that dropped
-  while the music was down lost the duck as well: with the AirPods'
-  sink gone it looked like a volume change of your own. The note stays
-  on disk then, and the volume is restored once they are back.
-- The buds send nothing while someone keeps talking, so the watchdog
-  for a missing end of speech now waits 30 s instead of 10 — it brought
-  the music back up during a long sentence.
-- **Battery, in-ear and the ear detection went quiet after using the
-  iPhone.** Every so often the AirPods end the AAP session from their
-  side and wait for a new handshake; podctl kept listening on the dead
-  socket until the next reconnect. It opens a new one now.
-- **The music resumed while a bud was being taken out.** The in-ear
-  sensor reports "in" again for a second or more while the bud is still
-  in a hand. Right after a pause the buds have to stay in for 2 s before
-  playback resumes; putting one back in later takes 0.5 s, half of
-  what it took before.
-- `podctl connect` and the other BlueZ commands failed with an empty
-  reason; `bluetoothctl` prints it on stdout.
-- `podctl status` without a daemon ran `bluetoothctl` twice, once for
-  the device and once more for the address the audio lookup needed.
-- **A settings frame without a value switched the microphone over.** A
-  missing byte was read as zero, and zero is exactly what the mic
-  selection calls "auto"; the same frame also set the chime volume to
-  silent and the adaptive-ANC strength to 0. Such a frame is ignored
-  now. Which byte stands for which value is one table for both
-  directions (`aap::wire`), with round-trip tests — reading a dump and
-  writing a setting used to spell it out in two different files.
-- **Every log line under systemd carried two timestamps**, ours and
-  journald's, and escape codes journald does not need. The three
-  services had a subscriber each with its own idea of the format; they
-  share one now, which leaves the timestamp and the colours to journald
-  when stderr really is the journal (the inode from `JOURNAL_STREAM`,
-  not just the variable, which a terminal started from a unit inherits).
-- **`podctl debug` blamed the session for an unreachable systemd user
-  manager.** With no answer from it, every variable looked unset and
-  the report printed *"set here but NOT in the systemd user env"* —
-  under `sudo`, over ssh without lingering and in containers. It says
-  the manager could not be reached.
-- The three shell completions offered only the flags someone had
-  written into them by hand; they come from the table, so `--verbose`
-  is there too.
-- **`podctl install` left the old version running.** `enable --now`
-  does nothing to a unit that is already up, so after an upgrade
-  `podctld`, the tray and the bubble kept running from the binary that
-  had just been deleted until someone found `podctl reboot`. The
-  installer restarts what is running.
-- **`podctl install` shadowed a distro package without a word.** With
-  `podctl-bin` or `podctl-git` installed, the copies in `~/.local/bin`
-  take precedence in `$PATH` and the per-user units take precedence
-  over the package's, so every later `pacman -Syu` had no effect. It
-  stops now and points at the packaged services, or installs anyway
-  with `--force`.
-- **Replacing a binary was not atomic**: the old one was deleted and
-  the new one written in its place, so an interrupted copy left no
-  binary at all and an enabled unit restarting into nothing. It is
-  written beside the target and renamed over it.
-- **`podctl uninstall` could hand the wrong package to pacman.** It
-  asked who owns `/usr/bin/podctl` while allowing itself to run from
-  `/usr/local/bin`; it asks who owns the copy that is running.
-- **`podctl uninstall` left the proximity keys and the settings
-  behind** without mentioning them. Both are named in the listing, and
-  `--purge` removes them.
-- **The no-daemon marker was written where the CLI does not look for
-  it** (always `~/.config`, never `XDG_CONFIG_HOME`), so the
-  "running without daemon" banner kept appearing. All of podctl's paths
-  come from one place now, and `--no-daemon` writes the marker as
-  declining the question does.
-- The zsh completion went to a directory that is not in a default
-  `fpath`, under the old name `_pods`, with no hint. It is `_podctl`,
-  the installer prints the `fpath` line when it is needed, and
-  `uninstall` still removes the old file.
-- `podctl install` claimed to have installed man pages even when
-  writing them failed.
-- **Every failure from the daemon exited 69**, so a script could not
-  tell "no daemon, try again later" from "this model will never do
-  that". Errors carry a kind now — `unavailable`, `unsupported`,
-  `not_implemented`, `backend`, `internal`, `usage` — which the shell
-  sees as 69, 1, 1, 71, 70 and 64, `--json` carries as `data.code`, and
-  the man page spells out, including the fact that `status` exits 0 even
-  when the AirPods are disconnected. The socket protocol is at 2 for
-  it.
-- **The daemon could be held open by a client that said nothing.** A
-  connection now has five seconds to send its request, a request may be
-  64 KB (an endless line used to buffer until the daemon was killed),
-  and sixty-four connections are served at once — the sixty-fifth is
-  turned away with a message instead of adding to the pile.
-- **A `watch` client that went away left its task behind**, and with it
-  its registration: `podctl popup` kept reporting success although
-  nobody was there to draw the bubble. A hangup ends the stream now.
-- **The daemon could cut its own connections.** It kept the number of
-  the socket to the buds rather than the socket, and the kernel hands a
-  closed number to whatever opens next — a `watch` stream or a BLE scan
-  then ended for no visible reason.
-- **Audio went to the first Bluetooth device, not to the AirPods.** With
-  a speaker or headset also paired, volume, mute, profile, codec,
-  default sink, latency, `podctl meter` and the ducking could all land
-  on that one, and a bud coming out paused whatever was playing there.
-- **`podctl profile off` was a dead end.** The card was looked up
-  through its sink, and that profile has none, so profile, codec and
-  latency answered "no AirPods card found" from then on.
-- **A volume lowered for speech could stay down** after a dropped link,
-  SIGTERM or a crash. It is noted on disk while it is lowered and
-  restored on start and on reconnect, a watchdog covers a missing
-  end-of-speech frame, and a volume you move yourself stays put.
-- **Nothing on the way to the buds had a timeout**: a connect to buds
-  out of range held the daemon's poll loop for the kernel's own, reads
-  blocked the same way, and a write went out holding the lock on the
-  socket.
-- **The socket to the buds was inherited** by every process the daemon
-  started.
-- **The identity resolving key of the buds was written to the debug
-  log.**
-- **Device names reached the terminal unfiltered**, escape sequences and
-  bidi overrides included.
-- **`podctl pair` paired and trusted the first unpaired device that
-  looked like AirPods.** It lists what it found and pairs what you name,
-  or the only candidate with `--yes`.
-- **`--help` ran the command** for `debug`, `meter`, `completion` and
-  `version`.
-- **`podctl ping` answered "pong" without a daemon**, and exited 0.
-- **`podctl meter --json` never printed JSON**, and `--interval 0` spun
-  a core.
-- **The tray icon did not come back after a panel restart**, and a
-  missing tray host made it exit into a restart loop.
-- **The bubble could paint into a buffer the compositor was still
-  reading**, and on a surface nobody reads from it could no longer be
-  hidden or quit.
-- **The notification fallback showed an empty notification.** It carries
-  the device name and the levels as text now.
-- A BLE battery reading above ten tenths was reported as up to 140 %.
-- **Ear detection and the microphone mode were shown as nothing at all**
-  until podctl had set them in that session: the Pro 2 USB-C leave both
-  out of the settings they report. Both live in
-  `~/.config/podctl/daemon.toml` now, so the switch that decides whether
-  a bud coming out pauses playback survives a restart. Buds that do
-  report them still have the last word.
-- **`podctl pair` always failed with "Resource temporarily unavailable
-  (os error 11)".** It answers only after a twelve-second scan, and the
-  CLI gave up after ten — pairing through a running daemon could not
-  work at all. Scanning and connecting get the time they need now, the
-  CLI says it is scanning, and a wait that does run out says so instead
-  of printing the raw error.
-- **The notification fallback never appeared as a banner on GNOME.** It
-  was sent as low urgency, which GNOME delivers straight into the
-  message tray without showing it. It no longer sends the rendered card
-  along either: a notification server lays that out as it likes, and
-  GNOME squeezed the wide card into a small cropped square. The
-  fallback is the device name, the levels as text and the headphones
-  icon.
-- **`podctl status` named the wrong codec.** The plain `a2dp-sink`
-  profile was read as AAC, and a PipeWire built without AAC runs SBC in
-  it — the sink itself is asked now. `podctl codec` lists what is really
-  on offer, instead of offering an AAC that isn't there.
+  paired: every repeated event restarted its time. Only a real change
+  shows it now; a resting pointer holds it for 30 s at most, and on X11
+  it checks the real pointer position when the leave event never came.
+  Buds that connect for a moment in a case just shut no longer bring it
+  back, and the mode they report on connecting is not taken for a
+  change.
+  It could also paint into a buffer the compositor still read, and on a
+  surface nobody reads it could no longer be hidden or quit.
+- **The notification fallback was empty and never showed on GNOME.**
+  It was sent as low urgency, which GNOME files straight into the
+  message tray, and the rendered card was squeezed into a cropped
+  square. It is now the device name, the levels as text and the
+  headphones icon.
+- **`podctl reboot` started services stopped on purpose**, which next to
+  a daemon run some other way meant a second daemon. It restarts what
+  runs or has failed and names what it left alone.
+- **`podctl status` kept showing battery, in-ear state and settings
+  after the AirPods disconnected**, for up to 3 s or longer. Only what
+  podctl stores itself (ear detection, microphone) stays.
+- **The duck for speech ended at the wrong level.** Speaking again
+  while the volume came back up started a second duck from the halfway
+  level; the same happened during the restore after a crash. A volume
+  lowered for speech also stayed down after a dropped link, SIGTERM or
+  a crash, because with the AirPods' sink gone it looked like a change
+  of your own. It is now noted on disk and restored on start and on
+  reconnect, new speech stops a running restore, and a volume you move
+  yourself stays put. The watchdog for a missing end of speech waits
+  30 s instead of 10: the buds send nothing while someone keeps talking.
+- **Battery, in-ear and ear detection went quiet after using the
+  iPhone.** The AirPods end the AAP session from their side and wait
+  for a new handshake; podctl kept listening on the dead socket. It
+  opens a new one.
+- **The music resumed while a bud was being taken out**, because the
+  sensor reports "in" again while the bud is still in a hand. After a
+  pause the buds must stay in for 2 s; putting one back in later takes
+  0.5 s, half of before.
+- **Audio went to the first Bluetooth device, not the AirPods.** With a
+  speaker or headset also paired, volume, mute, profile, codec, default
+  sink, latency, `meter` and the ducking could land on that one, and a
+  bud coming out paused whatever played there.
+- **`podctl profile off` was a dead end**: the card was looked up via
+  its sink, which that profile lacks, so profile, codec and latency
+  answered "no AirPods card found" from then on.
+- **`podctl status` named the wrong codec.** Plain `a2dp-sink` was read
+  as AAC, but a PipeWire without AAC runs SBC; the sink is asked now,
+  and `podctl codec` lists what is really on offer.
 - **A missing `pactl` was reported as missing AirPods.** On Debian and
-  Ubuntu `pipewire-pulse` does not bring `pactl` along, which the
-  install notes got wrong too.
-- `podctl meter` opened with one implausible reading — the first samples
-  out of the capture are whatever its buffer held.
+  Ubuntu `pipewire-pulse` does not bring `pactl` along; the install
+  notes got that wrong too.
+- **A settings frame without a value switched the microphone over.** A
+  missing byte was read as zero, which the mic selection calls "auto";
+  the same frame set the chime volume to silent and the adaptive-ANC
+  strength to 0. Such frames are ignored, and one table (`aap::wire`)
+  now maps bytes and values in both directions, with round-trip tests.
+- **Ear detection and microphone mode showed as nothing** until set in
+  that session, since the Pro 2 USB-C leave both out of their reported
+  settings. Both live in `~/.config/podctl/daemon.toml` now, so the
+  ear-detection switch survives a restart. Buds that do report them
+  still have the last word.
+- **The daemon could be held open by a silent client.** A connection has
+  five seconds to send its request, a request may be 64 KB (an endless
+  line used to buffer until the daemon was killed), and sixty-four
+  connections are served at once. A `watch` client that went away left
+  its registration behind, so `podctl popup` reported success with
+  nobody to draw the bubble. The daemon also kept the number of the
+  socket to the buds rather than the socket, so the kernel could hand it
+  to a `watch` stream or BLE scan that then ended for no visible reason.
+- **Nothing on the way to the buds had a timeout**: a connect to buds
+  out of range held the poll loop for the kernel's own timeout, reads
+  blocked likewise, and a write held the socket's lock. The socket was
+  also inherited by every process the daemon started.
+- **Every log line under systemd carried two timestamps** and escape
+  codes journald does not need. The three services share one format and
+  leave timestamp and colours to journald when stderr really is the
+  journal (checked by inode via `JOURNAL_STREAM`, since a terminal
+  started from a unit inherits the variable).
+- **The identity resolving key of the buds was written to the debug
+  log**, and device names reached the terminal unfiltered, escape
+  sequences and bidi overrides included. Both are fixed.
+- **`podctl install` left the old version running, shadowed a distro
+  package and replaced binaries non-atomically.** After an upgrade the
+  services kept running from the deleted binary; the installer restarts
+  what runs. With `podctl-bin` or `podctl-git` installed, the copies in
+  `~/.local/bin` and the per-user units took precedence, making every
+  `pacman -Syu` pointless; it now stops and points at the packaged
+  services, or installs anyway with `--force`. A binary is written
+  beside the target and renamed over it, and man page write failures are
+  no longer reported as success.
+- **`podctl uninstall` could hand the wrong package to pacman.** It
+  asked who owns `/usr/bin/podctl` while running from `/usr/local/bin`;
+  it asks who owns the running copy. Proximity keys and settings are
+  named in the listing, and `--purge` removes them.
+- **The no-daemon marker was written where the CLI does not look**
+  (always `~/.config`, never `XDG_CONFIG_HOME`), so the "running without
+  daemon" banner kept appearing. All paths come from one place now.
+- The zsh completion went to a directory outside a default `fpath`,
+  named `_pods`. It is `_podctl`, the installer prints the `fpath` line
+  when needed, and `uninstall` still removes the old file.
+- **`--help` ran the command** for `debug`, `meter`, `completion` and
+  `version`. `podctl ping` answered "pong" without a daemon and exited
+  0. `meter --json` never printed JSON, and its first reading was
+  implausible (the capture buffer's leftovers).
+- A BLE battery reading above ten tenths was reported as up to 140 %.
 - `podctld.service` ordered itself against `bluetooth.service`, which a
-  user unit cannot do, and messages pointed at `podctl setup`, which has
+  user unit cannot do, and messages pointed at `podctl setup`, which
   never existed.
-
-### Changed
-- **The case-open bubble is redrawn.** Each model is drawn as it looks,
-  buds and case on one millimetre scale (AirPods Max on its own), the
-  buds level with the middle of the case, and the finger notch on every
-  Pro case. The title is the name you gave the
-  buds, cut with an ellipsis instead of shrunk; the line under it is the
-  listening mode or "Connecting…". Both buds share one value when they
-  are within 5 points; red means at or below 20 %, green charging, and
-  there is no red frame any more. Text is drawn from the font's outlines,
-  so `fontdue` is gone. `podctl-popup --dump` takes `--model`, `--scale`
-  and `--backdrop`, `--demo` takes `--hold`, and a test compares all 28 renders with the
-  reference images in `tests/golden`.
-- **The bubble follows the desktop's light or dark style.** `theme` in
-  `popup.toml` takes `auto`, now the default, besides `dark` and
-  `light`. It reads the setting from the desktop portal (KDE, GNOME and
-  others) and picks up a change from the next bubble on. Without a
-  portal it stays dark, as before.
-- **The bubble is sharp on scaled screens.** On Wayland it draws at the
-  scale of the output it lands on, fractional ones such as 1.25 or 1.75
-  included (`fractional-scale-v1` with `viewporter`, else the integer
-  buffer scale); on X11 at `Xft.dpi` / 96. It used to draw at 1× and
-  leave the stretching to the compositor.
-- **The bubble answers to the pointer.** A click on the card closes it;
-  while the pointer rests on it the bubble stays, and once it leaves at
-  least 1.5 s remain. Over the close button it lights up and the pointer
-  turns into a hand (`cursor-shape-v1` on Wayland, the cursor font's
-  hand on X11). Only the card takes clicks, the shadow around it lets
-  them through; on X11 the whole bubble used to be click-through.
-- **The bubble moves in time, not in frames.** It rises 20 px into place
-  on a spring while it fades in, fades out 10 px downwards after the hold,
-  and a click shrinks it a little as it fades. The window stays put and
-  the card moves inside it, paced by the compositor's frame callbacks on
-  Wayland. Where nothing can blend (the notification fallback, X without
-  a compositor) the card simply appears. `anim_ms` in `popup.toml` is no
-  longer read.
-- As the card rises the buds hop once, the left one first, and a
-  charging case's light comes on. The products are drawn once into
-  layers on a thread of their own and only put together per frame; once
-  the entry is over the card is the one drawn in one go again.
-- The levels come in instead of standing there: each ring fills in
-  turn, the "—" makes way for the number as it rises into place, a
-  charging case's bolt comes in after its ring in four short steps, and
-  a low level pulses once. Values that arrive while "Connecting…" shows
-  play the same way, and the status line changes without two texts ever
-  overlapping. The Wayland bubble keeps three buffers, so a frame no
-  longer waits a quarter of a second for one to come back.
-- Changes while the bubble is up play out too: a ring slides to its new
-  level as the old number leaves upwards and the new one comes in from
-  below, a case put on charge turns green and lights up, and the shared
-  reading for both buds splits into left and right when they drift
-  apart, and back again. `--demo --updates` shows all of it.
-- **Less motion when the desktop asks for it.** `motion` in `popup.toml`
-  (`auto`, the default, `full`, `reduced`) follows GNOME's animations
-  switch, KDE's animation speed and the portal's reduced-motion key; the
-  bubble then only fades in and out, and its values just appear.
-- The close button lights up and back down over 120 ms, and a click holds
-  it down for a moment before the bubble shrinks away.
-- `output` in `popup.toml` works on Wayland too. On X11 the bubble now
-  goes to the monitor under the pointer before the primary one.
-- The bubble draws about five times faster: shadows are blurred only
-  where they fall, not across the whole buffer. A card at 2× took 1.7 s
-  and now takes 0.3 s.
-- The duck for speech starts as soon as the AirPods report it, by the
-  smallest step, while the music's level is measured; it used to wait
-  for the measurement first. About 0.7 s earlier, down after 1.3 s.
-- **`podctl status` was rewritten.** One label column, labels that are
-  the command names (`ear`, `loud-reduction`, `auto-connect`), one line
-  per bud with a bar on a terminal and nothing but columns in a pipe,
-  and the charging state as a word — the lightning bolt was two cells
-  wide in most terminals, so the columns moved as soon as a bud
-  charged. `trusted` is gone: it is the same BlueZ flag as
-  `auto-connect` and read as two settings. Disconnected, `status`
-  showed the word "disconnected" and nothing else; it now shows the
-  levels the case last announced over bluetooth LE, with their age, and
-  with nothing paired it says that instead. `podctl battery` prints the
-  same rows, and `podctl list` cuts a long name to its column instead
-  of shifting every line after it.
-- `PODS_NO_LR` is now `PODCTL_NO_LR` (the old name still works) and is
-  documented.
-- **`--json` has one shape for every command**:
-  `{"schema":1,"ok":true,"kind":"state","data":{…}}`, one object on one
-  line, so a stream of them (`watch`, `meter`) is newline-delimited
-  JSON. There were three shapes before — `{"kind":…,"data":…}` for most,
-  `{"daemon":…}` for `version`, `{"ble":true}` for `ble` — some printed
-  over forty lines, and `debug --json` ignored the flag. `--pretty`
-  indents it for reading. The shape is in the man page under
-  JSON OUTPUT and held by tests.
-- **JSON spells values the way the command line takes them**, so
-  `podctl mode "$(podctl status --json | jq -r .data.settings.mode)"`
-  works. It used to print `noise_cancellation`, `high_quality` and
-  `always_left`, none of which the CLI accepts. The old spellings are
-  still read back.
-- An error in JSON mode is an envelope with `ok: false`, the message and
-  the hint, on standard output.
-- `pending` answers print `pending: <reason>` instead of `ok (pending:
-  …)` — it has not happened yet.
-- The generated bash completion no longer needs the bash-completion
-  package loaded; without it, it reads `COMP_WORDS` itself.
-- **`podctl` and `podctld` have to be the same version** for the
-  settings commands: the socket carries the same spellings, so a 0.3
-  daemon answers a 0.4 `podctl mode anc` with "malformed request". The
-  handshake above now says so in as many words; run `podctl reboot`
-  after an upgrade.
-- Connecting to the daemon, writing a line and reading one back was
-  spelled out in nine places — three in the CLI, two each in the tray,
-  the bubble and the debug report — every one with its own timeouts and
-  its own idea of what an error is. One client in the library does it
-  now, blocking or async, single answer or event stream.
-- **The command line comes from one table now** (`src/commands.rs`).
-  Help, the completion scripts and the argument checks were six
-  hand-kept copies of the same list, and they had drifted: `podctl m
-  <TAB>`, `podctl tone <TAB>` and `podctl --json mode <TAB>` completed
-  nothing, the internal `debug emit-case-lid` was offered to everyone,
-  and the zsh file installed itself as `_pods`. The overview has fixed
-  columns and an alias column, `podctl completion <shell>` writes the
-  script out from the table, and a test holds the files under `dist/`,
-  the man page and the parser to it.
-- **Surplus arguments are a usage error**, so `podctl rename Test
-  AirPods` says to quote the name instead of renaming to "Test". An
-  option a verb does not take is refused as well.
-- **A mistyped command names the one you meant** ("did you mean
-  'status'?"), and `podctl help nope` exits 64 instead of 0.
-- **One shape for value errors**: `podctl: mode: unknown value 'foo'
-  (expected off, anc, transparency, adaptive)`, with `hint:` on the
-  next line. There were three hint styles and two quoting styles.
-- `podctl meter --interval abc` fell back to 100 ms without a word and
-  `--interval 0` was a busy loop; both are usage errors now.
-- The four settings whose AAP ids are unknown (`spatial`,
+- Documentation: the four settings whose AAP ids are unknown (`spatial`,
   `loud-reduction`, `press`, `tone-on-press`) are marked as not
-  implemented in the overview, their own help pages and the man page.
-- The man page lists the aliases, documents `PODS_NO_LR`, and says that
-  `uninstall` on a system install can run `sudo pacman -R`.
-- **Release binaries are stripped**: 79 MB down to 13.5 MB for all four
-  together. `thiserror` and tokio's `process` feature are gone; nothing
-  used them.
-- The bubble stands still instead of pushing sixty identical frames a
-  second, and on X11 it re-uploads the picture only when it changed.
-- Documentation: loud-sound reduction lists the models that have it, the
-  four unimplemented settings are named as errors rather than no-ops,
-  AirPods 4 non-ANC has a known product code, and the prebuilt tarball
-  is mentioned where people look for an install.
-- **The bubble shows on GNOME as itself.** GNOME lets no program float
-  a window, so it used to fall back to XWayland or a plain notification.
-  A small shell extension for GNOME 46–51 (`contrib/gnome-shell-extension/`)
-  now puts the frames podctl-popup draws on screen, at the monitor's
-  scale, with hover and click, and holds back GNOME's volume OSD while
-  the bubble is up instead of letting it cover the card. `podctl install`
-  offers it on GNOME, `podctl install --gnome-extension` switches it on
-  alone — the way for a distro package, whose release archive now carries
-  it — `podctl debug` says whether it runs, and `backend = "gnome"` picks
-  it by name.
-- **The tray icon is its own.** Both buds over a level bar for the lower
-  one, red at 20 % and below, a bolt while they charge, faded while they
-  are not connected — the theme's headphones looked the same either way,
-  and a low level swapped them for the laptop's battery glyph. The icons
-  are written to the tray's runtime directory at start, so nothing new
-  has to be installed. `podctl-tray --demo` shows them all. On GNOME,
-  whose panel draws every tray icon at 16 px beside solid system icons,
-  they are drawn bolder.
-- **The tray menu is rebuilt.** Name and model on top, a line per bud
-  and the case that is no longer greyed out, the modes in the order of
-  an iPhone, and submenus for volume, audio output and the microphone.
-  What the model cannot do is hidden instead of greyed out; not connected
-  it offers Connect first and the last levels the case announced.
-- The low-battery warning is per bud and comes in two steps (20 % and
-  10 %, critical), names the bud ("Left AirPod at 9% · Right 34%"),
-  replaces the previous one instead of piling up, and does not come back
-  when the other bud goes into the case for a moment.
-- The tray's tooltip carries the name you gave the buds, the levels and
-  the mode, and says "Not connected" when they are not.
-- The tray unit gets its own runtime directory and a tighter sandbox
-  (`ProtectHome=read-only`, `MemoryDenyWriteExecute`, Unix sockets only).
+  implemented in the overview, help pages and man page; loud-sound
+  reduction lists its models; AirPods 4 non-ANC has a known product
+  code; the prebuilt tarball is mentioned in the install notes.
 
 ## [0.3.0] - 2026-09-24
 
