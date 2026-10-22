@@ -183,8 +183,8 @@ _podctl() {
             ;;
         install)
             case $argpos in
-                1) compadd --yes -y --force --no-daemon --no-completion --no-manpages --no-tray --no-popup --with-tray --with-popup ;;
-                *) compadd --yes -y --force --no-daemon --no-completion --no-manpages --no-tray --no-popup --with-tray --with-popup ;;
+                1) compadd --yes -y --force --no-daemon --no-completion --no-manpages --no-tray --no-popup --with-tray --with-popup --gnome-extension ;;
+                *) compadd --yes -y --force --no-daemon --no-completion --no-manpages --no-tray --no-popup --with-tray --with-popup --gnome-extension ;;
             esac
             ;;
         uninstall)

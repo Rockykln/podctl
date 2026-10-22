@@ -213,7 +213,7 @@ that are running or have failed; one that is not running stays that
 way, and with none running it exits 69.
 No root required; units that are not installed are skipped.
 .TP
-.BR "install " [ --yes "] [" --force "] [" --no-daemon "] [" --no-completion "] [" --no-manpages "] [" --no-tray "] [" --no-popup "] [" --with-tray "] [" --with-popup ]
+.BR "install " [ --yes "] [" --force "] [" --no-daemon "] [" --no-completion "] [" --no-manpages "] [" --no-tray "] [" --no-popup "] [" --with-tray "] [" --with-popup "] [" --gnome-extension ]
 Install binaries, completion, man pages and systemd user services to
 .IR ~/.local .
 No root required. The tray icon and the case-open popup are offered
@@ -238,6 +238,12 @@ would shadow it and the per-user units would take precedence, leaving
 every later package upgrade without effect. Pass
 .B --force
 to install anyway.
+.IP
+.B --gnome-extension
+only switches on the GNOME Shell extension that shows the popup: the
+copy a distro package installed, or one written to
+.I ~/.local/share/gnome-shell/extensions
+when there is none. It takes effect from the next login.
 .TP
 .BR "uninstall " [ --yes "] [" --purge ]
 Remove everything

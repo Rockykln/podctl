@@ -45,6 +45,24 @@ pub fn runtime_home() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+/// Where GNOME Shell finds an extension of this uuid: the user's own
+/// copy first, then those of the system, as the shell looks them up.
+pub fn gnome_extension_dirs(uuid: &str) -> Vec<PathBuf> {
+    let system = std::env::var("XDG_DATA_DIRS")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| "/usr/local/share:/usr/share".into());
+    std::iter::once(data_home())
+        .chain(
+            system
+                .split(':')
+                .filter(|d| !d.is_empty())
+                .map(PathBuf::from),
+        )
+        .map(|d| d.join("gnome-shell/extensions").join(uuid))
+        .collect()
+}
+
 /// Whether the session is GNOME, whose panel and tray want their own
 /// handling.
 pub fn on_gnome() -> bool {

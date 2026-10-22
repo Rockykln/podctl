@@ -94,6 +94,8 @@ jobs:
           cp -r dist/completion dist/podctl.1 dist/podctld.1 \
              dist/podctld.service dist/podctl-tray.service dist/podctl-popup.service \
              "dist-stage/${out}/"
+          # For packages: GNOME Shell finds it under /usr/share too.
+          cp -r contrib/gnome-shell-extension "dist-stage/${out}/"
           tar -C dist-stage -czf "upload/${out}.tar.gz" "${out}"
           (cd upload && sha256sum "${out}.tar.gz" > "${out}.tar.gz.sha256")
           cargo cyclonedx --format json --target ${{ matrix.target }}

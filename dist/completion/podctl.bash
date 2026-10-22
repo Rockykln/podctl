@@ -125,8 +125,8 @@ _podctl() {
             ;;
         install)
             case $argpos in
-            1) COMPREPLY=( $(compgen -W "--yes -y --force --no-daemon --no-completion --no-manpages --no-tray --no-popup --with-tray --with-popup" -- "$cur") );;
-            *) COMPREPLY=( $(compgen -W "--yes -y --force --no-daemon --no-completion --no-manpages --no-tray --no-popup --with-tray --with-popup" -- "$cur") );;
+            1) COMPREPLY=( $(compgen -W "--yes -y --force --no-daemon --no-completion --no-manpages --no-tray --no-popup --with-tray --with-popup --gnome-extension" -- "$cur") );;
+            *) COMPREPLY=( $(compgen -W "--yes -y --force --no-daemon --no-completion --no-manpages --no-tray --no-popup --with-tray --with-popup --gnome-extension" -- "$cur") );;
             esac
             ;;
         uninstall)

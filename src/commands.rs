@@ -209,7 +209,7 @@ pub const COMMANDS: &[Cmd] = &[
         "diagnostic report", Ready),
     cmd!("install", &[], MISC, &[], "[options]",
         &["--yes", "-y", "--force", "--no-daemon", "--no-completion", "--no-manpages",
-          "--no-tray", "--no-popup", "--with-tray", "--with-popup"],
+          "--no-tray", "--no-popup", "--with-tray", "--with-popup", "--gnome-extension"],
         "install into ~/.local", Ready),
     cmd!("uninstall", &[], MISC, &[], "[--yes]", &["--yes", "-y", "--purge"],
         "remove what install added", Ready),

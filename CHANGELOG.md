@@ -411,8 +411,10 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
   now puts the frames podctl-popup draws on screen, at the monitor's
   scale, with hover and click, and holds back GNOME's volume OSD while
   the bubble is up instead of letting it cover the card. `podctl install`
-  offers it on GNOME, `podctl debug` says whether it runs, and
-  `backend = "gnome"` picks it by name.
+  offers it on GNOME, `podctl install --gnome-extension` switches it on
+  alone — the way for a distro package, whose release archive now carries
+  it — `podctl debug` says whether it runs, and `backend = "gnome"` picks
+  it by name.
 - **The tray icon is its own.** Both buds over a level bar for the lower
   one, red at 20 % and below, a bolt while they charge, faded while they
   are not connected — the theme's headphones looked the same either way,

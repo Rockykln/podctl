@@ -31,6 +31,9 @@ pub fn install(args: &[String]) -> i32 {
     let tray_flag = args.iter().any(|a| a == "--with-tray");
     let no_popup = args.iter().any(|a| a == "--no-popup");
     let popup_flag = args.iter().any(|a| a == "--with-popup");
+    if args.iter().any(|a| a == "--gnome-extension") {
+        return gnome_extension_only();
+    }
 
     let Ok(cur_pods) = std::env::current_exe() else {
         eprintln!("podctl: cannot resolve current binary path");
@@ -89,6 +92,10 @@ pub fn install(args: &[String]) -> i32 {
         eprintln!("hint: enable the packaged services instead:");
         eprintln!("        systemctl --user enable --now podctld");
         eprintln!("      or pass --force to install here anyway.");
+        if podctl::xdg::on_gnome() {
+            eprintln!("      on GNOME, switch the popup's shell extension on with:");
+            eprintln!("        podctl install --gnome-extension");
+        }
         return exitcode::USAGE;
     }
 
@@ -742,6 +749,42 @@ fn pacman_owner(path: &str) -> Option<String> {
     if name.is_empty() { None } else { Some(name) }
 }
 
+/// `--gnome-extension`: the shell extension alone. A distro package
+/// can ship it, but only each user can switch it on.
+fn gnome_extension_only() -> i32 {
+    if !podctl::xdg::on_gnome() {
+        eprintln!("podctl: install: the shell extension is for GNOME sessions only.");
+        return exitcode::UNAVAILABLE;
+    }
+    let dirs = podctl::xdg::gnome_extension_dirs(GNOME_EXT_UUID);
+    let packaged = dirs
+        .iter()
+        .skip(1)
+        .find(|d| d.join("metadata.json").exists());
+    let done = match packaged {
+        Some(dir) => {
+            println!("podctl: using the packaged extension in {}", dir.display());
+            enable_gnome_extension()
+        }
+        None => install_gnome_extension(&dirs[0]),
+    };
+    match done {
+        Ok(true) => {
+            println!("podctl: the GNOME Shell extension is on.");
+            exitcode::OK
+        }
+        Ok(false) => {
+            println!("podctl: the GNOME Shell extension is switched on.");
+            println!("note: log out and back in once so GNOME Shell loads it.");
+            exitcode::OK
+        }
+        Err(e) => {
+            eprintln!("podctl: install: GNOME Shell extension: {e}");
+            exitcode::OSERR
+        }
+    }
+}
+
 /// Write the extension and switch it on. `Ok(false)` means it is on
 /// for the next login only: a running GNOME Shell on Wayland does not
 /// pick up a new extension.
@@ -750,6 +793,10 @@ fn install_gnome_extension(dir: &Path) -> io::Result<bool> {
     for (name, text) in GNOME_EXT_FILES {
         std::fs::write(dir.join(name), text)?;
     }
+    enable_gnome_extension()
+}
+
+fn enable_gnome_extension() -> io::Result<bool> {
     if quietly("gnome-extensions", &["enable", GNOME_EXT_UUID]) {
         return Ok(true);
     }

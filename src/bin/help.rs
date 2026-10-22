@@ -564,11 +564,15 @@ FLAGS
     --no-popup         do not offer the case-open bubble
     --with-tray        install the tray icon without asking
     --with-popup       install the case-open bubble without asking
+    --gnome-extension  only switch on the GNOME Shell extension that shows
+                       the bubble; for distro packages too, which ship it
+                       but cannot switch it on for each user
 
 EXAMPLES
     podctl install
     podctl install --yes --no-daemon
     podctl install --with-tray --with-popup
+    podctl install --gnome-extension
 
 After install: re-open your shell so completion + PATH kick in.
 ";

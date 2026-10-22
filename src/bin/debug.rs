@@ -438,7 +438,9 @@ fn gnome_extension_state() -> Option<String> {
     if !desktop.split(':').any(|d| d.eq_ignore_ascii_case("gnome")) {
         return None;
     }
-    let dir = podctl::xdg::data_home().join("gnome-shell/extensions/podctl@rockykln.com");
+    let installed = podctl::xdg::gnome_extension_dirs("podctl@rockykln.com")
+        .iter()
+        .any(|d| d.join("metadata.json").exists());
     let running = Command::new("dbus-send")
         .args([
             "--session",
@@ -451,10 +453,10 @@ fn gnome_extension_state() -> Option<String> {
         .output()
         .ok()
         .map(|o| String::from_utf8_lossy(&o.stdout).contains("boolean true"));
-    Some(match (dir.exists(), running) {
+    Some(match (installed, running) {
         (_, Some(true)) => "running".into(),
-        (true, _) => "installed, not running (log out and back in once; if it stays off: gnome-extensions enable podctl@rockykln.com)".into(),
-        (false, _) => "not installed (the popup falls back to X11 or notifications)".into(),
+        (true, _) => "installed, not running (log out and back in once; if it stays off: podctl install --gnome-extension)".into(),
+        (false, _) => "not installed (podctl install --gnome-extension; until then the popup falls back to X11 or notifications)".into(),
     })
 }
 

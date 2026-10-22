@@ -171,13 +171,15 @@ bubble goes through a small shell extension (`contrib/gnome-shell-extension/`).
 podctl-popup still draws every frame; the extension only puts it on
 screen and holds back GNOME's volume OSD while the bubble is up, which
 would otherwise cover it on connect. `podctl install --with-popup` asks
-for it on GNOME. It is switched on from the next login; `podctl debug`
-says whether it runs. By hand:
+for it on GNOME. With podctl from a distro package, which ships the
+extension but cannot switch it on for you, run once:
 
 ```
-cp -r contrib/gnome-shell-extension/podctl@rockykln.com ~/.local/share/gnome-shell/extensions/
-gnome-extensions enable podctl@rockykln.com   # after logging in again on Wayland
+podctl install --gnome-extension
 ```
+
+Either way it is on from the next login; `podctl debug` says whether it
+runs. It also shows up as "podctl" in GNOME's Extensions app.
 
 Everything about the bubble is tunable in `~/.config/podctl/popup.toml`
 (the file is optional — these are the defaults):
@@ -307,7 +309,8 @@ Originally documented by [LibrePods](https://github.com/kavishdevar/librepods).
 - Tray invisible on GNOME → install the AppIndicator extension; verify
   with `podctl tray status`.
 - Bubble only a notification on GNOME → the podctl extension is missing or
-  not running yet; `podctl debug` shows which, under `[desktop services]`.
+  not running yet; `podctl debug` shows which, under `[desktop services]`,
+  and `podctl install --gnome-extension` switches it on.
 - `man podctl` not found → the installer prints the `MANPATH` line if
   `~/.local/share/man` is outside your manpath.
 - Conversation Awareness only reacts while audio is playing — that is
