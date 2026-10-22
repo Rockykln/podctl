@@ -45,6 +45,13 @@ pub fn runtime_home() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+/// Whether the session is GNOME, whose panel and tray want their own
+/// handling.
+pub fn on_gnome() -> bool {
+    std::env::var("XDG_CURRENT_DESKTOP")
+        .is_ok_and(|d| d.split(':').any(|part| part.eq_ignore_ascii_case("gnome")))
+}
+
 /// `~/.config/podctl`, where `daemon.toml`, `tray.toml` and
 /// `popup.toml` live.
 pub fn config_dir() -> PathBuf {

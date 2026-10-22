@@ -418,7 +418,9 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
   are not connected — the theme's headphones looked the same either way,
   and a low level swapped them for the laptop's battery glyph. The icons
   are written to the tray's runtime directory at start, so nothing new
-  has to be installed. `podctl-tray --demo` shows them all.
+  has to be installed. `podctl-tray --demo` shows them all. On GNOME,
+  whose panel draws every tray icon at 16 px beside solid system icons,
+  they are drawn bolder.
 - **The tray menu is rebuilt.** Name and model on top, a line per bud
   and the case that is no longer greyed out, the modes in the order of
   an iPhone, and submenus for volume, audio output and the microphone.

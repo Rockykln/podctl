@@ -22,6 +22,56 @@ Type=Scalable
 Context=Status
 ";
 
+/// How the pair and the bar are drawn on the 16 px grid.
+struct Shape {
+    head_r: f64,
+    head_y: f64,
+    /// Centre of each head, and the left edge of its stem.
+    buds: [(f64, f64); 2],
+    stem_w: f64,
+    stem_h: f64,
+    bar_x: f64,
+    bar_y: f64,
+    bar_w: f64,
+    bar_h: f64,
+    /// The bar while charging, shortened to make room for the bolt.
+    bar_w_charging: f64,
+    /// Heads and stems as shapes of their own. In one path their
+    /// opposite windings cut a hole where they overlap.
+    solid: bool,
+}
+
+/// For panels that draw the icon at 22 px and up, like Plasma's.
+const FINE: Shape = Shape {
+    head_r: 2.9,
+    head_y: 3.6,
+    buds: [(4.2, 5.0), (11.8, 9.0)],
+    stem_w: 2.0,
+    stem_h: 7.4,
+    bar_x: 1.0,
+    bar_y: 12.5,
+    bar_w: 14.0,
+    bar_h: 3.0,
+    bar_w_charging: 10.5,
+    solid: false,
+};
+
+/// GNOME draws every tray icon at 16 px next to its solid system icons,
+/// where the fine lines all but vanish.
+const BOLD: Shape = Shape {
+    head_r: 3.4,
+    head_y: 3.9,
+    buds: [(4.0, 4.6), (12.0, 8.6)],
+    stem_w: 2.8,
+    stem_h: 7.3,
+    bar_x: 0.5,
+    bar_y: 12.0,
+    bar_w: 15.0,
+    bar_h: 4.0,
+    bar_w_charging: 11.0,
+    solid: true,
+};
+
 pub const PLAIN: &str = "podctl-airpods-symbolic";
 pub const DISCONNECTED: &str = "podctl-airpods-disconnected-symbolic";
 
@@ -41,7 +91,12 @@ pub fn setup() -> std::io::Result<()> {
             .ok_or_else(|| std::io::Error::other("XDG_RUNTIME_DIR is not set"))?
             .join("podctl-tray"),
     };
-    let path = install(&dir)?;
+    let shape = if podctl::xdg::on_gnome() {
+        &BOLD
+    } else {
+        &FINE
+    };
+    let path = install(&dir, shape)?;
     let _ = THEME.set(path);
     Ok(())
 }
@@ -60,19 +115,22 @@ pub fn level(pct: u8, charging: bool) -> String {
 
 /// Write every icon below `dir` and return the path for
 /// `IconThemePath`. Hosts look the names up in a `hicolor` theme there.
-pub fn install(dir: &Path) -> std::io::Result<PathBuf> {
+fn install(dir: &Path, shape: &Shape) -> std::io::Result<PathBuf> {
     let status = dir.join("hicolor/scalable/status");
     std::fs::create_dir_all(&status)?;
     // GTK and St only look into directories a theme index names; Plasma
     // finds the files without it.
     std::fs::write(dir.join("hicolor/index.theme"), INDEX)?;
     let mut all = vec![
-        (PLAIN.to_string(), svg(None, false, false)),
-        (DISCONNECTED.to_string(), svg(None, false, true)),
+        (PLAIN.to_string(), svg(shape, None, false, false)),
+        (DISCONNECTED.to_string(), svg(shape, None, false, true)),
     ];
     for step in STEPS {
         for charging in [false, true] {
-            all.push((level(step, charging), svg(Some(step), charging, false)));
+            all.push((
+                level(step, charging),
+                svg(shape, Some(step), charging, false),
+            ));
         }
     }
     for (name, body) in all {
@@ -81,29 +139,31 @@ pub fn install(dir: &Path) -> std::io::Result<PathBuf> {
     Ok(dir.to_path_buf())
 }
 
-fn svg(level: Option<u8>, charging: bool, faded: bool) -> String {
-    let mut buds = String::new();
-    for (cx, sx) in [(4.2, 5.0), (11.8, 9.0)] {
-        buds += &circle(cx, 3.6, 2.9);
-        buds += &rounded(sx, 3.6, 2.0, 7.4, 1.0);
+fn svg(s: &Shape, level: Option<u8>, charging: bool, faded: bool) -> String {
+    let mut buds = Vec::new();
+    for (cx, sx) in s.buds {
+        buds.push(circle(cx, s.head_y, s.head_r));
+        buds.push(rounded(sx, s.head_y, s.stem_w, s.stem_h, s.stem_w / 2.0));
     }
-    let mut paths = vec![path("ColorScheme-Text", &buds, None)];
+    let mut paths = if s.solid {
+        buds.iter()
+            .map(|d| path("ColorScheme-Text", d, None))
+            .collect()
+    } else {
+        vec![path("ColorScheme-Text", &buds.concat(), None)]
+    };
     if level.is_some() || faded {
         // Charging shortens the bar to make room for the bolt beside it.
-        let width = if charging { 10.5 } else { 14.0 };
-        paths.push(path(
-            "ColorScheme-Text",
-            &rounded(1.0, 12.5, width, 3.0, 1.5),
-            Some(0.3),
-        ));
+        let width = if charging { s.bar_w_charging } else { s.bar_w };
+        let bar = |w: f64| rounded(s.bar_x, s.bar_y, w, s.bar_h, s.bar_h / 2.0);
+        paths.push(path("ColorScheme-Text", &bar(width), Some(0.3)));
         if let Some(pct) = level {
             let class = if pct <= RED_UP_TO && !charging {
                 "ColorScheme-NegativeText error"
             } else {
                 "ColorScheme-PositiveText success"
             };
-            let fill = rounded(1.0, 12.5, width * f64::from(pct) / 100.0, 3.0, 1.5);
-            paths.push(path(class, &fill, None));
+            paths.push(path(class, &bar(width * f64::from(pct) / 100.0), None));
         }
         if charging {
             paths.push(path(
@@ -170,6 +230,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_bold_heads_are_shapes_of_their_own() {
+        let body = svg(&BOLD, Some(100), false, false);
+        // Two heads, two stems, the bar's track and its fill.
+        assert_eq!(body.matches("<path").count(), 6, "{body}");
+        assert_eq!(
+            svg(&FINE, Some(100), false, false).matches("<path").count(),
+            3
+        );
+    }
+
+    #[test]
     fn a_reading_shows_as_the_nearest_step() {
         assert_eq!(level(3, false), "podctl-airpods-10-symbolic");
         assert_eq!(level(31, false), "podctl-airpods-40-symbolic");
@@ -178,8 +249,14 @@ mod tests {
 
     #[test]
     fn every_name_handed_out_is_written() {
-        let dir = std::env::temp_dir().join(format!("podctl-icons-{}", std::process::id()));
-        install(&dir).unwrap();
+        for (i, shape) in [&FINE, &BOLD].into_iter().enumerate() {
+            let dir = std::env::temp_dir().join(format!("podctl-icons-{}-{i}", std::process::id()));
+            install(&dir, shape).unwrap();
+            check_written(&dir);
+        }
+    }
+
+    fn check_written(dir: &Path) {
         assert!(
             std::fs::read_to_string(dir.join("hicolor/index.theme"))
                 .unwrap()

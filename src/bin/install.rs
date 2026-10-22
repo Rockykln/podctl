@@ -170,7 +170,7 @@ pub fn install(args: &[String]) -> i32 {
     // GNOME lets no program float a window over the desktop; the bubble
     // only shows as itself through the shell extension.
     let with_gnome_ext = with_popup
-        && on_gnome()
+        && podctl::xdg::on_gnome()
         && (yes
             || confirm(
                 "Install the GNOME Shell extension that shows the popup?",
@@ -740,11 +740,6 @@ fn pacman_owner(path: &str) -> Option<String> {
     }
     let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
     if name.is_empty() { None } else { Some(name) }
-}
-
-fn on_gnome() -> bool {
-    std::env::var("XDG_CURRENT_DESKTOP")
-        .is_ok_and(|d| d.split(':').any(|part| part.eq_ignore_ascii_case("gnome")))
 }
 
 /// Write the extension and switch it on. `Ok(false)` means it is on
