@@ -39,6 +39,9 @@ const BACKOFF_MAX_MS: u64 = 30_000;
 /// After the pointer leaves the card the bubble stays at least this long,
 /// so it does not vanish the moment one looks away.
 const AFTER_HOVER: Duration = Duration::from_millis(1500);
+/// However long the pointer rests on it, the bubble goes after this:
+/// a hover whose end never arrived must not keep it up for good.
+const MAX_HOVER: Duration = Duration::from_secs(30);
 /// How often the hold loop looks at pointer input.
 const INPUT_SLICE: Duration = Duration::from_millis(30);
 /// The entry waits at most this long for its layers, else it shows the
@@ -186,6 +189,8 @@ enum Cmd {
 struct ShowOpts {
     visible: Duration,
     allow: bool,
+    /// Connected before this event's fresh Status was applied.
+    was_connected: bool,
 }
 
 /// Session lock state, asked at most once a second. A bubble triggers a
@@ -800,7 +805,8 @@ fn drain(rx: &Receiver<Cmd>, card: &mut Card, be: &mut dyn Backend) -> Drained {
 /// The hold timer. It stands still while the pointer rests on the card.
 struct Hold {
     deadline: Instant,
-    paused: Option<Duration>,
+    /// Time that was left, and since when the pointer has been on it.
+    paused: Option<(Duration, Instant)>,
 }
 
 impl Hold {
@@ -813,25 +819,31 @@ impl Hold {
 
     fn restart(&mut self, now: Instant, hold: Duration) {
         match &mut self.paused {
-            Some(left) => *left = hold,
+            Some((left, _)) => *left = hold,
             None => self.deadline = now + hold,
         }
     }
 
     fn pause(&mut self, now: Instant) {
         if self.paused.is_none() {
-            self.paused = Some(self.deadline.saturating_duration_since(now));
+            self.paused = Some((self.deadline.saturating_duration_since(now), now));
         }
     }
 
     fn resume(&mut self, now: Instant) {
-        if let Some(left) = self.paused.take() {
+        if let Some((left, _)) = self.paused.take() {
             self.deadline = now + left.max(AFTER_HOVER);
         }
     }
 
     /// Time left, or `None` while paused.
-    fn left(&self, now: Instant) -> Option<Duration> {
+    fn left(&mut self, now: Instant) -> Option<Duration> {
+        if let Some((_, since)) = self.paused
+            && now.saturating_duration_since(since) >= MAX_HOVER
+        {
+            info!("pointer on the bubble for {MAX_HOVER:?}, letting it go");
+            self.resume(since + MAX_HOVER);
+        }
         match self.paused {
             Some(_) => None,
             None => Some(self.deadline.saturating_duration_since(now)),
@@ -934,6 +946,7 @@ fn show_cycle(
                         }
                         Input::OverClose(on) => redraw |= card.set_hover(on),
                         Input::Click => {
+                            info!("hiding: clicked");
                             clicked = true;
                             break 'hold;
                         }
@@ -957,7 +970,10 @@ fn show_cycle(
                     }
                 }
                 let wait = match timer.left(Instant::now()) {
-                    Some(d) if d.is_zero() => break,
+                    Some(d) if d.is_zero() => {
+                        info!("hiding: time is up");
+                        break;
+                    }
                     _ if settling => Duration::ZERO,
                     Some(d) => d.min(INPUT_SLICE),
                     None => INPUT_SLICE,
@@ -1106,6 +1122,7 @@ async fn serve(
                         }
                         continue;
                     }
+                    let was_connected = snap.connected;
                     // Anything that puts the bubble on screen gets a
                     // fresh Status first: Connect carries no caps or
                     // model, and a process that attached while the
@@ -1121,6 +1138,7 @@ async fn serve(
                     let opts = ShowOpts {
                         visible,
                         allow: matches!(ev, Event::ShowPopup) || !locked.get().await,
+                        was_connected,
                     };
                     if !opts.allow {
                         debug!(?ev, "session locked — not showing");
@@ -1149,6 +1167,7 @@ fn handle_event(
         Event::CaseLid { open: false } => {
             *pending_open = None;
             if shown_until.take().is_some() {
+                info!("hiding: case closed");
                 let _ = tx.send(Cmd::Hide);
             }
         }
@@ -1159,6 +1178,7 @@ fn handle_event(
                 // Crossed below the low-battery threshold — pop once.
                 *low_armed = true;
                 if opts.allow {
+                    info!("showing: battery low");
                     show_now(tx, snap, pending_open, shown_until, visible);
                 }
             } else {
@@ -1173,26 +1193,35 @@ fn handle_event(
                     // landed, so it has been showing three em-dashes.
                     // Restart the hold: the numbers get the full window,
                     // not whatever was left of it.
+                    debug!("first levels arrived, hold starts over");
                     show_now(tx, snap, pending_open, shown_until, visible);
                 } else {
                     let _ = tx.send(Cmd::Refresh(snap.clone()));
                 }
             }
         }
+        // Only a change shows the bubble: while the AirPods reconnect
+        // or pair, the same mode and connect come again and again, and
+        // each one used to start the hold over — it never went away.
         Event::Mode { mode } => {
+            let changed = snap.mode != Some(mode);
             snap.mode = Some(mode);
-            if opts.allow {
+            if changed && opts.allow {
+                info!(?mode, "showing: mode changed");
                 show_now(tx, snap, pending_open, shown_until, visible);
+            } else if is_shown(shown_until) {
+                let _ = tx.send(Cmd::Refresh(snap.clone()));
             }
         }
         Event::Connected { .. } => {
             snap.connected = true;
-            if opts.allow {
+            if !opts.was_connected && opts.allow {
+                info!("showing: connected");
                 show_now(tx, snap, pending_open, shown_until, visible);
             }
         }
         Event::ShowPopup => {
-            debug!("show-popup requested");
+            info!("showing: asked for");
             show_now(tx, snap, pending_open, shown_until, visible)
         }
         Event::Disconnected => {
@@ -1522,8 +1551,67 @@ fn print_usage() {
 
 #[cfg(test)]
 mod tests {
-    use super::{AFTER_HOVER, Hold, labels};
+    use super::{AFTER_HOVER, Hold, MAX_HOVER, labels};
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn the_same_mode_or_connect_again_does_not_start_the_bubble_over() {
+        use super::{Cmd, ShowOpts, handle_event};
+        use podctl::model::{Event, Mode};
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut snap = snap();
+        snap.mode = None;
+        let (mut pending, mut until, mut low) = (None, None, false);
+        let opts = |was_connected| ShowOpts {
+            visible: Duration::from_secs(6),
+            allow: true,
+            was_connected,
+        };
+        let mut run = |ev: Event, was| {
+            handle_event(
+                &tx,
+                &mut snap,
+                ev,
+                &mut pending,
+                &mut until,
+                &mut low,
+                opts(was),
+            )
+        };
+        run(
+            Event::Mode {
+                mode: Mode::NoiseCancellation,
+            },
+            true,
+        );
+        run(
+            Event::Mode {
+                mode: Mode::NoiseCancellation,
+            },
+            true,
+        );
+        run(
+            Event::Mode {
+                mode: Mode::NoiseCancellation,
+            },
+            true,
+        );
+        run(
+            Event::Connected {
+                name: "Test AirPods".into(),
+                address: "AA:BB:CC:DD:EE:01".into(),
+            },
+            true,
+        );
+        run(
+            Event::Mode {
+                mode: Mode::Transparency,
+            },
+            true,
+        );
+        let shows = rx.try_iter().filter(|c| matches!(c, Cmd::Show(_))).count();
+        assert_eq!(shows, 2, "first mode and the real change only");
+    }
 
     #[test]
     fn the_pointer_holds_the_bubble() {
@@ -1532,10 +1620,14 @@ mod tests {
         let mut h = Hold::new(t0, s(5500));
         assert_eq!(h.left(t0 + s(1000)), Some(s(4500)));
         h.pause(t0 + s(1000));
-        assert_eq!(h.left(t0 + s(60_000)), None);
+        assert_eq!(h.left(t0 + s(20_000)), None);
         // Back with plenty left: the rest runs on.
-        h.resume(t0 + s(60_000));
-        assert_eq!(h.left(t0 + s(60_000)), Some(s(4500)));
+        h.resume(t0 + s(20_000));
+        assert_eq!(h.left(t0 + s(20_000)), Some(s(4500)));
+        // A hover that never ends lets go after MAX_HOVER.
+        let mut h = Hold::new(t0, s(5500));
+        h.pause(t0 + s(1000));
+        assert_eq!(h.left(t0 + s(1000) + MAX_HOVER), Some(s(4500)));
         // Back with almost nothing left: at least AFTER_HOVER.
         let mut h = Hold::new(t0, s(5500));
         h.pause(t0 + s(5400));

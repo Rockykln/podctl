@@ -41,6 +41,8 @@ struct Win {
     /// Input-only child over the close button; it carries the hand cursor.
     close: Window,
     over_close: bool,
+    /// The pointer is on the card, as far as the events said.
+    hovered: bool,
     inputs: Vec<Input>,
 }
 
@@ -138,6 +140,7 @@ impl Backend for X11Or {
             painted: None,
             close,
             over_close: false,
+            hovered: false,
             inputs: Vec::new(),
         });
         Ok(())
@@ -156,6 +159,16 @@ impl Backend for X11Or {
             return Vec::new();
         };
         pump(win);
+        // A lost LeaveNotify kept the bubble paused for good: while the
+        // card counts as hovered, ask where the pointer really is.
+        if win.hovered && !pointer_on_card(win) {
+            if win.over_close {
+                win.over_close = false;
+                win.inputs.push(Input::OverClose(false));
+            }
+            win.hovered = false;
+            win.inputs.push(Input::Hover(false));
+        }
         std::mem::take(&mut win.inputs)
     }
 
@@ -351,6 +364,7 @@ fn pump(win: &mut Win) {
                 win.inputs.push(Input::OverClose(false));
             }
             Event::EnterNotify(e) if e.detail != NotifyDetail::INFERIOR => {
+                win.hovered = true;
                 win.inputs.push(Input::Hover(true));
             }
             Event::LeaveNotify(e) if e.detail != NotifyDetail::INFERIOR => {
@@ -358,12 +372,24 @@ fn pump(win: &mut Win) {
                     win.over_close = false;
                     win.inputs.push(Input::OverClose(false));
                 }
+                win.hovered = false;
                 win.inputs.push(Input::Hover(false));
             }
             Event::ButtonPress(_) => win.inputs.push(Input::Click),
             _ => {}
         }
     }
+}
+
+fn pointer_on_card(win: &Win) -> bool {
+    let Ok(Ok(p)) = win.conn.query_pointer(win.window).map(|c| c.reply()) else {
+        // Cannot tell: keep what the events said.
+        return true;
+    };
+    let (x, y, w, h) = INPUT_RECT;
+    let to = |v: i32| (v as f32 * win.scale) as i32;
+    let (px, py) = (i32::from(p.win_x), i32::from(p.win_y));
+    p.same_screen && (to(x)..to(x + w)).contains(&px) && (to(y)..to(y + h)).contains(&py)
 }
 
 fn set_notification_type(conn: &RustConnection, window: Window) -> Result<()> {

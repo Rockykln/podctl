@@ -46,6 +46,23 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
   cannot keep up, it sends the state again instead of leaving a gap.
 
 ### Fixed
+- **`podctl pair` could leave a pairing that did not last.** On an
+  adapter that is not pairable — Debian's default — BlueZ paired without
+  keeping a key, and the AirPods were forgotten at the next disconnect.
+  pair now makes the adapter pairable for the moment, puts it back, and
+  says so when BlueZ still kept no key instead of reporting success.
+- **The bubble could stay up for good** while the AirPods reconnected or
+  paired: every repeated mode or connect event started its time over.
+  Only a real change shows it now. A pointer resting on it holds it for
+  30 s at most, and on X11 the bubble checks where the pointer really is
+  when the leave event never came. Showing and hiding are logged with
+  their reason.
+- `podctl pair` says AirPods are already paired instead of "no new
+  AirPods spotted", asks back with exit code 64 instead of 69 when it
+  needs to be told which, and announces the 15 s it really takes.
+- Paired AirPods that had not connected since the adapter came up could
+  be missing from `podctl list` and `unpair`: BlueZ gives them no
+  Modalias yet, so they are known by name until it does.
 - **A tray whose daemon was gone looked like disconnected AirPods**, and
   a click on Connect failed without a word. The menu now says podctld is
   not running and offers to start it, and every action from the icon or

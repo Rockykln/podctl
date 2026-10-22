@@ -453,7 +453,7 @@ fn gnome_extension_state() -> Option<String> {
         .map(|o| String::from_utf8_lossy(&o.stdout).contains("boolean true"));
     Some(match (dir.exists(), running) {
         (_, Some(true)) => "running".into(),
-        (true, _) => "installed, not running (log out and back in, or: gnome-extensions enable podctl@rockykln.com)".into(),
+        (true, _) => "installed, not running (log out and back in once; if it stays off: gnome-extensions enable podctl@rockykln.com)".into(),
         (false, _) => "not installed (the popup falls back to X11 or notifications)".into(),
     })
 }

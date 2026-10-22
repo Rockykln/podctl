@@ -12,6 +12,8 @@ pub struct DeviceSummary {
     pub connected: bool,
     pub trusted: bool,
     pub paired: bool,
+    /// `None` on a BlueZ too old to say.
+    pub bonded: Option<bool>,
     pub modalias: Option<String>,
     pub icon: Option<String>,
 }
@@ -30,6 +32,11 @@ impl DeviceSummary {
         // AirPods. Relying on the icon alone dropped real AirPods when
         // BlueZ reported no/!= "audio-headphones" Icon, which then read
         // as Unknown model → Mode/Conv disabled.
+        if self.modalias.is_none() {
+            // A paired device that has not connected since the adapter
+            // came up can lack its Modalias; the name is all there is.
+            return self.name.to_lowercase().contains("airpods");
+        }
         self.is_apple()
             && (self.icon.as_deref() == Some("audio-headphones") || self.model() != Model::Unknown)
     }
@@ -92,6 +99,7 @@ pub fn info(addr: &str) -> anyhow::Result<DeviceSummary> {
             .unwrap_or(false),
         trusted: field(&out, "Trusted:").map(|v| v == "yes").unwrap_or(false),
         paired: field(&out, "Paired:").map(|v| v == "yes").unwrap_or(false),
+        bonded: field(&out, "Bonded:").map(|v| v == "yes"),
         modalias: field(&out, "Modalias:"),
         icon: field(&out, "Icon:"),
     })
@@ -189,12 +197,20 @@ pub fn pair_choice(address: Option<String>, yes: bool) -> anyhow::Result<()> {
         return pair(&addr);
     }
     let found = discover(12)?;
-    let mut fresh: Vec<DeviceSummary> = found.into_iter().filter(|d| !d.paired).collect();
+    let (known, mut fresh): (Vec<DeviceSummary>, Vec<DeviceSummary>) =
+        found.into_iter().partition(|d| d.paired);
     fresh.sort_by(|a, b| a.name.cmp(&b.name));
     match fresh.as_slice() {
-        [] => anyhow::bail!(
-            "no new AirPods spotted — open the case and hold the button until the LED blinks white."
-        ),
+        [] => match known.first() {
+            Some(d) => anyhow::bail!(
+                "{} ({}) are already paired — use 'podctl connect'",
+                d.name,
+                d.address
+            ),
+            None => anyhow::bail!(
+                "no new AirPods spotted — open the case and hold the button until the LED blinks white."
+            ),
+        },
         [one] if yes => pair(&one.address),
         several => {
             let list = several
@@ -207,10 +223,14 @@ pub fn pair_choice(address: Option<String>, yes: bool) -> anyhow::Result<()> {
             } else {
                 "name the address of the one you want"
             };
-            anyhow::bail!("in pairing mode right now:\n{list}\n{hint}")
+            anyhow::bail!("{CHOOSE}\n{list}\n{hint}")
         }
     }
 }
+
+/// Starts the message when `pair` found candidates and needs to be told
+/// which: a question back, not a failure.
+const CHOOSE: &str = "in pairing mode right now:";
 
 pub fn discover(secs: u32) -> anyhow::Result<Vec<DeviceSummary>> {
     let res = bluetoothctl(&["--timeout", &secs.to_string(), "scan", "on"]);
@@ -240,9 +260,29 @@ pub fn discover(secs: u32) -> anyhow::Result<Vec<DeviceSummary>> {
 }
 
 pub fn pair(addr: &str) -> anyhow::Result<()> {
-    bluetoothctl(&["pair", addr])?;
+    // Debian ships the adapter not pairable. BlueZ then pairs anyway but
+    // keeps no key, and the pairing is gone after the next disconnect.
+    let was_pairable = adapter_pairable();
+    if was_pairable == Some(false) {
+        bluetoothctl(&["pairable", "on"])?;
+    }
+    let paired = bluetoothctl(&["pair", addr]);
+    if was_pairable == Some(false) {
+        let _ = bluetoothctl(&["pairable", "off"]);
+    }
+    paired?;
     let _ = bluetoothctl(&["trust", addr]);
+    if info(addr).is_ok_and(|d| d.bonded == Some(false)) {
+        anyhow::bail!(
+            "paired, but BlueZ kept no key, so the pairing would be lost on the next disconnect — run 'podctl unpair' and pair again"
+        );
+    }
     Ok(())
+}
+
+fn adapter_pairable() -> Option<bool> {
+    let out = bluetoothctl(&["show"]).ok()?;
+    field(&out, "Pairable:").map(|v| v == "yes")
 }
 
 pub fn to_paired_device(s: &DeviceSummary) -> PairedDevice {
@@ -320,7 +360,9 @@ fn strip_ansi(line: &str) -> String {
 /// did not answer may answer later. Every message from this module that
 /// comes from one of the two names it.
 pub fn error_code_for(message: &str) -> crate::ipc::ErrorCode {
-    if message.contains("bluetoothctl") || message.contains("dbus-send") {
+    if message.starts_with(CHOOSE) {
+        crate::ipc::ErrorCode::Usage
+    } else if message.contains("bluetoothctl") || message.contains("dbus-send") {
         crate::ipc::ErrorCode::Backend
     } else {
         crate::ipc::ErrorCode::Unavailable
@@ -354,6 +396,37 @@ pub fn primary_airpods() -> Option<DeviceSummary> {
 
 #[cfg(test)]
 mod tests {
+    fn device(name: &str, modalias: Option<&str>) -> super::DeviceSummary {
+        super::DeviceSummary {
+            address: "AA:BB:CC:DD:EE:01".into(),
+            name: name.into(),
+            connected: false,
+            trusted: true,
+            paired: true,
+            bonded: Some(true),
+            modalias: modalias.map(Into::into),
+            icon: None,
+        }
+    }
+
+    #[test]
+    fn airpods_without_a_modalias_are_known_by_name() {
+        assert!(device("Test AirPods", None).is_airpods());
+        assert!(!device("Some Speaker", None).is_airpods());
+        assert!(device("Buds", Some("bluetooth:v004Cp2024d0000")).is_airpods());
+        assert!(!device("Test AirPods", Some("bluetooth:v0075p0100d0000")).is_airpods());
+    }
+
+    #[test]
+    fn a_choice_to_make_is_a_usage_error() {
+        let msg = format!("{}\n  AA:BB:CC:DD:EE:01  Test AirPods", super::CHOOSE);
+        assert_eq!(super::error_code_for(&msg), crate::ipc::ErrorCode::Usage);
+        assert_eq!(
+            super::error_code_for("no new AirPods spotted"),
+            crate::ipc::ErrorCode::Unavailable
+        );
+    }
+
     #[test]
     fn the_reason_for_a_failure_is_found_on_stdout() {
         let out = "Attempting to connect to AA:BB:CC:DD:EE:01\n\
