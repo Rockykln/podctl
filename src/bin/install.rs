@@ -9,6 +9,17 @@ const TRAY_UNIT: &str = include_str!("../../dist/podctl-tray.service");
 const POPUP_UNIT: &str = include_str!("../../dist/podctl-popup.service");
 const MAN_PODS: &str = include_str!("../../dist/podctl.1");
 const MAN_PODSD: &str = include_str!("../../dist/podctld.1");
+const GNOME_EXT_UUID: &str = "podctl@rockykln.com";
+const GNOME_EXT_FILES: [(&str, &str); 2] = [
+    (
+        "metadata.json",
+        include_str!("../../contrib/gnome-shell-extension/podctl@rockykln.com/metadata.json"),
+    ),
+    (
+        "extension.js",
+        include_str!("../../contrib/gnome-shell-extension/podctl@rockykln.com/extension.js"),
+    ),
+];
 
 pub fn install(args: &[String]) -> i32 {
     let yes = args.iter().any(|a| a == "-y" || a == "--yes");
@@ -156,6 +167,15 @@ pub fn install(args: &[String]) -> i32 {
     if popup_offered {
         with_popup = yes || confirm("Install the case-open popup (podctl-popup)?", true);
     }
+    // GNOME lets no program float a window over the desktop; the bubble
+    // only shows as itself through the shell extension.
+    let with_gnome_ext = with_popup
+        && on_gnome()
+        && (yes
+            || confirm(
+                "Install the GNOME Shell extension that shows the popup?",
+                true,
+            ));
 
     if let Err(e) = std::fs::create_dir_all(&bin_dir) {
         eprintln!("podctl: create {}: {e}", bin_dir.display());
@@ -303,8 +323,23 @@ pub fn install(args: &[String]) -> i32 {
         }
     }
 
+    let mut gnome_relogin = false;
+    if with_gnome_ext {
+        match install_gnome_extension(&dirs.gnome_extension()) {
+            Ok(enabled_now) => {
+                println!("  installed the GNOME Shell extension ({GNOME_EXT_UUID})");
+                gnome_relogin = !enabled_now;
+            }
+            Err(e) => eprintln!("podctl: install GNOME Shell extension: {e}"),
+        }
+    }
+
     println!();
     println!("installed.");
+    if gnome_relogin {
+        println!();
+        println!("note: log out and back in once so GNOME Shell loads the popup extension.");
+    }
     if !in_path(&bin_dir) {
         println!();
         println!(
@@ -514,6 +549,13 @@ impl Dirs {
         }
     }
 
+    fn gnome_extension(&self) -> PathBuf {
+        self.data
+            .join("gnome-shell")
+            .join("extensions")
+            .join(GNOME_EXT_UUID)
+    }
+
     fn completion(&self, shell: &str) -> PathBuf {
         match shell {
             "fish" => self
@@ -536,6 +578,7 @@ struct XdgPaths {
     unit: Vec<PathBuf>,
     man: Vec<PathBuf>,
     completion: Vec<PathBuf>,
+    gnome_extension: PathBuf,
     config_dir: PathBuf,
     state_dir: PathBuf,
 }
@@ -576,6 +619,7 @@ impl XdgPaths {
                     d.data.join("zsh").join("site-functions").join("_pods"),
                 ))
                 .collect(),
+            gnome_extension: d.gnome_extension(),
             config_dir: d.config.clone(),
             state_dir: d.state.clone(),
         }
@@ -586,6 +630,11 @@ impl XdgPaths {
         v.extend(self.unit.iter().cloned());
         v.extend(self.man.iter().cloned());
         v.extend(self.completion.iter().cloned());
+        v.extend(
+            GNOME_EXT_FILES
+                .iter()
+                .map(|(name, _)| self.gnome_extension.join(name)),
+        );
         v.push(self.config_dir.join("no-daemon"));
         v
     }
@@ -631,6 +680,9 @@ impl XdgPaths {
     fn purge(&self) {
         for p in self.all() {
             let _ = std::fs::remove_file(&p);
+        }
+        if std::fs::remove_dir(&self.gnome_extension).is_ok() {
+            quietly("gnome-extensions", &["disable", GNOME_EXT_UUID]);
         }
         // Only if the settings are gone too, which `--purge` does.
         let _ = std::fs::remove_dir(&self.config_dir);
@@ -688,6 +740,65 @@ fn pacman_owner(path: &str) -> Option<String> {
     }
     let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
     if name.is_empty() { None } else { Some(name) }
+}
+
+fn on_gnome() -> bool {
+    std::env::var("XDG_CURRENT_DESKTOP")
+        .is_ok_and(|d| d.split(':').any(|part| part.eq_ignore_ascii_case("gnome")))
+}
+
+/// Write the extension and switch it on. `Ok(false)` means it is on
+/// for the next login only: a running GNOME Shell on Wayland does not
+/// pick up a new extension.
+fn install_gnome_extension(dir: &Path) -> io::Result<bool> {
+    std::fs::create_dir_all(dir)?;
+    for (name, text) in GNOME_EXT_FILES {
+        std::fs::write(dir.join(name), text)?;
+    }
+    if quietly("gnome-extensions", &["enable", GNOME_EXT_UUID]) {
+        return Ok(true);
+    }
+    let list = Command::new("gsettings")
+        .args(["get", "org.gnome.shell", "enabled-extensions"])
+        .output()?;
+    let list = String::from_utf8_lossy(&list.stdout);
+    if !list.contains(GNOME_EXT_UUID) {
+        run(
+            "gsettings",
+            &[
+                "set",
+                "org.gnome.shell",
+                "enabled-extensions",
+                &with_entry(list.trim(), GNOME_EXT_UUID),
+            ],
+        )?;
+    }
+    Ok(false)
+}
+
+/// Run a helper whose own complaints mean nothing to the user here.
+fn quietly(cmd: &str, args: &[&str]) -> bool {
+    Command::new(cmd)
+        .args(args)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
+/// Add `entry` to a GVariant string list as gsettings prints it.
+fn with_entry(list: &str, entry: &str) -> String {
+    let inner = list
+        .trim_start_matches("@as ")
+        .trim()
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .trim();
+    if inner.is_empty() {
+        format!("['{entry}']")
+    } else {
+        format!("[{inner}, '{entry}']")
+    }
 }
 
 fn confirm(prompt: &str, default_yes: bool) -> bool {
@@ -888,5 +999,11 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn the_extension_joins_the_enabled_list() {
+        assert_eq!(super::with_entry("@as []", "a@b"), "['a@b']");
+        assert_eq!(super::with_entry("['x@y']", "a@b"), "['x@y', 'a@b']");
     }
 }

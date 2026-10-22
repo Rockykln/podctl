@@ -5,6 +5,7 @@ use std::path::PathBuf;
 pub enum Pick {
     Auto,
     Wl,
+    Gnome,
     X11,
     Notify,
 }
@@ -14,6 +15,7 @@ impl Pick {
         match self {
             Pick::Auto => "auto",
             Pick::Wl => "wl",
+            Pick::Gnome => "gnome",
             Pick::X11 => "x11",
             Pick::Notify => "notify",
         }
@@ -23,6 +25,7 @@ impl Pick {
         match s {
             "auto" => Some(Pick::Auto),
             "wl" | "wayland" => Some(Pick::Wl),
+            "gnome" => Some(Pick::Gnome),
             "x11" => Some(Pick::X11),
             "notify" => Some(Pick::Notify),
             _ => None,

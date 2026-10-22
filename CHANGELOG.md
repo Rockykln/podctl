@@ -381,6 +381,14 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
   four unimplemented settings are named as errors rather than no-ops,
   AirPods 4 non-ANC has a known product code, and the prebuilt tarball
   is mentioned where people look for an install.
+- **The bubble shows on GNOME as itself.** GNOME lets no program float
+  a window, so it used to fall back to XWayland or a plain notification.
+  A small shell extension for GNOME 46–51 (`contrib/gnome-shell-extension/`)
+  now puts the frames podctl-popup draws on screen, at the monitor's
+  scale, with hover and click, and holds back GNOME's volume OSD while
+  the bubble is up instead of letting it cover the card. `podctl install`
+  offers it on GNOME, `podctl debug` says whether it runs, and
+  `backend = "gnome"` picks it by name.
 - **The tray icon is its own.** Both buds over a level bar for the lower
   one, red at 20 % and below, a bolt while they charge, faded while they
   are not connected — the theme's headphones looked the same either way,

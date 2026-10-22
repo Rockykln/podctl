@@ -122,6 +122,9 @@ async fn run() -> ExitCode {
 
     let pick = BackendPick {
         name: match cfg.backend {
+            // The extension first: on GNOME the next best is XWayland,
+            // which cannot keep the bubble above everything.
+            Pick::Auto if backend::gnome::present().await => "gnome",
             Pick::Auto => backend::detect::detect(),
             other => other.as_str(),
         }
@@ -1449,17 +1452,20 @@ fn open_backend(
     on_screen: Duration,
 ) -> anyhow::Result<Box<dyn Backend>> {
     let order: &[&str] = match (pick, explicit) {
+        ("gnome", false) => &["gnome", "x11", "notify"],
+        ("gnome", true) => &["gnome"],
         ("wl" | "wayland" | "wl_layer", false) => &["wl", "x11", "notify"],
         ("x11" | "x11_or", false) => &["x11", "notify"],
         ("wl" | "wayland" | "wl_layer", true) => &["wl"],
         ("x11" | "x11_or", true) => &["x11"],
         ("notify", _) => &["notify"],
-        (other, _) => anyhow::bail!("unknown backend '{other}' (use wl|x11|notify)"),
+        (other, _) => anyhow::bail!("unknown backend '{other}' (use wl|gnome|x11|notify)"),
     };
     let mut last = anyhow::anyhow!("no backend available");
     for kind in order {
         let mut be: Box<dyn Backend> = match *kind {
             "wl" => Box::new(backend::wl_layer::WlLayer::new()),
+            "gnome" => Box::new(backend::gnome::Gnome::new()),
             "x11" => Box::new(backend::x11_or::X11Or::new()),
             _ => Box::new(backend::notify::Notify::new()),
         };
@@ -1509,7 +1515,7 @@ fn print_usage() {
         "  podctl-popup --dump <file.png> [--theme auto|dark|light] [--model <slug>] [--scale <n>] [--at entry|exit|dismiss|values:<ms>] [--backdrop]"
     );
     println!(
-        "  podctl-popup --demo [--backend wl|x11|notify] [--theme auto|dark|light] [--motion auto|full|reduced] [--hold <ms>] [--updates]"
+        "  podctl-popup --demo [--backend wl|gnome|x11|notify] [--theme auto|dark|light] [--motion auto|full|reduced] [--hold <ms>] [--updates]"
     );
     println!("  podctl-popup                               (run; watches the daemon)");
 }

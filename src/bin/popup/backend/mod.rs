@@ -1,4 +1,5 @@
 pub mod detect;
+pub mod gnome;
 pub mod notify;
 pub mod wl_layer;
 pub mod x11_or;

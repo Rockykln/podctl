@@ -1,0 +1,7 @@
+{
+  "uuid": "podctl@rockykln.com",
+  "name": "podctl",
+  "description": "Shows the podctl AirPods bubble on GNOME. podctl-popup draws it; this extension only puts it on screen, where GNOME lets no other program float a window.",
+  "shell-version": ["46", "47", "48", "49", "50", "51"],
+  "url": "https://github.com/Rockykln/podctl"
+}

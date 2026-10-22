@@ -50,9 +50,9 @@ Two optional desktop components ship alongside the CLI:
 - **`podctl-popup`** — the case-open bubble. Slides in at the bottom of
   the screen, shows model + L / R / Case rings, auto-hides after 5.5
   seconds (`duration_ms` in `~/.config/podctl/popup.toml`). Backend is
-  auto-detected (wlr-layer-shell on Hyprland / KDE / sway / Wayfire, X11
-  override-redirect on i3 / Xfce / MATE, freedesktop Notification
-  fallback on GNOME Wayland).
+  auto-detected (wlr-layer-shell on Hyprland / KDE / sway / Wayfire, a
+  small shell extension on GNOME 46–51, X11 override-redirect on i3 /
+  Xfce / MATE, freedesktop Notification as the last resort).
 
 ## Screenshots
 

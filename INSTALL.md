@@ -162,15 +162,29 @@ auto-detected:
 | Session | Popup backend |
 | --- | --- |
 | Wayland with `wlr-layer-shell` (Hyprland, sway, river, KDE Plasma, Wayfire) | full animated bubble |
-| GNOME Wayland (no layer-shell) | notification fallback |
+| GNOME 46–51 with the podctl extension | full animated bubble |
+| GNOME without the extension | XWayland window, else a plain notification |
 | X11 (i3, Xfce, MATE, …) | override-redirect window |
+
+GNOME lets no program float a window over the desktop, so there the
+bubble goes through a small shell extension (`contrib/gnome-shell-extension/`).
+podctl-popup still draws every frame; the extension only puts it on
+screen and holds back GNOME's volume OSD while the bubble is up, which
+would otherwise cover it on connect. `podctl install --with-popup` asks
+for it on GNOME. It is switched on from the next login; `podctl debug`
+says whether it runs. By hand:
+
+```
+cp -r contrib/gnome-shell-extension/podctl@rockykln.com ~/.local/share/gnome-shell/extensions/
+gnome-extensions enable podctl@rockykln.com   # after logging in again on Wayland
+```
 
 Everything about the bubble is tunable in `~/.config/podctl/popup.toml`
 (the file is optional — these are the defaults):
 
 ```
 enabled     = true      # false disables the bubble entirely
-backend     = "auto"    # auto | wl | x11 | notify
+backend     = "auto"    # auto | wl | gnome | x11 | notify
 theme       = "auto"    # auto (desktop style) | dark | light
 motion      = "auto"    # auto (desktop setting) | full | reduced
 duration_ms = 5500      # time on screen, 500 … 60000
@@ -292,6 +306,8 @@ Originally documented by [LibrePods](https://github.com/kavishdevar/librepods).
   the AirPods are paired (`podctl list`).
 - Tray invisible on GNOME → install the AppIndicator extension; verify
   with `podctl tray status`.
+- Bubble only a notification on GNOME → the podctl extension is missing or
+  not running yet; `podctl debug` shows which, under `[desktop services]`.
 - `man podctl` not found → the installer prints the `MANPATH` line if
   `~/.local/share/man` is outside your manpath.
 - Conversation Awareness only reacts while audio is playing — that is

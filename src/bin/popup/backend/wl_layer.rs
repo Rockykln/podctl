@@ -470,6 +470,13 @@ unsafe extern "C" {
     fn __errno_location() -> *mut i32;
 }
 
+/// Undo a mapping from [`shm_alloc`].
+pub(super) fn shm_free(map: *mut u8, len: usize) {
+    unsafe {
+        munmap(map, len);
+    }
+}
+
 fn last_err() -> std::io::Error {
     std::io::Error::from_raw_os_error(unsafe { *__errno_location() })
 }
@@ -510,7 +517,8 @@ fn read_into(
     Ok(())
 }
 
-fn shm_alloc(len: usize) -> Result<(OwnedFd, *mut u8)> {
+/// A shared mapping of `len` bytes and the memfd behind it.
+pub(super) fn shm_alloc(len: usize) -> Result<(OwnedFd, *mut u8)> {
     let name = c"podctl-popup";
     let raw = unsafe { memfd_create(name.as_ptr(), MFD_CLOEXEC) };
     if raw < 0 {

@@ -234,6 +234,9 @@ pub fn run(no_redact: bool) -> String {
             unit_state(&format!("{unit}.service"))
         );
     }
+    if let Some(state) = gnome_extension_state() {
+        let _ = writeln!(out, "  gnome extension         {state}");
+    }
     for var in ["WAYLAND_DISPLAY", "DISPLAY"] {
         let here = std::env::var_os(var).is_some();
         let systemd = systemd_env_has(var);
@@ -426,6 +429,33 @@ fn mac_prefix(s: &str) -> Option<char> {
         }
     }
     Some(sep as char)
+}
+
+/// Only on GNOME: whether the extension the popup draws through is
+/// installed and running.
+fn gnome_extension_state() -> Option<String> {
+    let desktop = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default();
+    if !desktop.split(':').any(|d| d.eq_ignore_ascii_case("gnome")) {
+        return None;
+    }
+    let dir = podctl::xdg::data_home().join("gnome-shell/extensions/podctl@rockykln.com");
+    let running = Command::new("dbus-send")
+        .args([
+            "--session",
+            "--print-reply",
+            "--dest=org.freedesktop.DBus",
+            "/org/freedesktop/DBus",
+            "org.freedesktop.DBus.NameHasOwner",
+            "string:com.rockykln.podctl1.Shell",
+        ])
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).contains("boolean true"));
+    Some(match (dir.exists(), running) {
+        (_, Some(true)) => "running".into(),
+        (true, _) => "installed, not running (log out and back in, or: gnome-extensions enable podctl@rockykln.com)".into(),
+        (false, _) => "not installed (the popup falls back to X11 or notifications)".into(),
+    })
 }
 
 fn section(out: &mut String, name: &str) {
