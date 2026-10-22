@@ -60,6 +60,10 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 - `podctl pair` says AirPods are already paired instead of "no new
   AirPods spotted", asks back with exit code 64 instead of 69 when it
   needs to be told which, and announces the 15 s it really takes.
+- The tray said "Not paired" after logging in until the AirPods first
+  connected: it asked the daemon before the daemon had found them, and
+  nothing told it later. The daemon now sends its whole state to every
+  watcher when the AirPods turn up without connecting.
 - Paired AirPods that had not connected since the adapter came up could
   be missing from `podctl list` and `unpair`: BlueZ gives them no
   Modalias yet, so they are known by name until it does.

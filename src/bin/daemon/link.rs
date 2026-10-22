@@ -68,6 +68,7 @@ pub async fn run(daemon: Arc<Daemon>) {
             let prev_addr_for_event = prev_addr.clone();
             let snap_addr = snap.address.clone();
             let snap_connected = snap.connected;
+            let mut resync = false;
             // Preserve cached AAP-derived fields — the BlueZ snapshot
             // doesn't know about them. Dropping `case_lid_open` here made
             // every battery frame after a poll re-announce the lid edge.
@@ -104,6 +105,11 @@ pub async fn run(daemon: Arc<Daemon>) {
                 if let Some(addr) = &s.address {
                     if prev_addr.as_deref() != Some(addr.as_str()) || s.connected != prev_connected
                     {
+                        // Found at startup or after a pairing without
+                        // connecting: no event covers that, and a tray
+                        // that asked before would say "Not paired".
+                        resync = prev_addr.as_deref() != Some(addr.as_str())
+                            && !(s.connected && !first_poll);
                         prev_addr = Some(addr.clone());
                         prev_connected = s.connected;
                         if s.connected && !first_poll {
@@ -124,6 +130,9 @@ pub async fn run(daemon: Arc<Daemon>) {
                     prev_connected = false;
                     let _ = daemon.events.send(Event::Disconnected);
                 }
+            }
+            if resync {
+                daemon.resync();
             }
             first_poll = false;
             let _ = scan_tx.send(snap_addr.is_some() && !snap_connected);

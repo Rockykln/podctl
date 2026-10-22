@@ -59,6 +59,9 @@ pub struct Daemon {
     /// Rung by the AAP thread when it exits, so the link task looks at
     /// BlueZ right away instead of at its next poll.
     link_wake: tokio::sync::Notify,
+    /// Bumped when the AirPods turn up without connecting, which no event
+    /// says: watchers then get the whole state again.
+    resync: tokio::sync::watch::Sender<u64>,
 }
 
 impl Daemon {
@@ -78,6 +81,7 @@ impl Daemon {
             popup_listeners: AtomicUsize::new(0),
             media: media::Media::default(),
             link_wake: tokio::sync::Notify::new(),
+            resync: tokio::sync::watch::Sender::new(0),
         }
     }
 
@@ -234,6 +238,14 @@ impl Daemon {
 
     pub fn subscribe(&self) -> broadcast::Receiver<Event> {
         self.events.subscribe()
+    }
+
+    pub fn subscribe_resync(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.resync.subscribe()
+    }
+
+    pub fn resync(&self) {
+        self.resync.send_modify(|n| *n += 1);
     }
 
     pub async fn snapshot(&self) -> DeviceState {

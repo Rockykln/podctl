@@ -143,6 +143,8 @@ async fn handle_connection(sock: UnixStream, daemon: Arc<Daemon>) -> anyhow::Res
             WatchRole::Observer => None,
         };
         let mut events = daemon.subscribe();
+        let mut resync = daemon.subscribe_resync();
+        resync.mark_unchanged();
         // The state as it is right now, so a subscriber does not have to
         // ask on a second connection — between those two an event could
         // slip through unseen. The cached one: polling BlueZ here would
@@ -171,6 +173,14 @@ async fn handle_connection(sock: UnixStream, daemon: Arc<Daemon>) -> anyhow::Res
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 },
+                Ok(()) = resync.changed() => {
+                    if write_line(&mut tx, &Response::ok_state(daemon.snapshot().await))
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
                 // A hangup, or anything the client says on a stream that
                 // takes no requests. Without this the task and, worse, a
                 // popup registration outlived the client that left, so
