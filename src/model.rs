@@ -281,6 +281,10 @@ pub struct PressCounts {
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DeviceInfo {
+    /// Apple's A-number, `A3047`: tells the variants of one product
+    /// code apart.
+    #[serde(default)]
+    pub model_number: Option<String>,
     pub firmware_left: Option<String>,
     pub firmware_right: Option<String>,
     pub firmware_case: Option<String>,

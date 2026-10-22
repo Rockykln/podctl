@@ -81,6 +81,7 @@ pub async fn run(daemon: Arc<Daemon>) {
                 let cached_lid = s.case_lid_open;
                 let cached_presses = s.press_counts.clone();
                 let cached_settings = s.settings.clone();
+                let cached_info = s.info.clone();
                 let cached_caps = s.capabilities;
                 let had_model = cached_caps.model != Model::Unknown;
                 *s = snap;
@@ -88,6 +89,7 @@ pub async fn run(daemon: Arc<Daemon>) {
                 s.battery_at = cached_battery_at;
                 s.aap_linked = cached_aap;
                 s.in_ear = cached_in_ear;
+                s.info = cached_info;
                 s.case_lid_open = cached_lid;
                 s.press_counts = cached_presses;
                 s.settings = cached_settings;
@@ -288,6 +290,7 @@ impl AapSupervisor {
         s.battery_at = None;
         s.in_ear = podctl::InEar::default();
         s.case_lid_open = None;
+        s.info.model_number = None;
         // Settings too: they come from the device's own dump, and the
         // next pair may answer differently. Ear detection and the mic
         // mode are the exception — podctl remembers those itself.

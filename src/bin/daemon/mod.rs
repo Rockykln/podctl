@@ -264,6 +264,14 @@ impl Daemon {
         s.battery
     }
 
+    pub async fn set_model_number(&self, number: String) {
+        let mut s = self.state.write().await;
+        if s.info.model_number.as_deref() != Some(number.as_str()) {
+            s.info.model_number = Some(number);
+            Self::touch(&mut s);
+        }
+    }
+
     /// Returns the previous state, or `None` when the device only
     /// repeated what we already hold.
     pub async fn set_in_ear(&self, in_ear: podctl::InEar) -> Option<podctl::InEar> {

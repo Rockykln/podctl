@@ -261,6 +261,7 @@ async fn handle_frame(daemon: &Arc<Daemon>, frame: &Frame) {
         op::CONV_AWARENESS_LVL => apply_conv_level(daemon, &frame.payload).await,
         op::SETTINGS => apply_settings(daemon, &frame.payload).await,
         op::PROXIMITY_KEYS => store_keys(daemon, &frame.payload).await,
+        op::METADATA => apply_device_info(daemon, &frame.payload).await,
         _ => debug!(
             opcode = format!("{:02x}", frame.opcode),
             len = frame.payload.len(),
@@ -442,6 +443,15 @@ async fn apply_ear(daemon: &Arc<Daemon>, payload: &[u8]) {
     let enabled = daemon.state.read().await.settings.ear_detection != Some(false);
     let d = Arc::clone(daemon);
     tokio::spawn(async move { d.media.on_in_ear(prev, in_ear, enabled).await });
+}
+
+async fn apply_device_info(daemon: &Daemon, payload: &[u8]) {
+    let Some(number) = aap::parse_model_number(payload) else {
+        debug!(len = payload.len(), "device info without a model number");
+        return;
+    };
+    debug!(model_number = %number, "device info");
+    daemon.set_model_number(number).await;
 }
 
 /// The reply carries the identity resolving key of the buds. Never log

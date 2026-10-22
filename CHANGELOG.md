@@ -126,6 +126,10 @@ entries when upgrading from 0.3.0.
   model has and leaves off out, as a press of the stem does; a volume
   step stops at 0 and 100. The README has bindings for Hyprland, sway
   and Plasma.
+- **Apple's model number** (`A3047`) in `podctl status`, `podctl debug`
+  and as `info.model_number` in JSON, read from the device info the buds
+  send on connect. Their serial numbers are in there too and are left
+  alone.
 - **Release tarballs for aarch64** (Asahi Linux, ARM laptops) next to
   x86_64, each with a build attestation from GitHub
   (`gh attestation verify`), a CycloneDX SBOM, and the dependency list

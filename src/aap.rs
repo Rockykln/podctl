@@ -382,6 +382,20 @@ fn ear_status_from_byte(b: u8) -> crate::model::EarStatus {
     }
 }
 
+/// Apple's model number (`A3047`) from the device info the buds send
+/// on connect: NUL-separated strings, the name first and the model
+/// number after it. The serial numbers further on are not read.
+pub fn parse_model_number(payload: &[u8]) -> Option<String> {
+    let fields: Vec<&[u8]> = payload.split(|b| *b == 0).collect();
+    fields.windows(2).find_map(|pair| {
+        let [name, number] = pair else { return None };
+        let is_text = |f: &[u8]| !f.is_empty() && f.iter().all(|b| (0x20..0x7f).contains(b));
+        let is_number =
+            number.len() == 5 && number[0] == b'A' && number[1..].iter().all(u8::is_ascii_digit);
+        (is_text(name) && is_number).then(|| String::from_utf8_lossy(number).into_owned())
+    })
+}
+
 pub fn parse_in_ear(payload: &[u8]) -> Option<crate::model::InEar> {
     if payload.len() < 2 {
         return None;
@@ -429,6 +443,21 @@ pub fn parse_proximity_pair(data: &[u8]) -> Option<u16> {
 mod tests {
     use super::*;
     use crate::model::EarStatus;
+
+    #[test]
+    fn the_model_number_comes_after_the_name() {
+        let mut payload = vec![0x02, 0x40, 0x00, 0x04, 0x00];
+        for field in ["Test AirPods", "A3047", "Apple Inc.", "XXXXXXXXXX", "1.0.0"] {
+            payload.extend_from_slice(field.as_bytes());
+            payload.push(0);
+        }
+        assert_eq!(parse_model_number(&payload).as_deref(), Some("A3047"));
+        // Without one, nothing: a serial number is never taken for it.
+        let rest = payload.split_off(18);
+        assert_eq!(parse_model_number(&payload[..5]), None);
+        assert_eq!(parse_model_number(&rest[6..]), None);
+        assert_eq!(parse_model_number(b"Test AirPods\0A30\0"), None);
+    }
 
     #[test]
     fn frame_roundtrip() {
