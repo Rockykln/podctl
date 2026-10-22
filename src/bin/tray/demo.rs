@@ -54,6 +54,7 @@ fn states(threshold: u8) -> Vec<(&'static str, TrayState)> {
         let mut s = TrayState::new(threshold);
         s.daemon_up = true;
         s.connected = true;
+        s.paired = true;
         s.name = Some("Demo AirPods".into());
         s.model = Some(Model::Pro2UsbC.label().into());
         s.capabilities = Model::Pro2UsbC.capabilities();

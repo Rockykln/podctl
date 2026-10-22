@@ -28,6 +28,7 @@ const BAT_ONE: i32 = 13;
 const BAT_LAST: i32 = 14;
 const SEP_BAT: i32 = 15;
 const CONNECT: i32 = 16;
+const NOT_PAIRED: i32 = 17;
 const NOISE: i32 = 20;
 const MODE_ANC: i32 = 21;
 const MODE_ADAPT: i32 = 22;
@@ -374,6 +375,7 @@ fn tree(s: &TrayState, left_click: LeftClick) -> Vec<Node> {
     let subhead = match (&s.model, on) {
         (Some(m), true) => format!("{m} · Connected"),
         (None, true) => "Connected".into(),
+        (_, false) if !s.paired => "Not paired".into(),
         (_, false) => "Not connected".into(),
     };
     let volume = match s.audio.volume_percent {
@@ -436,7 +438,14 @@ fn tree(s: &TrayState, left_click: LeftClick) -> Vec<Node> {
             .shown(up && !s.connected && s.battery.any_known()),
         ),
         node(SEP_BAT, separator()),
-        node(CONNECT, text("Connect", true).shown(up && !s.connected)),
+        node(
+            CONNECT,
+            text("Connect", true).shown(up && !s.connected && s.paired),
+        ),
+        node(
+            NOT_PAIRED,
+            text("Not paired — run 'podctl pair'", false).shown(up && !s.paired),
+        ),
         node(NOISE, text("Noise Control", false).shown(on && noise)),
         node(
             MODE_ANC,
@@ -751,6 +760,7 @@ mod tests {
         let mut s = TrayState::new(20);
         s.daemon_up = true;
         s.connected = true;
+        s.paired = true;
         s.name = Some("Test AirPods".into());
         s.model = Some("AirPods Pro 2".into());
         s.capabilities = Model::Pro2UsbC.capabilities();
@@ -810,6 +820,26 @@ mod tests {
                 "Last seen: L 80%",
                 "---",
                 "Connect",
+                "---",
+                "Quit",
+            ]
+        );
+    }
+
+    #[test]
+    fn nothing_paired_points_at_pair_instead_of_connect() {
+        let mut s = pro2();
+        s.forget_link();
+        s.paired = false;
+        s.name = None;
+        s.model = None;
+        assert_eq!(
+            shown(&s),
+            [
+                "AirPods",
+                "Not paired",
+                "---",
+                "Not paired — run 'podctl pair'",
                 "---",
                 "Quit",
             ]

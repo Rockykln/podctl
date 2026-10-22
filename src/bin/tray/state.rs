@@ -11,6 +11,8 @@ pub struct TrayState {
     /// daemon looked exactly like AirPods that are switched off.
     pub daemon_up: bool,
     pub connected: bool,
+    /// Whether the daemon has a pair of AirPods to connect to at all.
+    pub paired: bool,
     pub name: Option<String>,
     pub model: Option<String>,
     pub battery: Battery,

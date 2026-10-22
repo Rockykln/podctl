@@ -9,6 +9,19 @@ const STEPS: [u8; 6] = [10, 20, 40, 60, 80, 100];
 /// At or below this the bar turns red.
 const RED_UP_TO: u8 = 20;
 
+const INDEX: &str = "\
+[Icon Theme]
+Name=Hicolor
+Directories=scalable/status
+
+[scalable/status]
+Size=16
+MinSize=8
+MaxSize=512
+Type=Scalable
+Context=Status
+";
+
 pub const PLAIN: &str = "podctl-airpods-symbolic";
 pub const DISCONNECTED: &str = "podctl-airpods-disconnected-symbolic";
 
@@ -50,6 +63,9 @@ pub fn level(pct: u8, charging: bool) -> String {
 pub fn install(dir: &Path) -> std::io::Result<PathBuf> {
     let status = dir.join("hicolor/scalable/status");
     std::fs::create_dir_all(&status)?;
+    // GTK and St only look into directories a theme index names; Plasma
+    // finds the files without it.
+    std::fs::write(dir.join("hicolor/index.theme"), INDEX)?;
     let mut all = vec![
         (PLAIN.to_string(), svg(None, false, false)),
         (DISCONNECTED.to_string(), svg(None, false, true)),
@@ -164,6 +180,11 @@ mod tests {
     fn every_name_handed_out_is_written() {
         let dir = std::env::temp_dir().join(format!("podctl-icons-{}", std::process::id()));
         install(&dir).unwrap();
+        assert!(
+            std::fs::read_to_string(dir.join("hicolor/index.theme"))
+                .unwrap()
+                .contains("scalable/status")
+        );
         let status = dir.join("hicolor/scalable/status");
         for name in STEPS
             .iter()

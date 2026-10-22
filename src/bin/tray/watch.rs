@@ -124,6 +124,7 @@ async fn apply_status(state: &SharedState, ds: DeviceState) {
     s.daemon_up = true;
     s.pulled = Some(Instant::now());
     s.connected = ds.connected;
+    s.paired = ds.address.is_some();
     s.name = ds.name;
     // Model/caps are sticky: a Status taken in the daemon's startup
     // window (or while BlueZ is mid-refresh) can carry Unknown — never
