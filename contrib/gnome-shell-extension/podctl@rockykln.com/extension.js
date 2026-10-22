@@ -61,6 +61,15 @@ const INTERFACE = `
 
 const SHELL_MAJOR = parseInt(Config.PACKAGE_VERSION.split('.')[0]);
 
+// A view into one slot of the shared buffer. GJS 1.82 (GNOME 48) knows
+// g_bytes_new_from_bytes only as a method, 1.90 (GNOME 51) only as a
+// static function.
+function slice(bytes, offset, length) {
+    return GLib.Bytes.new_from_bytes
+        ? GLib.Bytes.new_from_bytes(bytes, offset, length)
+        : bytes.new_from_bytes(offset, length);
+}
+
 class Bubble {
     constructor(service, width, height, input) {
         this._service = service;
@@ -144,7 +153,7 @@ class Bubble {
     frame(slot, width, height, stride) {
         if (!this._bytes)
             throw new Error('Frame before SetBuffer');
-        const bytes = GLib.Bytes.new_from_bytes(this._bytes, slot * this._slotSize, stride * height);
+        const bytes = slice(this._bytes, slot * this._slotSize, stride * height);
         const format = Cogl.PixelFormat.BGRA_8888_PRE;
         if (SHELL_MAJOR >= 48) {
             const cogl = global.stage.context.get_backend().get_cogl_context();
