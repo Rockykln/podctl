@@ -342,6 +342,13 @@ somebody else's.
     podctl pair AA:BB:CC:DD:EE:FF # pair that one
 
     podctl status                 # afterwards: should show them
+
+AirPods that are paired already are named as such: use 'podctl
+connect' for them. A list of candidates ends with exit code 64, as it
+asks for a choice. An adapter that is not pairable (Debian's default)
+is made pairable for the moment, and pair fails if BlueZ still kept no
+key, rather than leave a pairing that is gone after the next
+disconnect.
 ";
 
 const UNPAIR: &str = "\
