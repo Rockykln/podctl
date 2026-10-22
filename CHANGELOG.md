@@ -64,6 +64,9 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
   connected: it asked the daemon before the daemon had found them, and
   nothing told it later. The daemon now sends its whole state to every
   watcher when the AirPods turn up without connecting.
+- A connect that BlueZ turns down says what to do instead of passing on
+  its code: "br-connection-page-timeout" now reads as the AirPods not
+  answering, with the hint to open the case or take them out.
 - Paired AirPods that had not connected since the adapter came up could
   be missing from `podctl list` and `unpair`: BlueZ gives them no
   Modalias yet, so they are known by name until it does.

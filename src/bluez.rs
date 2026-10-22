@@ -120,8 +120,25 @@ fn field(out: &str, key: &str) -> Option<String> {
 }
 
 pub fn connect(addr: &str) -> anyhow::Result<()> {
-    bluetoothctl(&["connect", addr])?;
+    bluetoothctl(&["connect", addr]).map_err(|e| match why_not_connected(&e.to_string()) {
+        Some(plain) => anyhow::anyhow!(plain),
+        None => e,
+    })?;
     Ok(())
+}
+
+/// The reasons BlueZ gives for a failed connect, in words that say what
+/// to do. Without the tool's name in them they count as unavailable.
+fn why_not_connected(reason: &str) -> Option<&'static str> {
+    if reason.contains("page-timeout") || reason.contains("Host is down") {
+        Some("the AirPods did not answer: open the case or take them out, and keep them close.")
+    } else if reason.contains("connection-busy") || reason.contains("InProgress") {
+        Some("Bluetooth is busy with another connection, try again in a moment.")
+    } else if reason.contains("NotReady") {
+        Some("Bluetooth is off; switch it on first.")
+    } else {
+        None
+    }
 }
 
 pub fn disconnect(addr: &str) -> anyhow::Result<()> {
@@ -424,6 +441,24 @@ mod tests {
         assert_eq!(
             super::error_code_for("no new AirPods spotted"),
             crate::ipc::ErrorCode::Unavailable
+        );
+    }
+
+    #[test]
+    fn a_failed_connect_says_what_to_do() {
+        let timeout = "bluetoothctl [\"connect\", \"AA:BB:CC:DD:EE:01\"] failed: \
+                       Failed to connect: org.bluez.Error.Failed br-connection-page-timeout";
+        let plain = super::why_not_connected(timeout).expect("known reason");
+        assert!(plain.contains("did not answer"), "{plain}");
+        assert_eq!(
+            super::error_code_for(plain),
+            crate::ipc::ErrorCode::Unavailable
+        );
+        assert!(super::why_not_connected("org.bluez.Error.Failed br-connection-busy").is_some());
+        assert!(super::why_not_connected("org.bluez.Error.NotReady").is_some());
+        assert_eq!(
+            super::why_not_connected("org.bluez.Error.Failed something new"),
+            None
         );
     }
 
