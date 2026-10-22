@@ -61,7 +61,7 @@ complete -c podctl -n __fish_use_subcommand -a uninstall -d 'remove what install
 complete -c podctl -n __fish_use_subcommand -a help -d 'this list, or one command'
 complete -c podctl -n __fish_use_subcommand -a version -d 'CLI and daemon version'
 
-complete -c podctl -n '__fish_seen_subcommand_from mode m' -a 'off anc transparency adaptive'
+complete -c podctl -n '__fish_seen_subcommand_from mode m' -a 'off anc transparency adaptive next'
 complete -c podctl -n '__fish_seen_subcommand_from conv c' -a 'on off'
 complete -c podctl -n '__fish_seen_subcommand_from spatial' -a 'off fixed head-tracked'
 complete -c podctl -n '__fish_seen_subcommand_from ear ear-detection' -a 'on off'

@@ -136,7 +136,8 @@ pub const COMMANDS: &[Cmd] = &[
     cmd!("ping", &[], CORE, &[], &[], "daemon health check", Ready),
 
     cmd!("mode", &["m"], LISTENING,
-        &[req("off|anc|transparency|adaptive", &["off", "anc", "transparency", "adaptive"])],
+        &[req("off|anc|transparency|adaptive|next",
+              &["off", "anc", "transparency", "adaptive", "next"])],
         &[], "listening mode", Ready),
     cmd!("conv", &["c"], LISTENING, &[req("on|off", ON_OFF)], &[],
         "conversation awareness", Ready),
@@ -176,7 +177,7 @@ pub const COMMANDS: &[Cmd] = &[
     cmd!("auto-connect", &["auto"], BLUETOOTH, &[req("on|off", ON_OFF)], &[],
         "BlueZ trusted flag", Ready),
 
-    cmd!("volume", &["v", "vol"], AUDIO, &[req("0..100", &[])], &[], "sink volume", Ready),
+    cmd!("volume", &["v", "vol"], AUDIO, &[req("0..100|+N|-N", &[])], &[], "sink volume", Ready),
     cmd!("mute", &[], AUDIO, &[req("on|off", ON_OFF)], &[], "mute the AirPods sink", Ready),
     cmd!("profile", &["p"], AUDIO,
         &[req("high|headset|off", &["high", "headset", "off"])], &[],

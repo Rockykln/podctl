@@ -2,10 +2,10 @@ use std::process::ExitCode;
 use std::str::FromStr;
 
 use podctl::{
-    PressSide, Response, WatchRole, client, commands, exitcode,
+    Capabilities, PressSide, Response, WatchRole, client, commands, exitcode,
     ipc::ErrorCode,
     ipc::Request,
-    model::{ConvAwareness, MicSelection, Mode, PressAction, Profile, SpatialAudio},
+    model::{ConvAwareness, DeviceState, MicSelection, Mode, PressAction, Profile, SpatialAudio},
 };
 
 mod completion;
@@ -217,7 +217,13 @@ fn run(mut args: Vec<String>) -> Result<i32, CliError> {
         return stream_events(out);
     }
 
-    let request = parse_verb(&verb, &args[1..])?;
+    let request = match relative_arg(&verb, &args[1..]) {
+        Some(step) => {
+            check_args(&verb, &args[1..])?;
+            step_request(step, &current_state(&verb)?)?
+        }
+        None => parse_verb(&verb, &args[1..])?,
+    };
     // Fifteen seconds of silence otherwise, with nothing to say whether
     // anything is happening.
     if let Request::Pair { address: None, .. } = &request {
@@ -375,6 +381,90 @@ fn check_args(verb: &str, rest: &[String]) -> Result<(), CliError> {
         return Err(err);
     }
     Ok(())
+}
+
+/// A value that depends on where the AirPods are now, for hotkeys that
+/// cannot know it: `mode next`, `volume +5`.
+#[derive(Debug, PartialEq)]
+enum Step {
+    NextMode,
+    Volume(i16),
+}
+
+fn relative_arg(verb: &str, rest: &[String]) -> Option<Step> {
+    let raw = rest.first()?;
+    match commands::find(verb)?.name {
+        "mode" if raw == "next" => Some(Step::NextMode),
+        "volume" if raw.starts_with(['+', '-']) => raw
+            .parse::<i16>()
+            .ok()
+            .filter(|d| d.abs() <= 100)
+            .map(Step::Volume),
+        _ => None,
+    }
+}
+
+/// Asked the same way as `status`, so it works with or without the
+/// daemon and the fallback gains nothing new.
+fn current_state(verb: &str) -> Result<DeviceState, CliError> {
+    let resp = match try_daemon(verb, &Request::Status)? {
+        Some(resp) => resp,
+        None => standalone::dispatch(&Request::Status),
+    };
+    match resp {
+        Response::State(s) => Ok(s),
+        Response::Err(info) => Err(CliError::new(
+            exit_code_for(info.code),
+            with_verb(verb, &info.message),
+        )),
+        _ => Err(CliError::new(
+            exitcode::SOFTWARE,
+            with_verb(verb, "status gave no state"),
+        )),
+    }
+}
+
+fn step_request(step: Step, s: &DeviceState) -> Result<Request, CliError> {
+    match step {
+        Step::NextMode => {
+            if !s.aap_linked {
+                return Err(CliError::unavailable(
+                    "mode: the AirPods are not connected.",
+                ));
+            }
+            let mode = next_mode(&s.capabilities, s.settings.mode).ok_or_else(|| {
+                CliError::new(
+                    exitcode::ERR,
+                    "mode: these AirPods have no modes to switch between.",
+                )
+            })?;
+            Ok(Request::SetMode { mode })
+        }
+        Step::Volume(delta) => {
+            let now = s.audio.volume_percent.ok_or_else(|| {
+                CliError::unavailable("volume: no AirPods audio output to turn up or down.")
+            })?;
+            let percent = (i16::from(now) + delta).clamp(0, 100) as u8;
+            Ok(Request::SetVolume { percent })
+        }
+    }
+}
+
+/// The cycle a press on the stem goes through by default: off is left
+/// out, as it is there.
+fn next_mode(caps: &Capabilities, now: Option<Mode>) -> Option<Mode> {
+    let cycle: Vec<Mode> = [
+        (caps.has_anc, Mode::NoiseCancellation),
+        (caps.has_transparency, Mode::Transparency),
+        (caps.has_adaptive, Mode::Adaptive),
+    ]
+    .into_iter()
+    .filter_map(|(has, mode)| has.then_some(mode))
+    .collect();
+    match now.and_then(|m| cycle.iter().position(|c| *c == m)) {
+        Some(i) => cycle.get((i + 1) % cycle.len()).copied(),
+        None => cycle.first().copied(),
+    }
 }
 
 fn parse_verb(verb: &str, rest: &[String]) -> Result<Request, CliError> {
@@ -804,6 +894,62 @@ mod tests {
             .find_map(|c| c.aliases.first().map(|a| (*a, c.name)))
             .expect("some command has an alias");
         assert_eq!(super::with_verb(alias.0, "x"), format!("{}: x", alias.1));
+    }
+
+    #[test]
+    fn next_mode_goes_round_without_off() {
+        use super::{Mode::*, next_mode};
+        let mut caps = podctl::Model::Pro2UsbC.capabilities();
+        assert_eq!(
+            next_mode(&caps, Some(NoiseCancellation)),
+            Some(Transparency)
+        );
+        assert_eq!(next_mode(&caps, Some(Transparency)), Some(Adaptive));
+        assert_eq!(next_mode(&caps, Some(Adaptive)), Some(NoiseCancellation));
+        assert_eq!(next_mode(&caps, Some(Off)), Some(NoiseCancellation));
+        assert_eq!(next_mode(&caps, None), Some(NoiseCancellation));
+        caps.has_adaptive = false;
+        assert_eq!(
+            next_mode(&caps, Some(Transparency)),
+            Some(NoiseCancellation)
+        );
+        caps.has_anc = false;
+        caps.has_transparency = false;
+        assert_eq!(next_mode(&caps, Some(Off)), None);
+    }
+
+    #[test]
+    fn relative_values_are_told_from_plain_ones() {
+        use super::{Step, relative_arg};
+        let args = |a: &str| vec![a.to_string()];
+        assert_eq!(relative_arg("volume", &args("+5")), Some(Step::Volume(5)));
+        assert_eq!(relative_arg("v", &args("-10")), Some(Step::Volume(-10)));
+        assert_eq!(relative_arg("volume", &args("50")), None);
+        assert_eq!(relative_arg("volume", &args("+x")), None);
+        assert_eq!(relative_arg("volume", &args("+500")), None);
+        assert_eq!(relative_arg("m", &args("next")), Some(Step::NextMode));
+        assert_eq!(relative_arg("mode", &args("anc")), None);
+        assert_eq!(relative_arg("conv", &args("next")), None);
+    }
+
+    #[test]
+    fn a_volume_step_stops_at_the_ends() {
+        use super::{Step, step_request};
+        let mut s = podctl::model::DeviceState::default();
+        s.audio.volume_percent = Some(98);
+        let req = step_request(Step::Volume(5), &s).expect("a volume");
+        assert!(
+            matches!(req, podctl::Request::SetVolume { percent: 100 }),
+            "{req:?}"
+        );
+        s.audio.volume_percent = Some(3);
+        let req = step_request(Step::Volume(-5), &s).expect("a volume");
+        assert!(
+            matches!(req, podctl::Request::SetVolume { percent: 0 }),
+            "{req:?}"
+        );
+        s.audio.volume_percent = None;
+        assert!(step_request(Step::Volume(5), &s).is_err());
     }
 
     #[test]

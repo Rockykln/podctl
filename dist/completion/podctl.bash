@@ -26,7 +26,7 @@ _podctl() {
     case "$verb" in
         mode|m)
             case $argpos in
-            1) COMPREPLY=( $(compgen -W "off anc transparency adaptive" -- "$cur") );;
+            1) COMPREPLY=( $(compgen -W "off anc transparency adaptive next" -- "$cur") );;
             esac
             ;;
         conv|c)

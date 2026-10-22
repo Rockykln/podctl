@@ -194,11 +194,14 @@ podctl mode — switch listening mode
     anc            active noise cancellation
     transparency   pass outside sound through
     adaptive       Pro 2 / AirPods 4 ANC only
+    next           the next one the model has, round anc, transparency,
+                   adaptive; off is left out, as on a press of the stem
 
 Aliases: nc/noise/noise-cancellation → anc, tr/trans/pass → transparency.
 
     podctl mode anc
     podctl m transparency
+    podctl mode next
 ";
 
 const CONV: &str = "\
@@ -383,13 +386,16 @@ range.
 ";
 
 const VOLUME: &str = "\
-podctl volume — set audio sink volume (0..100)
+podctl volume — set audio sink volume (0..100, +N, -N)
 
 Applies to the PipeWire sink for the AirPods. Same effect as
 'wpctl set-volume @DEFAULT_AUDIO_SINK@ 0.6' when AirPods are default.
++N and -N go up or down from where it is, stopping at 0 and 100.
 
     podctl volume 60
     podctl v 100
+    podctl volume +5
+    podctl v -10
 ";
 
 const MUTE: &str = "\

@@ -84,7 +84,7 @@ _podctl() {
     case $verb in
         mode|m)
             case $argpos in
-                1) compadd off anc transparency adaptive ;;
+                1) compadd off anc transparency adaptive next ;;
             esac
             ;;
         conv|c)

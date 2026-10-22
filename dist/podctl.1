@@ -36,8 +36,11 @@ Full snapshot: model, battery, mode, settings, audio, bluetooth.
 Battery levels for left bud, right bud and case.
 .SS Listening modes
 .TP
-.BI "mode, m " "off|anc|transparency|adaptive"
+.BI "mode, m " "off|anc|transparency|adaptive|next"
 Switch listening mode. Adaptive requires AirPods Pro 2 or AirPods 4 ANC.
+.B next
+goes to the next mode the model has, round anc, transparency and
+adaptive; off is left out, as on a press of the stem.
 .TP
 .BI "conv, c " "on|off"
 Conversation awareness (Pro 2 / AirPods 4 ANC only). While you talk,
@@ -114,8 +117,10 @@ List paired AirPods on this adapter.
 BlueZ trusted/auto-connect flag.
 .SS Audio
 .TP
-.BI "volume, v, vol " "0..100"
+.BI "volume, v, vol " "0..100|+N|-N"
 Set output volume on the AirPods sink.
+.BR +N " and " -N
+go up or down from where it is, stopping at 0 and 100.
 .TP
 .BI "mute " "on|off"
 Mute or unmute the AirPods sink.

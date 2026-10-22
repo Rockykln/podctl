@@ -5,8 +5,6 @@
 use std::path::PathBuf;
 use std::process::{Command, Output};
 
-/// An empty directory as `XDG_RUNTIME_DIR`, so the CLI finds no socket
-/// and falls back to running in-process.
 /// A directory that does not exist, so there is no socket to find and
 /// the CLI falls back to running in-process. Nothing is created, so
 /// nothing is left behind either.

@@ -168,7 +168,7 @@ podctl --json <cmd>           machine-readable response (every command)
 
 | Command | What it does |
 | --- | --- |
-| `podctl mode <off\|anc\|transparency\|adaptive>` | switch noise-control |
+| `podctl mode <off\|anc\|transparency\|adaptive\|next>` | switch noise-control; `next` goes round the modes the model has, without off |
 | `podctl conv <on\|off>` | conversation awareness (daemon lowers the volume while you talk) |
 | `podctl spatial <off\|fixed\|head-tracked>` | spatial-audio mode |
 
@@ -199,7 +199,7 @@ podctl --json <cmd>           machine-readable response (every command)
 
 | Command | What it does |
 | --- | --- |
-| `podctl volume <0..100>` (`v`) | audio sink volume |
+| `podctl volume <0..100\|+N\|-N>` (`v`) | audio sink volume, set or stepped |
 | `podctl mute <on\|off>` | mute toggle |
 | `podctl profile <high\|headset\|off>` (`p`) | audio profile |
 | `podctl codec <sbc\|aac\|aptx\|ldac\|…>` | A2DP codec |
@@ -221,6 +221,26 @@ podctl --json <cmd>           machine-readable response (every command)
 | `podctl install [--with-tray] [--with-popup]` / `podctl uninstall` | installer / rollback |
 | `podctl version` (`-V`) | CLI + daemon version |
 | `podctl help [cmd]` | this list / detailed page |
+
+### Hotkeys
+
+`mode next` and `volume +5` need no idea of where the AirPods are now,
+so they fit on a key:
+
+```sh
+# Hyprland (hyprland.conf)
+bind = SUPER, N, exec, podctl mode next
+bind = SUPER, equal, exec, podctl volume +5
+bind = SUPER, minus, exec, podctl volume -5
+
+# sway (config)
+bindsym $mod+n exec podctl mode next
+bindsym $mod+equal exec podctl volume +5
+bindsym $mod+minus exec podctl volume -5
+```
+
+On KDE Plasma: System Settings → Keyboard → Shortcuts → Add New → Command or
+Script, with `podctl mode next` as the command.
 
 ## Debug reports — DSGVO-friendly
 

@@ -121,6 +121,11 @@ entries when upgrading from 0.3.0.
   together. `fontdue` and `thiserror` are no longer dependencies.
 
 ### Added
+- **`podctl mode next` and `podctl volume +5` / `-5`**, for hotkeys that
+  cannot know where the AirPods are now. `next` goes round the modes the
+  model has and leaves off out, as a press of the stem does; a volume
+  step stops at 0 and 100. The README has bindings for Hyprland, sway
+  and Plasma.
 - **Release tarballs for aarch64** (Asahi Linux, ARM laptops) next to
   x86_64, each with a build attestation from GitHub
   (`gh attestation verify`), a CycloneDX SBOM, and the dependency list
