@@ -6,7 +6,7 @@ use std::time::Duration;
 use tokio::sync::Notify;
 use tracing::{debug, warn};
 use zbus::object_server::SignalEmitter;
-use zbus::zvariant::{Array, Dict, OwnedValue, StructureBuilder, Value};
+use zbus::{Array, Dict, OwnedVariant, Structure, Variant};
 
 use podctl::caps::Model;
 use podctl::{ConvAwareness, MicSelection, Mode, Profile, Request};
@@ -122,8 +122,8 @@ impl Menu {
     }
 }
 
-pub type Props = HashMap<String, OwnedValue>;
-type LayoutNode = (i32, Props, Vec<OwnedValue>);
+pub type Props = HashMap<String, OwnedVariant>;
+type LayoutNode = (i32, Props, Vec<OwnedVariant>);
 
 struct Node {
     id: i32,
@@ -186,7 +186,7 @@ impl Menu {
             .collect()
     }
 
-    async fn get_property(&self, id: i32, name: &str) -> zbus::fdo::Result<OwnedValue> {
+    async fn get_property(&self, id: i32, name: &str) -> zbus::fdo::Result<OwnedVariant> {
         let state = self.state.read().await;
         flatten(tree(&state, self.left_click))
             .into_iter()
@@ -211,7 +211,7 @@ impl Menu {
         (if pulled { ids } else { Vec::new() }, Vec::new())
     }
 
-    async fn event(&self, id: i32, event_id: &str, _data: Value<'_>, _timestamp: u32) {
+    async fn event(&self, id: i32, event_id: &str, _data: Variant<'_>, _timestamp: u32) {
         if event_id != "clicked" {
             return;
         }
@@ -276,7 +276,7 @@ impl Menu {
     async fn event_group(
         &self,
         #[zbus(signal_emitter)] _emitter: SignalEmitter<'_>,
-        events: Vec<(i32, String, Value<'_>, u32)>,
+        events: Vec<(i32, String, Variant<'_>, u32)>,
     ) -> Vec<i32> {
         for (id, event_id, data, ts) in events {
             self.event(id, &event_id, data, ts).await;
@@ -634,7 +634,7 @@ fn flatten(nodes: Vec<Node>) -> Vec<(i32, Props)> {
 }
 
 fn is_visible(p: &Props) -> bool {
-    !matches!(p.get("visible").map(|v| &**v), Some(Value::Bool(false)))
+    !matches!(p.get("visible").map(|v| &**v), Some(Variant::Bool(false)))
 }
 
 fn clone_props(p: &Props) -> Props {
@@ -643,16 +643,16 @@ fn clone_props(p: &Props) -> Props {
         .collect()
 }
 
-fn wrap(id: i32, props: Props, children: Vec<OwnedValue>) -> OwnedValue {
+fn wrap(id: i32, props: Props, children: Vec<OwnedVariant>) -> OwnedVariant {
     let prop_dict: Dict<'_, '_> = props.into();
     let child_array: Array<'_> = children.into();
-    let s = StructureBuilder::new()
-        .append_field(Value::I32(id))
-        .append_field(Value::Dict(prop_dict))
-        .append_field(Value::Array(child_array))
+    let s = Structure::builder()
+        .append_field(Variant::I32(id))
+        .append_field(Variant::Dict(prop_dict))
+        .append_field(Variant::Array(child_array))
         .build()
         .expect("layout structure has three fields");
-    Value::Structure(s)
+    Variant::Structure(s)
         .try_to_owned()
         .expect("layout node is serialisable")
 }
@@ -715,18 +715,18 @@ fn separator() -> Props {
     p
 }
 
-fn str_v(s: &str) -> OwnedValue {
-    Value::new(s.to_string())
+fn str_v(s: &str) -> OwnedVariant {
+    Variant::new(s.to_string())
         .try_to_owned()
         .expect("string is a value")
 }
 
-fn int_v(i: i32) -> OwnedValue {
-    Value::I32(i).try_to_owned().expect("i32 is a value")
+fn int_v(i: i32) -> OwnedVariant {
+    Variant::I32(i).try_to_owned().expect("i32 is a value")
 }
 
-fn bool_v(b: bool) -> OwnedValue {
-    Value::Bool(b).try_to_owned().expect("bool is a value")
+fn bool_v(b: bool) -> OwnedVariant {
+    Variant::Bool(b).try_to_owned().expect("bool is a value")
 }
 
 #[cfg(test)]
@@ -736,7 +736,7 @@ mod tests {
 
     fn label(p: &Props) -> String {
         match p.get("label").map(|v| &**v) {
-            Some(Value::Str(s)) => s.to_string(),
+            Some(Variant::Str(s)) => s.to_string(),
             _ => String::new(),
         }
     }

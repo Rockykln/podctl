@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use futures_util::StreamExt;
 use tracing::{debug, info};
-use zbus::zvariant::{OwnedValue, Value};
+use zbus::{OwnedVariant, Variant};
 
 const DEST: &str = "org.freedesktop.portal.Desktop";
 const PATH: &str = "/org/freedesktop/portal/desktop";
@@ -16,10 +16,10 @@ const KEY: &str = "color-scheme";
 
 /// 1 asks for dark. 0 ("no preference") is what GNOME's default style
 /// reports, and that style is light.
-fn prefers_dark(v: &Value) -> Option<bool> {
+fn prefers_dark(v: &Variant) -> Option<bool> {
     match v {
-        Value::Value(inner) => prefers_dark(inner),
-        Value::U32(n) => Some(*n == 1),
+        Variant::Variant(inner) => prefers_dark(inner),
+        Variant::U32(n) => Some(*n == 1),
         _ => None,
     }
 }
@@ -28,7 +28,7 @@ async fn proxy(conn: &zbus::Connection) -> zbus::Result<zbus::Proxy<'static>> {
     zbus::Proxy::new(conn, DEST, PATH, IFACE).await
 }
 
-async fn read_value(p: &zbus::Proxy<'_>, ns: &str, key: &str) -> Option<OwnedValue> {
+async fn read_value(p: &zbus::Proxy<'_>, ns: &str, key: &str) -> Option<OwnedVariant> {
     // ReadOne is portal v2; older portals only have Read, which wraps
     // the value in one more variant.
     let reply = match p.call_method("ReadOne", &(ns, key)).await {
@@ -51,12 +51,12 @@ const MOTION: [(&str, &str); 3] = [
     ("org.kde.kdeglobals.KDE", "AnimationDurationFactor"),
 ];
 
-fn asks_less_motion(ns: &str, key: &str, v: &Value) -> Option<bool> {
+fn asks_less_motion(ns: &str, key: &str, v: &Variant) -> Option<bool> {
     match (ns, key, v) {
-        (_, _, Value::Value(inner)) => asks_less_motion(ns, key, inner),
-        ("org.freedesktop.appearance", "reduced-motion", Value::U32(n)) => Some(*n == 1),
-        ("org.gnome.desktop.interface", "enable-animations", Value::Bool(on)) => Some(!on),
-        ("org.kde.kdeglobals.KDE", "AnimationDurationFactor", Value::Str(f)) => {
+        (_, _, Variant::Variant(inner)) => asks_less_motion(ns, key, inner),
+        ("org.freedesktop.appearance", "reduced-motion", Variant::U32(n)) => Some(*n == 1),
+        ("org.gnome.desktop.interface", "enable-animations", Variant::Bool(on)) => Some(!on),
+        ("org.kde.kdeglobals.KDE", "AnimationDurationFactor", Variant::Str(f)) => {
             f.as_str().trim().parse::<f32>().ok().map(|f| f == 0.0)
         }
         _ => None,
@@ -68,7 +68,7 @@ fn asks_less_motion(ns: &str, key: &str, v: &Value) -> Option<bool> {
 struct Motion([Option<bool>; 3]);
 
 impl Motion {
-    fn set(&mut self, ns: &str, key: &str, v: &Value) -> bool {
+    fn set(&mut self, ns: &str, key: &str, v: &Variant) -> bool {
         if let Some(i) = MOTION.iter().position(|&(n, k)| n == ns && k == key)
             && let Some(r) = asks_less_motion(ns, key, v)
         {
@@ -132,7 +132,7 @@ pub async fn follow(dark: Option<Arc<AtomicBool>>, reduced: Option<Arc<AtomicBoo
         reduced.store(motion.reduced(), Ordering::Relaxed);
     }
     while let Some(msg) = changes.next().await {
-        let Ok((ns, key, v)) = msg.body().deserialize::<(String, String, OwnedValue)>() else {
+        let Ok((ns, key, v)) = msg.body().deserialize::<(String, String, OwnedVariant)>() else {
             continue;
         };
         // KDE sends the same change several times over.
@@ -161,12 +161,12 @@ mod tests {
 
     #[test]
     fn reads_the_portal_values() {
-        assert_eq!(prefers_dark(&Value::U32(1)), Some(true));
-        assert_eq!(prefers_dark(&Value::U32(2)), Some(false));
-        assert_eq!(prefers_dark(&Value::U32(0)), Some(false));
-        let wrapped = Value::Value(Box::new(Value::Value(Box::new(Value::U32(1)))));
+        assert_eq!(prefers_dark(&Variant::U32(1)), Some(true));
+        assert_eq!(prefers_dark(&Variant::U32(2)), Some(false));
+        assert_eq!(prefers_dark(&Variant::U32(0)), Some(false));
+        let wrapped = Variant::Variant(Box::new(Variant::Variant(Box::new(Variant::U32(1)))));
         assert_eq!(prefers_dark(&wrapped), Some(true));
-        assert_eq!(prefers_dark(&Value::Str("dark".into())), None);
+        assert_eq!(prefers_dark(&Variant::Str("dark".into())), None);
     }
 
     #[test]
@@ -174,19 +174,19 @@ mod tests {
         let mut m = Motion::default();
         assert!(!m.reduced());
         let (portal, gnome, kde) = (MOTION[0], MOTION[1], MOTION[2]);
-        assert!(m.set(kde.0, kde.1, &Value::Str("0.25".into())));
-        assert!(m.set(gnome.0, gnome.1, &Value::Bool(true)));
-        assert!(m.set(portal.0, portal.1, &Value::U32(0)));
+        assert!(m.set(kde.0, kde.1, &Variant::Str("0.25".into())));
+        assert!(m.set(gnome.0, gnome.1, &Variant::Bool(true)));
+        assert!(m.set(portal.0, portal.1, &Variant::U32(0)));
         assert!(!m.reduced());
         m.set(
             kde.0,
             kde.1,
-            &Value::Value(Box::new(Value::Str("0".into()))),
+            &Variant::Variant(Box::new(Variant::Str("0".into()))),
         );
         assert!(m.reduced());
-        m.set(kde.0, kde.1, &Value::Str("1".into()));
-        m.set(gnome.0, gnome.1, &Value::Bool(false));
+        m.set(kde.0, kde.1, &Variant::Str("1".into()));
+        m.set(gnome.0, gnome.1, &Variant::Bool(false));
         assert!(m.reduced());
-        assert!(!m.set("org.example", "x", &Value::U32(1)));
+        assert!(!m.set("org.example", "x", &Variant::U32(1)));
     }
 }

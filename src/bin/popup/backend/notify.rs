@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use zbus::zvariant::Value;
+use zbus::Variant;
 
 use super::{Backend, Frame, fingerprint};
 
@@ -98,16 +98,16 @@ impl Backend for Notify {
         let body = self.body.clone();
         let (rt, conn) = self.session()?;
         let id = rt.block_on(async {
-            let mut hints: HashMap<&str, Value> = HashMap::new();
+            let mut hints: HashMap<&str, Variant> = HashMap::new();
             // Normal, not low: GNOME delivers a low-urgency notification
             // without ever showing it as a banner — it only appeared as a
             // dot in the message tray, which is not a bubble.
-            hints.insert("urgency", Value::U8(1));
-            hints.insert("category", Value::from("device"));
-            hints.insert("desktop-entry", Value::from("podctl"));
+            hints.insert("urgency", Variant::U8(1));
+            hints.insert("category", Variant::from("device"));
+            hints.insert("desktop-entry", Variant::from("podctl"));
             // Not worth keeping in a notification centre: the bubble is
             // a glance at a battery level, and it is gone in seconds.
-            hints.insert("transient", Value::Bool(true));
+            hints.insert("transient", Variant::Bool(true));
             let reply = conn
                 .call_method(
                     Some(SVC),

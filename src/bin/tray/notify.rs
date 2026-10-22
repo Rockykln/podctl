@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use tracing::{debug, warn};
-use zbus::zvariant::Value;
+use zbus::Variant;
 
 use podctl::model::Battery;
 
@@ -25,7 +25,7 @@ pub trait Notifications {
         summary: &str,
         body: &str,
         actions: &[&str],
-        hints: HashMap<&str, Value<'_>>,
+        hints: HashMap<&str, Variant<'_>>,
         expire_timeout: i32,
     ) -> zbus::Result<u32>;
 }
@@ -103,8 +103,8 @@ impl Notifier {
     /// Something asked for from the icon or the menu did not happen.
     pub async fn failed(&self, what: &str, why: &str) {
         let hints = HashMap::from([
-            ("urgency", Value::U8(1)),
-            ("category", Value::from("device.error")),
+            ("urgency", Variant::U8(1)),
+            ("category", Variant::from("device.error")),
         ]);
         let id = self.failure_id.load(Ordering::SeqCst);
         match self
@@ -132,8 +132,8 @@ impl Notifier {
             _ => (format!("{}: battery low", state.title()), 1, 10_000),
         };
         let hints = HashMap::from([
-            ("urgency", Value::U8(urgency)),
-            ("category", Value::from("device")),
+            ("urgency", Variant::U8(urgency)),
+            ("category", Variant::from("device")),
         ]);
         let id = self.battery_id.load(Ordering::SeqCst);
         let id = self

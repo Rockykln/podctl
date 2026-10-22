@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, anyhow};
 use futures_util::StreamExt;
 use tokio::runtime::Runtime;
-use zbus::zvariant::Fd;
+use zbus::Fd;
 
 use super::wl_layer::{shm_alloc, shm_free};
 use super::{Backend, Frame, Input};
@@ -79,7 +79,7 @@ impl Gnome {
 impl Link {
     fn call<B>(&self, method: &str, body: &B) -> Result<()>
     where
-        B: serde::Serialize + zbus::zvariant::DynamicType,
+        B: serde::Serialize + zbus::DynamicType,
     {
         self.rt
             .block_on(
@@ -133,7 +133,7 @@ fn forward<T>(
     tx: Sender<T>,
 ) -> Result<()>
 where
-    T: for<'d> serde::Deserialize<'d> + zbus::zvariant::Type + Send + 'static,
+    T: for<'d> serde::Deserialize<'d> + zbus::Type + Send + 'static,
 {
     let mut stream = rt
         .block_on(proxy.receive_signal(signal))

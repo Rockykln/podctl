@@ -3,8 +3,8 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::RwLock;
 use tracing::warn;
+use zbus::OwnedObjectPath;
 use zbus::object_server::SignalEmitter;
-use zbus::zvariant::OwnedObjectPath;
 
 use podctl::Request;
 use podctl::model::Mode;

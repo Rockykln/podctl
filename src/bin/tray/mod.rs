@@ -52,19 +52,15 @@ async fn run() -> anyhow::Result<()> {
     let well_known = format!("org.kde.StatusNotifierItem-{pid}-1");
 
     let conn = zbus::connection::Builder::session()
-        .map_err(|e| anyhow::anyhow!("session bus: {e}"))?
         .name(well_known.as_str())
-        .map_err(|e| anyhow::anyhow!("request bus name: {e}"))?
         .serve_at(ITEM_PATH, Item::new(Arc::clone(&state), cfg.left_click))
-        .map_err(|e| anyhow::anyhow!("export {ITEM_PATH}: {e}"))?
         .serve_at(
             MENU_PATH,
             menu::Menu::new(Arc::clone(&state), Arc::clone(&quit), cfg.left_click),
         )
-        .map_err(|e| anyhow::anyhow!("export {MENU_PATH}: {e}"))?
         .build()
         .await
-        .map_err(|e| anyhow::anyhow!("connect to session bus: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("session bus as {well_known}: {e}"))?;
 
     // A missing watcher is not a reason to die. Exiting here put the
     // unit into a restart loop every two seconds — on GNOME without

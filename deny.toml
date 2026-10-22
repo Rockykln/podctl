@@ -8,10 +8,6 @@ targets = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]
 version = 2
 yanked = "deny"
 ignore = [
-    # Folded into zbus itself; leaving them means moving to the next zbus.
-    { id = "RUSTSEC-2026-0370", reason = "zvariant: merged into zbus, no fix upstream" },
-    { id = "RUSTSEC-2026-0371", reason = "zbus_names: merged into zbus, no fix upstream" },
-    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive: merged into zbus, no fix upstream" },
     { id = "RUSTSEC-2026-0192", reason = "ttf-parser: unmaintained, no successor; popup text only" },
 ]
 

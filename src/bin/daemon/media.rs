@@ -668,9 +668,9 @@ async fn players(conn: &Connection) -> Vec<String> {
 
 async fn player_proxy<'a>(conn: &Connection, name: &'a str) -> zbus::Result<zbus::Proxy<'a>> {
     zbus::proxy::Builder::new(conn)
-        .destination(name)?
-        .path(MPRIS_PATH)?
-        .interface(MPRIS_PLAYER)?
+        .destination(name)
+        .path(MPRIS_PATH)
+        .interface(MPRIS_PLAYER)
         .cache_properties(zbus::proxy::CacheProperties::No)
         .build()
         .await
@@ -683,7 +683,7 @@ async fn status(conn: &Connection, name: &str) -> Option<String> {
 
 async fn title(conn: &Connection, name: &str) -> Option<String> {
     let proxy = player_proxy(conn, name).await.ok()?;
-    let meta: std::collections::HashMap<String, zbus::zvariant::OwnedValue> =
+    let meta: std::collections::HashMap<String, zbus::OwnedVariant> =
         proxy.get_property("Metadata").await.ok()?;
     let t = String::try_from(meta.get("xesam:title")?.try_clone().ok()?).ok()?;
     (!t.is_empty()).then_some(t)

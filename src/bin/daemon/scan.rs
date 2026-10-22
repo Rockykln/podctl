@@ -6,13 +6,14 @@
 //! against our own identity key count.
 
 use std::collections::HashMap;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::StreamExt;
 use tokio::sync::watch;
 use tracing::{debug, info, warn};
-use zbus::{Connection, MatchRule, MessageStream, Proxy, zvariant::OwnedValue};
+use zbus::{Connection, MatchRule, MessageStream, OwnedVariant, Proxy};
 
 use podctl::{Event, ble, keys};
 
@@ -22,7 +23,7 @@ const BLUEZ: &str = "org.bluez";
 const APPLE: u16 = 0x004c;
 /// A busy adapter sends a signal per advertisement; too short a queue
 /// would stall the connection rather than drop anything.
-const QUEUE: usize = 256;
+const QUEUE: NonZeroUsize = NonZeroUsize::new(256).unwrap();
 /// How long `podctl ble off` may take to end a running scan.
 const SWITCH_POLL: Duration = Duration::from_secs(3);
 
@@ -66,7 +67,7 @@ async fn scan_until_inactive(
 
     let conn = Connection::system().await?;
     let adapter = Proxy::new(&conn, BLUEZ, "/org/bluez/hci0", "org.bluez.Adapter1").await?;
-    let mut filter: HashMap<&str, zbus::zvariant::Value> = HashMap::new();
+    let mut filter: HashMap<&str, zbus::Variant> = HashMap::new();
     filter.insert("Transport", "le".into());
     filter.insert("DuplicateData", true.into());
     adapter
@@ -80,16 +81,16 @@ async fn scan_until_inactive(
     // full queue stalls the whole connection: no signals at all.
     let props = MatchRule::builder()
         .msg_type(zbus::message::Type::Signal)
-        .sender(BLUEZ)?
-        .interface("org.freedesktop.DBus.Properties")?
-        .member("PropertiesChanged")?
-        .build();
+        .sender(BLUEZ)
+        .interface("org.freedesktop.DBus.Properties")
+        .member("PropertiesChanged")
+        .build()?;
     let added = MatchRule::builder()
         .msg_type(zbus::message::Type::Signal)
-        .sender(BLUEZ)?
-        .interface("org.freedesktop.DBus.ObjectManager")?
-        .member("InterfacesAdded")?
-        .build();
+        .sender(BLUEZ)
+        .interface("org.freedesktop.DBus.ObjectManager")
+        .member("InterfacesAdded")
+        .build()?;
     let mut props_stream = MessageStream::for_match_rule(props, &conn, Some(QUEUE)).await?;
     let mut added_stream = MessageStream::for_match_rule(added, &conn, Some(QUEUE)).await?;
 
@@ -204,7 +205,7 @@ fn manufacturer_data(msg: &zbus::Message) -> Option<Vec<u8>> {
     let body = msg.body();
     // PropertiesChanged(interface, changed, invalidated)
     if let Ok((iface, changed, _)) =
-        body.deserialize::<(String, HashMap<String, OwnedValue>, Vec<String>)>()
+        body.deserialize::<(String, HashMap<String, OwnedVariant>, Vec<String>)>()
     {
         if iface != "org.bluez.Device1" {
             return None;
@@ -214,15 +215,15 @@ fn manufacturer_data(msg: &zbus::Message) -> Option<Vec<u8>> {
     // InterfacesAdded(path, interfaces)
     let (_, ifaces) = body
         .deserialize::<(
-            zbus::zvariant::OwnedObjectPath,
-            HashMap<String, HashMap<String, OwnedValue>>,
+            zbus::OwnedObjectPath,
+            HashMap<String, HashMap<String, OwnedVariant>>,
         )>()
         .ok()?;
     apple_bytes(ifaces.get("org.bluez.Device1")?.get("ManufacturerData")?)
 }
 
-fn apple_bytes(value: &OwnedValue) -> Option<Vec<u8>> {
-    let map: HashMap<u16, OwnedValue> = value.try_clone().ok()?.try_into().ok()?;
+fn apple_bytes(value: &OwnedVariant) -> Option<Vec<u8>> {
+    let map: HashMap<u16, OwnedVariant> = value.try_clone().ok()?.try_into().ok()?;
     let bytes: Vec<u8> = map.get(&APPLE)?.try_clone().ok()?.try_into().ok()?;
     Some(bytes)
 }
