@@ -230,12 +230,12 @@ pub(crate) async fn emit_sni(conn: &Connection, snapshot: &TrayState) -> zbus::R
 pub(crate) async fn emit_menu(conn: &Connection, snapshot: &TrayState) -> zbus::Result<()> {
     let iface_ref = conn.object_server().interface::<_, Menu>(MENU_PATH).await?;
     let emitter = iface_ref.signal_emitter();
-    let (updated, revision) = iface_ref.get().await.changes(snapshot);
-    if let Some(rev) = revision {
+    let c = iface_ref.get().await.changes(snapshot);
+    if let Some(rev) = c.revision {
         Menu::layout_updated(emitter, rev, 0).await?;
     }
-    if !updated.is_empty() {
-        Menu::items_properties_updated(emitter, updated, Vec::new()).await?;
+    if !c.updated.is_empty() || !c.removed.is_empty() {
+        Menu::items_properties_updated(emitter, c.updated, c.removed).await?;
     }
     Ok(())
 }

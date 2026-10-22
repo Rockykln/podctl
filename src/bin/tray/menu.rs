@@ -82,7 +82,7 @@ impl Menu {
 
     /// What the host has to be told for the menu to show `now`: the
     /// changed items, and whether which items are visible changed too.
-    pub fn changes(&self, now: &TrayState) -> (Vec<(i32, Props)>, Option<u32>) {
+    pub fn changes(&self, now: &TrayState) -> Changes {
         let before = self
             .shown
             .lock()
@@ -90,7 +90,11 @@ impl Menu {
             .replace(now.clone());
         let new = flatten(tree(now, self.left_click));
         let Some(before) = before else {
-            return (new, None);
+            return Changes {
+                updated: new,
+                removed: Vec::new(),
+                revision: None,
+            };
         };
         let old: HashMap<i32, Props> = flatten(tree(&before, self.left_click))
             .into_iter()
@@ -104,7 +108,21 @@ impl Menu {
             ids
         };
         let reshaped = shape(&mut old.iter()) != shape(&mut new.iter().map(|(i, p)| (i, p)));
-        let changed = new
+        // A property that went back to its default has to be named, or
+        // the host keeps the old value: Plasma kept a whole menu hidden.
+        let removed = new
+            .iter()
+            .filter_map(|(id, p)| {
+                let gone: Vec<String> = old
+                    .get(id)?
+                    .keys()
+                    .filter(|k| !p.contains_key(*k))
+                    .cloned()
+                    .collect();
+                (!gone.is_empty()).then_some((*id, gone))
+            })
+            .collect();
+        let updated = new
             .into_iter()
             // Hidden before and after: nothing on screen changes.
             .filter(|(id, p)| {
@@ -112,8 +130,12 @@ impl Menu {
                     .is_none_or(|o| o != p && (is_visible(o) || is_visible(p)))
             })
             .collect();
-        let rev = reshaped.then(|| self.revision.fetch_add(1, Ordering::SeqCst) + 1);
-        (changed, rev)
+        let revision = reshaped.then(|| self.revision.fetch_add(1, Ordering::SeqCst) + 1);
+        Changes {
+            updated,
+            removed,
+            revision,
+        }
     }
 
     /// A host that just appeared has seen nothing yet.
@@ -123,6 +145,13 @@ impl Menu {
 }
 
 pub type Props = HashMap<String, OwnedVariant>;
+
+/// What a host has to be told after a state change.
+pub struct Changes {
+    pub updated: Vec<(i32, Props)>,
+    pub removed: Vec<(i32, Vec<String>)>,
+    pub revision: Option<u32>,
+}
 type LayoutNode = (i32, Props, Vec<OwnedVariant>);
 
 struct Node {
@@ -662,10 +691,10 @@ trait Shown {
 }
 
 impl Shown for Props {
+    /// Always said out loud: a host that rebuilds from GetLayout keeps a
+    /// stale "false" when the key is simply left out.
     fn shown(mut self, visible: bool) -> Self {
-        if !visible {
-            self.insert("visible".into(), bool_v(false));
-        }
+        self.insert("visible".into(), bool_v(visible));
         self
     }
 }
@@ -874,20 +903,42 @@ mod tests {
             LeftClick::Popup,
         );
         let mut s = pro2();
-        let (all, rev) = m.changes(&s);
-        assert!(all.len() > 20);
-        assert_eq!(rev, None);
+        let all = m.changes(&s);
+        assert!(all.updated.len() > 20);
+        assert_eq!(all.revision, None);
 
         s.battery.left = Some(79);
-        let (changed, rev) = m.changes(&s);
+        let c = m.changes(&s);
         assert_eq!(
-            changed.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            c.updated.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
             [BAT_LEFT]
         );
-        assert_eq!(rev, None);
+        assert_eq!(c.revision, None);
 
         s.forget_link();
-        let (_, rev) = m.changes(&s);
-        assert_eq!(rev, Some(2));
+        assert_eq!(m.changes(&s).revision, Some(2));
+    }
+
+    #[test]
+    fn a_reconnect_says_what_shows_again() {
+        let m = Menu::new(
+            Arc::new(tokio::sync::RwLock::new(TrayState::default())),
+            Arc::new(Notify::new()),
+            LeftClick::Popup,
+        );
+        let mut s = pro2();
+        s.forget_link();
+        m.changes(&s);
+        let c = m.changes(&pro2());
+        let left = c
+            .updated
+            .iter()
+            .find(|(id, _)| *id == BAT_LEFT)
+            .map(|(_, p)| p)
+            .expect("the left bud's line comes back");
+        assert!(matches!(
+            left.get("visible").map(|v| &**v),
+            Some(Variant::Bool(true))
+        ));
     }
 }
