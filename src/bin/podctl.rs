@@ -163,7 +163,7 @@ fn run(mut args: Vec<String>) -> Result<i32, CliError> {
                     }
                 };
                 let req = Request::DebugEmitCaseLid { open };
-                let resp = try_daemon(&req)?.ok_or_else(|| {
+                let resp = try_daemon("debug", &req)?.ok_or_else(|| {
                     CliError::unavailable(
                         "debug emit-case-lid needs the daemon (podctld not running)",
                     )
@@ -199,7 +199,7 @@ fn run(mut args: Vec<String>) -> Result<i32, CliError> {
             return Ok(tray_cli::run(&args[1..]));
         }
         Some("popup") => {
-            let resp = try_daemon(&Request::ShowPopup)?.ok_or_else(|| {
+            let resp = try_daemon("popup", &Request::ShowPopup)?.ok_or_else(|| {
                 CliError::unavailable("popup needs the daemon (podctld not running)")
             })?;
             return handle_response("popup", resp, out);
@@ -223,7 +223,7 @@ fn run(mut args: Vec<String>) -> Result<i32, CliError> {
     if let Request::Pair { address: None, .. } = &request {
         eprintln!("{PROG}: looking for AirPods in pairing mode (about 15s)…");
     }
-    let response = match try_daemon(&request)? {
+    let response = match try_daemon(&verb, &request)? {
         Some(resp) => resp,
         None => standalone::dispatch(&request),
     };
@@ -555,7 +555,7 @@ fn require_arg<'a>(rest: &'a [String], verb: &str) -> Result<&'a str, CliError> 
         .ok_or_else(|| missing_value(verb, 0))
 }
 
-fn try_daemon(req: &Request) -> Result<Option<Response>, CliError> {
+fn try_daemon(verb: &str, req: &Request) -> Result<Option<Response>, CliError> {
     let Some(mut client) = client::Client::connect() else {
         return Ok(None);
     };
@@ -563,33 +563,39 @@ fn try_daemon(req: &Request) -> Result<Option<Response>, CliError> {
         Ok(Response::Err(info)) if info.code == ErrorCode::Usage => {
             // The daemon could not read what we sent: almost always a
             // daemon of another version, not a bug in the request.
-            let mut err = CliError::new(exit_code_for(info.code), info.message);
+            let mut err = CliError::new(exit_code_for(info.code), with_verb(verb, &info.message));
             if let Some(note) = client::version_mismatch() {
                 err = err.with_hint(note);
             }
             Err(err)
         }
         Ok(resp) => Ok(Some(resp)),
-        Err(e @ client::Error::Timeout(_)) => Err(CliError::unavailable(e.to_string())),
-        Err(e @ client::Error::Closed) => Err(CliError::unavailable(e.to_string())),
+        Err(e @ (client::Error::Timeout(_) | client::Error::Closed)) => {
+            Err(CliError::unavailable(with_verb(verb, &e.to_string())))
+        }
         Err(client::Error::Malformed(detail)) => {
-            let mut err = CliError::dataerr(format!("malformed answer: {detail}"));
+            let mut err =
+                CliError::dataerr(with_verb(verb, &format!("malformed answer: {detail}")));
             if let Some(note) = client::version_mismatch() {
                 err = err.with_hint(note);
             }
             Err(err)
         }
-        Err(client::Error::Io(e)) => Err(CliError::oserr(format!("talking to the daemon: {e}"))),
+        Err(client::Error::Io(e)) => Err(CliError::oserr(with_verb(
+            verb,
+            &format!("talking to the daemon: {e}"),
+        ))),
     }
 }
 
 fn handle_response(verb: &str, resp: Response, out: Output) -> Result<i32, CliError> {
     if out.json {
         print_json(verb, &resp, out.pretty);
-        return Ok(if resp.is_err() {
-            exitcode::UNAVAILABLE
-        } else {
-            exitcode::OK
+        // The same code as without --json: a script should not have to
+        // ask for text to tell a usage error from a busy daemon.
+        return Ok(match &resp {
+            Response::Err(info) => exit_code_for(info.code),
+            _ => exitcode::OK,
         });
     }
     match resp {
@@ -623,10 +629,17 @@ fn handle_response(verb: &str, resp: Response, out: Output) -> Result<i32, CliEr
             Ok(exitcode::OK)
         }
         Response::Err(info) => {
-            eprintln!("{PROG}: {}", info.message);
+            eprintln!("{PROG}: {}", with_verb(verb, &info.message));
             Ok(exit_code_for(info.code))
         }
     }
+}
+
+/// A daemon error in the shape of every other error, `<verb>: <problem>`,
+/// under the command's own name when it was typed as an alias.
+fn with_verb(verb: &str, message: &str) -> String {
+    let name = commands::find(verb).map(|c| c.name).unwrap_or(verb);
+    format!("{name}: {message}")
 }
 
 /// What the shell sees. Every daemon error used to be 69, so a script
@@ -725,7 +738,10 @@ fn stream_events(out: Output) -> Result<i32, CliError> {
     };
     match client.request(&req, client::timeout_for(&req)) {
         Ok(Response::Err(info)) => {
-            return Err(CliError::new(exit_code_for(info.code), info.message));
+            return Err(CliError::new(
+                exit_code_for(info.code),
+                with_verb("watch", &info.message),
+            ));
         }
         Ok(_) => {}
         Err(e) => return Err(CliError::unavailable(e.to_string())),
@@ -753,7 +769,7 @@ fn stream_events(out: Output) -> Result<i32, CliError> {
         match resp {
             Response::Event(e) => fmt::print_event(&e),
             Response::Err(info) => {
-                eprintln!("{PROG}: {}", info.message);
+                eprintln!("{PROG}: {}", with_verb("watch", &info.message));
                 return Ok(exit_code_for(info.code));
             }
             _ => {}
@@ -777,6 +793,19 @@ unsafe extern "C" {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_daemon_error_names_the_command() {
+        assert_eq!(
+            super::with_verb("connect", "the AirPods did not answer."),
+            "connect: the AirPods did not answer."
+        );
+        let alias = podctl::commands::COMMANDS
+            .iter()
+            .find_map(|c| c.aliases.first().map(|a| (*a, c.name)))
+            .expect("some command has an alias");
+        assert_eq!(super::with_verb(alias.0, "x"), format!("{}: x", alias.1));
+    }
+
     #[test]
     fn reboot_leaves_a_stopped_service_alone() {
         for state in ["active", "activating", "failed"] {

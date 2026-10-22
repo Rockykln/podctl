@@ -23,10 +23,10 @@ entries when upgrading from 0.3.0.
 - **Exit codes tell failures apart.** Every failure from the daemon
   exited 69. Errors carry a kind now (`unavailable`, `unsupported`,
   `not_implemented`, `backend`, `internal`, `usage`), seen by the shell
-  as 69, 1, 1, 71, 70 and 64 and in JSON as `data.code`. Surplus
-  arguments, an option a verb does not take and `podctl help nope` are
-  usage errors (64): `podctl rename Test AirPods` now says to quote the
-  name instead of renaming to "Test".
+  as 69, 1, 1, 71, 70 and 64, with or without `--json`, and in JSON as
+  `data.code`. Surplus arguments, an option a verb does not take and
+  `podctl help nope` are usage errors (64): `podctl rename Test AirPods`
+  now says to quote the name instead of renaming to "Test".
 - **The socket protocol is at 2**, so `podctl`, `podctld`, the tray and
   the bubble have to be the same version. A 0.3 daemon answers a 0.4
   `podctl mode anc` with "malformed request"; run `podctl reboot` after
@@ -44,10 +44,11 @@ entries when upgrading from 0.3.0.
   and pairs the address you give, or the only candidate with `--yes`.
 - **Error messages have one shape**: `podctl: mode: unknown value 'foo'
   (expected off, anc, transparency, adaptive)` with `hint:` on the next
-  line. A mistyped command names the one you meant, `pending` answers
-  print `pending: <reason>` instead of `ok (pending: …)`, and
-  `meter --interval abc` or `0` is a usage error instead of a silent
-  100 ms or a busy loop.
+  line, and the daemon's own errors name the command too
+  (`podctl: connect: …`). A mistyped command names the one you meant,
+  `pending` answers print `pending: <reason>` instead of
+  `ok (pending: …)`, and `meter --interval abc` or `0` is a usage error
+  instead of a silent 100 ms or a busy loop.
 - **The command line comes from one table** (`src/commands.rs`). Help,
   the three completion scripts, argument checks and the man page were
   hand-kept copies that had drifted: `podctl m <TAB>` and `podctl
