@@ -463,7 +463,7 @@ const MAP_SHARED: i32 = 0x01;
 
 unsafe extern "C" {
     fn poll(fds: *mut Pollfd, nfds: u64, timeout: i32) -> i32;
-    fn memfd_create(name: *const i8, flags: u32) -> i32;
+    fn memfd_create(name: *const std::ffi::c_char, flags: u32) -> i32;
     fn ftruncate(fd: i32, length: i64) -> i32;
     fn mmap(addr: *mut u8, len: usize, prot: i32, flags: i32, fd: i32, off: i64) -> *mut u8;
     fn munmap(addr: *mut u8, len: usize) -> i32;
