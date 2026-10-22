@@ -63,15 +63,7 @@ impl DeviceSummary {
 pub fn paired_airpods() -> anyhow::Result<Vec<DeviceSummary>> {
     let out = bluetoothctl(&["devices", "Paired"])?;
     let mut summaries = Vec::new();
-    for line in out.lines() {
-        let mut parts = line.splitn(3, ' ');
-        if parts.next().unwrap_or("") != "Device" {
-            continue;
-        }
-        let addr = match parts.next() {
-            Some(a) => a.to_string(),
-            None => continue,
-        };
+    for addr in device_addresses(&out) {
         if let Ok(s) = info(&addr)
             && s.is_airpods()
         {
@@ -108,6 +100,20 @@ pub fn info(addr: &str) -> anyhow::Result<DeviceSummary> {
 pub fn rssi(addr: &str) -> Option<i16> {
     let out = bluetoothctl(&["info", addr]).ok()?;
     field(&out, "RSSI:").and_then(|v| v.parse::<i16>().ok())
+}
+
+/// The addresses in a `bluetoothctl devices` listing. BlueZ 5.86 and
+/// later print some lines in grey, and an escape code in front of
+/// "Device" made those devices vanish: paired AirPods were then missing
+/// from `list`, and `pair` did not know them.
+fn device_addresses(out: &str) -> Vec<String> {
+    out.lines()
+        .filter_map(|line| {
+            let line = strip_ansi(line);
+            let mut parts = line.splitn(3, ' ');
+            (parts.next() == Some("Device")).then(|| parts.next().map(str::to_string))?
+        })
+        .collect()
 }
 
 fn field(out: &str, key: &str) -> Option<String> {
@@ -258,16 +264,8 @@ pub fn discover(secs: u32) -> anyhow::Result<Vec<DeviceSummary>> {
     }
     let out = bluetoothctl(&["devices"])?;
     let mut found = Vec::new();
-    for line in out.lines() {
-        let mut parts = line.splitn(3, ' ');
-        if parts.next() != Some("Device") {
-            continue;
-        }
-        let addr = match parts.next() {
-            Some(a) => a,
-            None => continue,
-        };
-        if let Ok(s) = info(addr)
+    for addr in device_addresses(&out) {
+        if let Ok(s) = info(&addr)
             && s.is_airpods()
         {
             found.push(s);
@@ -441,6 +439,17 @@ mod tests {
         assert_eq!(
             super::error_code_for("no new AirPods spotted"),
             crate::ipc::ErrorCode::Unavailable
+        );
+    }
+
+    #[test]
+    fn grey_lines_of_the_device_list_count_too() {
+        let out = "Device AA:BB:CC:DD:EE:01 AirPods Pro\n\
+                   \x1b[1;30mDevice AA:BB:CC:DD:EE:02 Test AirPods\x1b[0m\n\
+                   [NEW] Controller 11:22:33:44:55:66 host1\n";
+        assert_eq!(
+            super::device_addresses(out),
+            ["AA:BB:CC:DD:EE:01", "AA:BB:CC:DD:EE:02"]
         );
     }
 
