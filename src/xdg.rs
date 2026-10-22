@@ -36,6 +36,15 @@ pub fn state_home() -> PathBuf {
     dir("XDG_STATE_HOME", &[".local", "state"])
 }
 
+/// `$XDG_RUNTIME_DIR`, which has no fallback: what goes there must not
+/// outlive the session or be seen by other users.
+pub fn runtime_home() -> Option<PathBuf> {
+    std::env::var("XDG_RUNTIME_DIR")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .map(PathBuf::from)
+}
+
 /// `~/.config/podctl`, where `daemon.toml`, `tray.toml` and
 /// `popup.toml` live.
 pub fn config_dir() -> PathBuf {

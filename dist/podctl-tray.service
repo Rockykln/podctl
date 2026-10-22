@@ -15,6 +15,8 @@ Restart=on-failure
 RestartSec=5
 Environment=RUST_LOG=info
 SyslogIdentifier=podctl-tray
+# The tray writes its icons here for the panel to read.
+RuntimeDirectory=podctl-tray
 
 NoNewPrivileges=true
 PrivateTmp=true
@@ -25,6 +27,9 @@ ProtectControlGroups=true
 LockPersonality=true
 RestrictRealtime=true
 RestrictNamespaces=true
+MemoryDenyWriteExecute=true
+RestrictAddressFamilies=AF_UNIX
+ProtectHome=read-only
 SystemCallFilter=@system-service
 SystemCallErrorNumber=EPERM
 

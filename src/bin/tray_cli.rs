@@ -1,7 +1,12 @@
-use std::path::PathBuf;
+use std::path::Path;
 use std::process::Command;
 
 use podctl::exitcode;
+
+// Only part of it is needed here; the tray uses the rest.
+#[allow(dead_code)]
+#[path = "tray/config.rs"]
+mod tray_config;
 
 const UNIT: &str = "podctl-tray";
 
@@ -54,7 +59,7 @@ fn status() -> i32 {
     let active = systemctl_is("is-active", UNIT);
     let enabled = systemctl_is("is-enabled", UNIT);
     let watcher = watcher_present();
-    let cfg_path = tray_config_path();
+    let cfg_path = tray_config::path();
     let cfg_exists = cfg_path.exists();
     let cfg_summary = read_config_summary(&cfg_path);
 
@@ -139,32 +144,12 @@ fn watcher_present() -> Option<bool> {
     Some(s.contains("boolean true"))
 }
 
-fn tray_config_path() -> PathBuf {
-    podctl::xdg::config_dir().join("tray.toml")
-}
-
-fn read_config_summary(path: &PathBuf) -> Option<String> {
-    let text = std::fs::read_to_string(path).ok()?;
-    let mut left_click = None;
-    let mut low = None;
-    let mut notify = None;
-    for raw in text.lines() {
-        let line = raw.split('#').next().unwrap_or("").trim();
-        let Some((k, v)) = line.split_once('=') else {
-            continue;
-        };
-        let v = v.trim().trim_matches('"').trim_matches('\'');
-        match k.trim() {
-            "left_click" => left_click = Some(v.to_string()),
-            "low_battery_threshold" => low = Some(v.to_string()),
-            "notify_threshold" => notify = Some(v.to_string()),
-            _ => {}
-        }
-    }
+fn read_config_summary(path: &Path) -> Option<String> {
+    let cfg = tray_config::from_text(&std::fs::read_to_string(path).ok()?);
     Some(format!(
         "left_click={} low_battery_threshold={} notify_threshold={}",
-        left_click.as_deref().unwrap_or("mode-cycle"),
-        low.as_deref().unwrap_or("20"),
-        notify.as_deref().unwrap_or("10"),
+        cfg.left_click.as_str(),
+        cfg.low_battery_threshold,
+        cfg.notify_threshold,
     ))
 }

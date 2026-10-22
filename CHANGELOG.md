@@ -46,6 +46,23 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
   cannot keep up, it sends the state again instead of leaving a gap.
 
 ### Fixed
+- **A tray whose daemon was gone looked like disconnected AirPods**, and
+  a click on Connect failed without a word. The menu now says podctld is
+  not running and offers to start it, and every action from the icon or
+  the menu that fails says why in a notification.
+- A double click on the tray icon ran the single-click action first, so
+  it opened the bubble and changed the mode. The double click is gone;
+  the middle click toggles the mode.
+- Scrolling on the tray icon stepped from a volume that could be long
+  out of date, and a touchpad sent it to 0 or 100 in one swipe. Small
+  steps now add up to one notch, and a new scroll starts from a fresh
+  reading.
+- Opening the tray menu could wait up to 10 s for a busy daemon; it
+  waits 300 ms at most and shows what it has.
+- The tray's red "needs attention" state stayed off for a low bud while
+  only the case was charging.
+- `podctl tray status` named `mode-cycle` as the default left click; it
+  is `popup`. It now reads the file with the tray's own parser.
 - **`podctl reboot` started services that had been stopped on purpose.**
   It restarted every installed unit, and `restart` starts a stopped one
   too — next to a daemon run some other way, that is a second daemon.
@@ -364,6 +381,25 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
   four unimplemented settings are named as errors rather than no-ops,
   AirPods 4 non-ANC has a known product code, and the prebuilt tarball
   is mentioned where people look for an install.
+- **The tray icon is its own.** Both buds over a level bar for the lower
+  one, red at 20 % and below, a bolt while they charge, faded while they
+  are not connected — the theme's headphones looked the same either way,
+  and a low level swapped them for the laptop's battery glyph. The icons
+  are written to the tray's runtime directory at start, so nothing new
+  has to be installed. `podctl-tray --demo` shows them all.
+- **The tray menu is rebuilt.** Name and model on top, a line per bud
+  and the case that is no longer greyed out, the modes in the order of
+  an iPhone, and submenus for volume, audio output and the microphone.
+  What the model cannot do is hidden instead of greyed out; not connected
+  it offers Connect first and the last levels the case announced.
+- The low-battery warning is per bud and comes in two steps (20 % and
+  10 %, critical), names the bud ("Left AirPod at 9% · Right 34%"),
+  replaces the previous one instead of piling up, and does not come back
+  when the other bud goes into the case for a moment.
+- The tray's tooltip carries the name you gave the buds, the levels and
+  the mode, and says "Not connected" when they are not.
+- The tray unit gets its own runtime directory and a tighter sandbox
+  (`ProtectHome=read-only`, `MemoryDenyWriteExecute`, Unix sockets only).
 
 ## [0.3.0] - 2026-09-24
 

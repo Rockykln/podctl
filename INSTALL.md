@@ -132,11 +132,29 @@ tray host on the session bus:
 | Xfce / MATE / LXQt | yes |
 | GNOME | needs the *AppIndicator/KStatusNotifier* extension; `podctl tray status` says so |
 
-The icon's menu starts with the battery line, then the four listening
-modes, conversation awareness and connect / disconnect. Left click shows
-the bubble (configurable as `left_click` in `~/.config/podctl/tray.toml`),
-a double or middle click toggles noise cancellation against transparency,
-and the wheel over the icon changes the volume in steps of five.
+The icon shows both buds over a level bar for the lower one: red at
+20 % and below, a bolt while they charge, faded while they are not
+connected. The menu starts with the name and a line per bud and the
+case, then the listening modes your model has, volume, audio output and
+a few more settings; things the model cannot do are left out. Left click
+shows the bubble, a middle click toggles noise cancellation against
+transparency, and the wheel over the icon changes the volume in steps
+of five. If podctld is not running, the menu says so and offers to
+start it, and an action that fails says why in a notification.
+
+`~/.config/podctl/tray.toml` (optional, these are the defaults):
+
+```
+left_click            = "popup"  # popup | mode-cycle | toggle-anc-tr | menu
+low_battery_threshold = 20       # first warning, and the icon asks for attention
+notify_threshold      = 10       # second, critical warning
+```
+
+Each bud warns once per level on its way down; it warns again after it
+has charged for a couple of minutes or climbed 5 points above the level.
+`podctl-tray --demo` runs through made-up states without a daemon, for
+a look at the icon and the menu; `--demo low` (or `full`, `half`,
+`charging`, `critical`, `no-anc`, `max`, `away`, `no-daemon`) holds one.
 
 `--with-popup` installs `podctl-popup`, the case-open bubble. Backend is
 auto-detected:

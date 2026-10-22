@@ -40,13 +40,13 @@ likewise unimplemented: the parser exists, the opcode doesn't.
 
 Two optional desktop components ship alongside the CLI:
 
-- **`podctl-tray`** — a StatusNotifierItem that shows connection / battery
-  state, a tooltip like `AirPods Pro 2 — Transparency`, and a menu that
-  leads with `L 84 % · R 81 % · Case 47 %` and carries the four listening
-  modes, conversation awareness and connect / disconnect. A double or
-  middle click toggles noise cancellation against transparency, the wheel
-  changes the volume. Works on Plasma, Hyprland/waybar, sway, Xfce, MATE;
-  GNOME needs the AppIndicator extension.
+- **`podctl-tray`** — a StatusNotifierItem whose icon shows both buds
+  over a level bar, and a menu that leads with the name and a line per
+  bud and the case, then the listening modes, volume, audio output and
+  the settings your model has. A middle click toggles noise cancellation
+  against transparency, the wheel changes the volume, and low levels warn
+  per bud in two steps. Works on Plasma, Hyprland/waybar, sway, Xfce,
+  MATE; GNOME needs the AppIndicator extension.
 - **`podctl-popup`** — the case-open bubble. Slides in at the bottom of
   the screen, shows model + L / R / Case rings, auto-hides after 5.5
   seconds (`duration_ms` in `~/.config/podctl/popup.toml`). Backend is
@@ -63,8 +63,12 @@ see is the actual frame the compositor would draw.
 | --- | --- |
 | ![popup dark](assets/screenshots/popup-dark.png) | ![popup light](assets/screenshots/popup-light.png) |
 
-Tray screenshot pending — the icon and menu are live and tested on
-Plasma + Hyprland/waybar, but a clean capture isn't in the repo yet.
+The tray menu as `podctl-tray --demo half` lays it out, drawn in the
+default style rather than captured from one desktop's theme:
+
+| Dark | Light |
+| --- | --- |
+| ![tray menu dark](assets/screenshots/tray-dark.png) | ![tray menu light](assets/screenshots/tray-light.png) |
 
 ## Quick start
 

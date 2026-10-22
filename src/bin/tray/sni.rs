@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tokio::sync::RwLock;
@@ -6,17 +6,21 @@ use tracing::warn;
 use zbus::object_server::SignalEmitter;
 use zbus::zvariant::OwnedObjectPath;
 
+use podctl::Request;
 use podctl::model::Mode;
-use podctl::{Request, Response};
 
 use crate::config::LeftClick;
 use crate::ipc;
 use crate::state::TrayState;
 
-/// Percentage points per wheel tick.
+/// Percentage points per wheel notch.
 const VOLUME_STEP: i16 = 5;
-/// Two activations closer together than this are one double click.
-const DOUBLE_CLICK: Duration = Duration::from_millis(400);
+/// What hosts send for one notch of a wheel; touchpads send a little
+/// at a time and add up to it.
+const NOTCH: i32 = 120;
+/// A pause this long starts a new scroll, read from a fresh volume:
+/// the keyboard or the mixer may have moved it in between.
+const SCROLL_PAUSE: Duration = Duration::from_secs(1);
 
 pub const WATCHER_NAME: &str = "org.kde.StatusNotifierWatcher";
 
@@ -28,7 +32,13 @@ pub type SharedState = Arc<RwLock<TrayState>>;
 pub struct Item {
     state: SharedState,
     left_click: LeftClick,
-    last_activate: Mutex<Option<Instant>>,
+    scroll: tokio::sync::Mutex<Scroll>,
+}
+
+#[derive(Default)]
+struct Scroll {
+    rest: i32,
+    last: Option<Instant>,
 }
 
 impl Item {
@@ -36,32 +46,15 @@ impl Item {
         Self {
             state,
             left_click,
-            last_activate: Mutex::new(None),
+            scroll: tokio::sync::Mutex::new(Scroll::default()),
         }
     }
 
-    /// True when this activation follows one close enough to count as a
-    /// double click. Hosts have no such event; they activate twice.
-    fn double_click(&self) -> bool {
-        let now = Instant::now();
-        let mut last = match self.last_activate.lock() {
-            Ok(l) => l,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        let double = last.is_some_and(|t| now.duration_since(t) < DOUBLE_CLICK);
-        // A third click starts over rather than toggling again.
-        *last = (!double).then_some(now);
-        double
-    }
-
     async fn toggle_mode(&self) {
-        let cur = self.state.read().await.mode;
-        spawn_dispatch(Request::SetMode {
-            mode: match cur {
-                Some(Mode::Transparency) => Mode::NoiseCancellation,
-                _ => Mode::Transparency,
-            },
-        });
+        let s = self.state.read().await;
+        if let Some(mode) = toggled(s.settings.mode, &s.capabilities) {
+            ipc::dispatch("Changing the mode", Request::SetMode { mode });
+        }
     }
 }
 
@@ -69,34 +62,26 @@ impl Item {
 impl Item {
     async fn context_menu(&self, _x: i32, _y: i32) {}
 
+    // No double click: hosts report one as two activations, so the
+    // first always ran the single-click action before the second could
+    // tell. The middle click is the gesture for the toggle.
     async fn activate(&self, _x: i32, _y: i32) {
-        if self.double_click() {
-            self.toggle_mode().await;
-            return;
-        }
-        let req = match self.left_click {
-            LeftClick::Menu => return,
-            LeftClick::Popup => Request::ShowPopup,
-            LeftClick::ToggleAncTr => {
-                let cur = self.state.read().await.mode;
-                Request::SetMode {
-                    mode: match cur {
-                        Some(Mode::Transparency) => Mode::NoiseCancellation,
-                        _ => Mode::Transparency,
-                    },
-                }
-            }
+        match self.left_click {
+            LeftClick::Menu => {}
+            LeftClick::Popup => ipc::dispatch("Opening the bubble", Request::ShowPopup),
+            LeftClick::ToggleAncTr => self.toggle_mode().await,
             LeftClick::ModeCycle => {
                 let s = self.state.read().await;
-                let next = cycle_mode(s.mode.unwrap_or(Mode::Off), &s.capabilities);
-                Request::SetMode { mode: next }
+                if s.capabilities.has_anc || s.capabilities.has_transparency {
+                    let mode = cycle_mode(s.settings.mode.unwrap_or(Mode::Off), &s.capabilities);
+                    ipc::dispatch("Changing the mode", Request::SetMode { mode });
+                }
             }
-        };
-        spawn_dispatch(req);
+        }
     }
 
-    /// Middle click, and a double click: straight between cancellation
-    /// and transparency, the two modes worth a shortcut.
+    /// Middle click: straight between cancellation and transparency,
+    /// the two modes worth a shortcut.
     async fn secondary_activate(&self, _x: i32, _y: i32) {
         self.toggle_mode().await;
     }
@@ -105,32 +90,46 @@ impl Item {
         if delta == 0 || orientation.eq_ignore_ascii_case("horizontal") {
             return;
         }
-        let up = delta > 0;
-        let state = Arc::clone(&self.state);
-        tokio::spawn(async move {
-            let cached = state.read().await.volume;
-            let cur = match cached {
-                Some(v) => v,
-                None => {
-                    crate::watch::pull_status(&state).await;
-                    let Some(v) = state.read().await.volume else {
-                        warn!("no volume known — not scrolling");
-                        return;
-                    };
-                    v
-                }
-            };
-            let step = if up { VOLUME_STEP } else { -VOLUME_STEP };
-            let next = (i16::from(cur) + step).clamp(0, 100) as u8;
-            if next == cur {
-                return;
-            }
-            // Written back right away: a wheel sends ticks faster than
-            // the daemon answers, and each one should move on from the
-            // last rather than from the same stale value.
-            state.write().await.volume = Some(next);
-            spawn_dispatch(Request::SetVolume { percent: next });
-        });
+        // One lock for the whole read-step-write, or two quick ticks
+        // both step from the same volume.
+        let mut scroll = self.scroll.lock().await;
+        let now = Instant::now();
+        let fresh = scroll
+            .last
+            .is_none_or(|t| now.duration_since(t) >= SCROLL_PAUSE);
+        scroll.last = Some(now);
+        if fresh {
+            scroll.rest = 0;
+            crate::watch::pull_status(&self.state, Some(ipc::MENU_WAIT)).await;
+        }
+        let notches = if delta.abs() == 1 {
+            // Hosts like waybar add the deltas up themselves and send
+            // one unit per notch.
+            delta
+        } else {
+            scroll.rest += delta;
+            let n = scroll.rest / NOTCH;
+            scroll.rest -= n * NOTCH;
+            n
+        };
+        if notches == 0 {
+            return;
+        }
+        let mut s = self.state.write().await;
+        let Some(cur) = s.audio.volume_percent else {
+            warn!("no volume known — not scrolling");
+            return;
+        };
+        let step = (notches as i16).saturating_mul(VOLUME_STEP);
+        let next = (i16::from(cur) + step).clamp(0, 100) as u8;
+        if next == cur {
+            return;
+        }
+        // Written back right away: a wheel sends ticks faster than
+        // the daemon answers, and each one should move on from the
+        // last rather than from the same stale value.
+        s.audio.volume_percent = Some(next);
+        ipc::dispatch("Changing the volume", Request::SetVolume { percent: next });
     }
 
     #[zbus(property)]
@@ -160,7 +159,14 @@ impl Item {
 
     #[zbus(property)]
     async fn icon_name(&self) -> String {
-        self.state.read().await.icon_name().to_string()
+        self.state.read().await.icon_name()
+    }
+
+    #[zbus(property)]
+    async fn icon_theme_path(&self) -> String {
+        crate::icons::theme_path()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default()
     }
 
     #[zbus(property)]
@@ -179,7 +185,7 @@ impl Item {
     }
 
     #[zbus(property)]
-    async fn attention_icon_name(&self) -> &'static str {
+    async fn attention_icon_name(&self) -> String {
         self.state.read().await.attention_icon_name()
     }
 
@@ -195,9 +201,9 @@ impl Item {
 
     #[zbus(property)]
     async fn tool_tip(&self) -> (String, Vec<(i32, i32, Vec<u8>)>, String, String) {
-        let (title, body) = self.state.read().await.tooltip();
-        let icon = self.state.read().await.icon_name().to_string();
-        (icon, Vec::new(), title, body)
+        let s = self.state.read().await;
+        let (title, body) = s.tooltip();
+        (s.icon_name(), Vec::new(), title, body)
     }
 
     #[zbus(property)]
@@ -264,13 +270,18 @@ fn cycle_mode(cur: Mode, caps: &podctl::caps::Capabilities) -> Mode {
     cur
 }
 
-fn spawn_dispatch(req: Request) {
-    tokio::spawn(async move {
-        let label = format!("{req:?}");
-        match ipc::send(&req).await {
-            Ok(Response::Err(e)) => warn!(req = %label, error = %e, "daemon refused"),
-            Err(e) => warn!(req = %label, error = %e, "ipc failure"),
-            _ => {}
-        }
-    });
+/// Cancellation and transparency trade places; from any other mode the
+/// toggle goes to whichever of the two the model has.
+fn toggled(cur: Option<Mode>, caps: &podctl::caps::Capabilities) -> Option<Mode> {
+    let want = match cur {
+        Some(Mode::Transparency) => Mode::NoiseCancellation,
+        Some(Mode::NoiseCancellation) => Mode::Transparency,
+        _ if caps.has_transparency => Mode::Transparency,
+        _ => Mode::NoiseCancellation,
+    };
+    let can = match want {
+        Mode::NoiseCancellation => caps.has_anc,
+        _ => caps.has_transparency,
+    };
+    can.then_some(want)
 }

@@ -52,20 +52,30 @@ pub fn path() -> PathBuf {
 }
 
 pub fn load() -> Config {
-    let p = path();
-    let Ok(text) = std::fs::read_to_string(&p) else {
-        return Config::default();
-    };
-    let kv = parse_flat(&text);
+    std::fs::read_to_string(path())
+        .map(|text| from_text(&text))
+        .unwrap_or_default()
+}
+
+/// `low_battery_threshold` is the first warning and the icon's
+/// attention state, `notify_threshold` the critical one below it.
+pub fn from_text(text: &str) -> Config {
+    let kv = parse_flat(text);
     let mut cfg = Config::default();
     if let Some(v) = kv.get("left_click").and_then(|s| LeftClick::parse(s)) {
         cfg.left_click = v;
     }
-    if let Some(v) = kv.get("low_battery_threshold").and_then(|s| s.parse().ok()) {
-        cfg.low_battery_threshold = v;
+    if let Some(v) = kv
+        .get("low_battery_threshold")
+        .and_then(|s| s.parse::<u8>().ok())
+    {
+        cfg.low_battery_threshold = v.min(100);
     }
-    if let Some(v) = kv.get("notify_threshold").and_then(|s| s.parse().ok()) {
-        cfg.notify_threshold = v;
+    if let Some(v) = kv
+        .get("notify_threshold")
+        .and_then(|s| s.parse::<u8>().ok())
+    {
+        cfg.notify_threshold = v.min(cfg.low_battery_threshold);
     }
     cfg
 }
@@ -112,6 +122,14 @@ notify_threshold = 5
         assert_eq!(kv.get("left_click").unwrap(), "toggle-anc-tr");
         assert_eq!(kv.get("low_battery_threshold").unwrap(), "25");
         assert_eq!(kv.get("notify_threshold").unwrap(), "5");
+    }
+
+    #[test]
+    fn levels_stay_in_order() {
+        let c = from_text("low_battery_threshold = 150\nnotify_threshold = 120");
+        assert_eq!((c.low_battery_threshold, c.notify_threshold), (100, 100));
+        let c = from_text("low_battery_threshold = 15\nnotify_threshold = 30");
+        assert_eq!((c.low_battery_threshold, c.notify_threshold), (15, 15));
     }
 
     #[test]

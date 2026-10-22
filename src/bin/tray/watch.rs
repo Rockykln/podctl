@@ -1,15 +1,15 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use tokio::time::sleep;
 use tracing::{debug, warn};
 use zbus::Connection;
 
-use podctl::model::{Battery, DeviceState, Event};
+use podctl::model::{DeviceState, Event};
 use podctl::{Request, Response, WatchRole, client};
 
 use crate::ipc;
-use crate::menu::{self, Menu};
+use crate::menu::Menu;
 use crate::notify::Notifier;
 use crate::sni::{ITEM_PATH, Item, MENU_PATH, SharedState};
 use crate::state::TrayState;
@@ -86,21 +86,43 @@ async fn serve(
 }
 
 /// Pull a full Status from the daemon into the shared tray state.
-/// Capabilities, mode and conv only come through here (events carry
-/// deltas, not the model), so the menu calls this before it opens.
-pub(crate) async fn pull_status(state: &SharedState) {
-    if let Ok(Response::State(s)) = ipc::send(&Request::Status).await {
-        apply_status(state, s).await;
+/// Capabilities and most settings only come through here (events carry
+/// deltas, not the model). `wait` bounds the answer for callers that a
+/// person is waiting on.
+pub(crate) async fn pull_status(state: &SharedState, wait: Option<Duration>) {
+    if crate::demo::active() {
+        return;
+    }
+    let answer = match wait {
+        Some(w) => match tokio::time::timeout(w, ipc::send(&Request::Status)).await {
+            Ok(a) => a,
+            Err(_) => {
+                debug!("status took longer than {w:?}, showing what we have");
+                return;
+            }
+        },
+        None => ipc::send(&Request::Status).await,
+    };
+    match answer {
+        Ok(Response::State(s)) => apply_status(state, s).await,
+        Ok(_) => {}
+        Err(_) => {
+            let mut s = state.write().await;
+            s.daemon_up = false;
+            s.forget_link();
+        }
     }
 }
 
 async fn refresh_status(state: &SharedState, conn: &Connection, notifier: Option<&Notifier>) {
-    pull_status(state).await;
+    pull_status(state, None).await;
     notify_changed(state, conn, notifier).await;
 }
 
 async fn apply_status(state: &SharedState, ds: DeviceState) {
     let mut s = state.write().await;
+    s.daemon_up = true;
+    s.pulled = Some(Instant::now());
     s.connected = ds.connected;
     s.name = ds.name;
     // Model/caps are sticky: a Status taken in the daemon's startup
@@ -112,9 +134,8 @@ async fn apply_status(state: &SharedState, ds: DeviceState) {
         s.capabilities = ds.capabilities;
     }
     s.battery = ds.battery;
-    s.mode = ds.settings.mode;
-    s.volume = ds.audio.volume_percent;
-    s.conv_awareness = ds.settings.conv_awareness;
+    s.settings = ds.settings;
+    s.audio = ds.audio;
 }
 
 async fn apply_event(state: &SharedState, event: Event) {
@@ -124,15 +145,10 @@ async fn apply_event(state: &SharedState, event: Event) {
             s.connected = true;
             s.name = Some(name);
         }
-        Event::Disconnected => {
-            s.connected = false;
-            s.battery = Battery::default();
-            s.mode = None;
-            s.conv_awareness = None;
-        }
+        Event::Disconnected => s.forget_link(),
         Event::Battery(b) => s.battery = b,
-        Event::Mode { mode } => s.mode = Some(mode),
-        Event::ConvAwareness { conv } => s.conv_awareness = Some(conv),
+        Event::Mode { mode } => s.settings.mode = Some(mode),
+        Event::ConvAwareness { conv } => s.settings.conv_awareness = Some(conv),
         Event::InEar(_)
         | Event::CaseLid { .. }
         | Event::Press { .. }
@@ -144,13 +160,17 @@ async fn apply_event(state: &SharedState, event: Event) {
 async fn mark_disconnected(state: &SharedState, conn: &Connection, notifier: Option<&Notifier>) {
     {
         let mut s = state.write().await;
-        s.connected = false;
-        s.battery = Battery::default();
+        s.daemon_up = false;
+        s.forget_link();
     }
     notify_changed(state, conn, notifier).await;
 }
 
-async fn notify_changed(state: &SharedState, conn: &Connection, notifier: Option<&Notifier>) {
+pub(crate) async fn notify_changed(
+    state: &SharedState,
+    conn: &Connection,
+    notifier: Option<&Notifier>,
+) {
     let snapshot = state.read().await.clone();
     if let Err(e) = emit_sni(conn, &snapshot).await {
         warn!(error = %e, "emit sni signals");
@@ -163,20 +183,66 @@ async fn notify_changed(state: &SharedState, conn: &Connection, notifier: Option
     }
 }
 
+/// What the host was last told, so an event that changes nothing it
+/// shows does not make it reload the icon.
+#[derive(Clone, Default, PartialEq)]
+struct Shown {
+    icon: String,
+    tooltip: (String, String),
+    title: String,
+    status: &'static str,
+}
+
+static SHOWN: Mutex<Option<Shown>> = Mutex::new(None);
+
 pub(crate) async fn emit_sni(conn: &Connection, snapshot: &TrayState) -> zbus::Result<()> {
+    let now = Shown {
+        icon: snapshot.icon_name(),
+        tooltip: snapshot.tooltip(),
+        title: snapshot.title(),
+        status: snapshot.status(),
+    };
+    let before = SHOWN
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .replace(now.clone());
+    let fresh = before.is_none();
+    let before = before.unwrap_or_default();
     let iface_ref = conn.object_server().interface::<_, Item>(ITEM_PATH).await?;
     let emitter = iface_ref.signal_emitter();
-    Item::new_icon(emitter).await?;
-    Item::new_tool_tip(emitter).await?;
-    Item::new_title(emitter).await?;
-    Item::new_status(emitter, snapshot.status()).await?;
+    if fresh || before.icon != now.icon {
+        Item::new_icon(emitter).await?;
+        Item::new_attention_icon(emitter).await?;
+    }
+    if fresh || before.tooltip != now.tooltip {
+        Item::new_tool_tip(emitter).await?;
+    }
+    if fresh || before.title != now.title {
+        Item::new_title(emitter).await?;
+    }
+    if fresh || before.status != now.status {
+        Item::new_status(emitter, now.status).await?;
+    }
     Ok(())
 }
 
 pub(crate) async fn emit_menu(conn: &Connection, snapshot: &TrayState) -> zbus::Result<()> {
     let iface_ref = conn.object_server().interface::<_, Menu>(MENU_PATH).await?;
     let emitter = iface_ref.signal_emitter();
-    let updated = menu::properties_snapshot(snapshot);
-    Menu::items_properties_updated(emitter, updated, Vec::new()).await?;
+    let (updated, revision) = iface_ref.get().await.changes(snapshot);
+    if let Some(rev) = revision {
+        Menu::layout_updated(emitter, rev, 0).await?;
+    }
+    if !updated.is_empty() {
+        Menu::items_properties_updated(emitter, updated, Vec::new()).await?;
+    }
     Ok(())
+}
+
+/// A host that just appeared has seen nothing yet.
+pub(crate) async fn forget_shown(conn: &Connection) {
+    *SHOWN.lock().unwrap_or_else(|p| p.into_inner()) = None;
+    if let Ok(menu) = conn.object_server().interface::<_, Menu>(MENU_PATH).await {
+        menu.get().await.forget_shown();
+    }
 }

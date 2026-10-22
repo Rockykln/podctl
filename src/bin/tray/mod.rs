@@ -9,6 +9,8 @@ use sni::{ITEM_PATH, Item, MENU_PATH, SharedState, StatusNotifierWatcherProxy};
 use state::TrayState;
 
 mod config;
+mod demo;
+mod icons;
 mod ipc;
 mod menu;
 mod notify;
@@ -40,6 +42,9 @@ async fn run() -> anyhow::Result<()> {
         notify = cfg.notify_threshold,
         "tray config loaded"
     );
+    if let Err(e) = icons::setup() {
+        warn!(error = %e, "cannot write the tray icons, using the theme's");
+    }
     let state: SharedState = Arc::new(RwLock::new(TrayState::new(cfg.low_battery_threshold)));
     let quit = Arc::new(tokio::sync::Notify::new());
 
@@ -54,7 +59,7 @@ async fn run() -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("export {ITEM_PATH}: {e}"))?
         .serve_at(
             MENU_PATH,
-            menu::Menu::new(Arc::clone(&state), Arc::clone(&quit)),
+            menu::Menu::new(Arc::clone(&state), Arc::clone(&quit), cfg.left_click),
         )
         .map_err(|e| anyhow::anyhow!("export {MENU_PATH}: {e}"))?
         .build()
@@ -74,8 +79,18 @@ async fn run() -> anyhow::Result<()> {
     }
     watch_for_watcher(conn.clone(), well_known.clone(), Arc::clone(&state));
 
-    let notifier = match notify::Notifier::new(&conn, cfg.notify_threshold).await {
-        Ok(n) => Some(Arc::new(n)),
+    let notifier = match notify::Notifier::new(
+        &conn,
+        cfg.low_battery_threshold,
+        cfg.notify_threshold,
+    )
+    .await
+    {
+        Ok(n) => {
+            let n = Arc::new(n);
+            notify::install(Arc::clone(&n));
+            Some(n)
+        }
         Err(e) => {
             warn!(error = %e, "no org.freedesktop.Notifications on the bus, low-battery alerts disabled");
             None
@@ -94,7 +109,12 @@ async fn run() -> anyhow::Result<()> {
         }
     }
 
-    watch::spawn(Arc::clone(&state), conn.clone(), notifier);
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(i) = args.iter().position(|a| a == "--demo") {
+        demo::spawn(Arc::clone(&state), conn.clone(), args.get(i + 1).cloned());
+    } else {
+        watch::spawn(Arc::clone(&state), conn.clone(), notifier);
+    }
 
     wait_for_shutdown(&quit).await;
     info!("shutting down");
@@ -138,6 +158,7 @@ fn watch_for_watcher(conn: zbus::Connection, well_known: String, state: SharedSt
                 Ok(()) => {
                     info!("tray host is back — registered again");
                     // The new panel knows nothing about us yet.
+                    watch::forget_shown(&conn).await;
                     let snapshot = state.read().await.clone();
                     if let Err(e) = watch::emit_sni(&conn, &snapshot).await {
                         warn!(error = %e, "emit sni signals after re-register");
