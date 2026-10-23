@@ -131,10 +131,11 @@ entries when upgrading from 0.3.0.
   model has and leaves off out, as a press of the stem does; a volume
   step stops at 0 and 100. The README has bindings for Hyprland, sway
   and Plasma.
-- **Apple's model number** (`A3047`) in `podctl status`, `podctl debug`
-  and as `info.model_number` in JSON, read from the device info the buds
-  send on connect. Their serial numbers are in there too and are left
-  alone.
+- **Apple's model numbers** (`A3047 · A3048`, one per bud) in
+  `podctl status`, `podctl debug` and as `info.model_numbers` in JSON,
+  read from the device info the buds send on connect. Only the bud in
+  charge sends it, so the second number shows after a later connect.
+  Their serial numbers are in there too and are left alone.
 - **Release tarballs for aarch64** (Asahi Linux, ARM laptops) next to
   x86_64, each with a build attestation from GitHub
   (`gh attestation verify`), a CycloneDX SBOM, and the dependency list
@@ -200,6 +201,9 @@ entries when upgrading from 0.3.0.
   "br-connection-page-timeout" reads as the AirPods not answering, with
   the hint to open the case. `connect` and other BlueZ commands used to
   fail with an empty reason, because `bluetoothctl` prints it on stdout.
+  Some adapters page for most of a minute before BlueZ gives up, so the
+  CLI timed out first and the next try found Bluetooth busy: a connect
+  now gives up after 20 s and calls the attempt off.
 - **Paired AirPods could be missing from `podctl list` and `unpair`**
   until their first connect after the adapter came up (no Modalias yet);
   they are known by name until then. BlueZ 5.86 and later also print

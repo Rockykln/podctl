@@ -451,7 +451,7 @@ async fn apply_device_info(daemon: &Daemon, payload: &[u8]) {
         return;
     };
     debug!(model_number = %number, "device info");
-    daemon.set_model_number(number).await;
+    daemon.add_model_number(number).await;
 }
 
 /// The reply carries the identity resolving key of the buds. Never log

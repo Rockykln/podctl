@@ -90,9 +90,7 @@ fn render_full(s: &DeviceState, bars: bool) -> String {
     }
     let bt = bluetooth_line(s, &address);
     b.row("bluetooth", &bt);
-    if let Some(number) = &s.info.model_number {
-        b.row("model no.", number);
-    }
+    b.row("model no.", &s.info.model_numbers.join(" · "));
     let fw = firmware_line(s);
     b.row("firmware", &fw);
     if let Some(color) = &s.info.color {

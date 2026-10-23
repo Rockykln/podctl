@@ -131,10 +131,11 @@ pub fn run(no_redact: bool) -> String {
                 "  modalias      {}",
                 dev.modalias.as_deref().unwrap_or("-")
             );
-            let number = daemon_state
+            let numbers = daemon_state
                 .as_ref()
-                .and_then(|st| st.info.model_number.as_deref());
-            let _ = writeln!(out, "  model no.     {}", number.unwrap_or("?"));
+                .map(|st| st.info.model_numbers.join(" · "))
+                .filter(|n| !n.is_empty());
+            let _ = writeln!(out, "  model no.     {}", numbers.as_deref().unwrap_or("?"));
             // AAP layouts depend on the firmware, so every bug starts here.
             let fw = daemon_state.as_ref().map(|st| &st.info);
             let _ = writeln!(

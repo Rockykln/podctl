@@ -1,4 +1,6 @@
-use std::process::{Command, Stdio};
+use std::io::Read;
+use std::process::{Command, Output, Stdio};
+use std::time::{Duration, Instant};
 
 use crate::caps::{Capabilities, Model};
 use crate::model::{BtState, PairedDevice};
@@ -125,12 +127,29 @@ fn field(out: &str, key: &str) -> Option<String> {
     None
 }
 
+/// How long a connect may take. Some controllers page for well over
+/// half a minute before BlueZ gives up, longer than the CLI waits for
+/// the daemon, so the user saw a timeout instead of the reason.
+pub const CONNECT_LIMIT: Duration = Duration::from_secs(20);
+
 pub fn connect(addr: &str) -> anyhow::Result<()> {
-    bluetoothctl(&["connect", addr]).map_err(|e| match why_not_connected(&e.to_string()) {
+    let res = match bluetoothctl_within(&["connect", addr], CONNECT_LIMIT) {
+        Ok(Some(_)) => Ok(()),
+        Ok(None) => {
+            // BlueZ keeps paging after the tool is gone and answers the
+            // next try with "busy"; a disconnect calls the attempt off.
+            let _ = bluetoothctl(&["disconnect", addr]);
+            Err(anyhow::anyhow!(
+                "bluetoothctl connect: page-timeout after {}s",
+                CONNECT_LIMIT.as_secs()
+            ))
+        }
+        Err(e) => Err(e),
+    };
+    res.map_err(|e| match why_not_connected(&e.to_string()) {
         Some(plain) => anyhow::anyhow!(plain),
         None => e,
-    })?;
-    Ok(())
+    })
 }
 
 /// The reasons BlueZ gives for a failed connect, in words that say what
@@ -319,18 +338,65 @@ pub fn bt_state(s: &DeviceSummary) -> BtState {
     }
 }
 
-fn bluetoothctl(args: &[&str]) -> anyhow::Result<String> {
+fn bluetoothctl_command(args: &[&str]) -> Command {
     tracing::debug!(?args, "bluetoothctl");
     // Force C locale so booleans like "yes"/"no" and field labels
     // ("Connected:", "Modalias:", …) are stable across distros even if a
     // future bluez version picks up a gettext catalog for them.
-    let out = Command::new("bluetoothctl")
-        .env("LC_ALL", "C")
+    let mut cmd = Command::new("bluetoothctl");
+    cmd.env("LC_ALL", "C")
         .args(args)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    cmd
+}
+
+fn bluetoothctl(args: &[&str]) -> anyhow::Result<String> {
+    let out = bluetoothctl_command(args)
         .output()
         .map_err(|e| anyhow::anyhow!("bluetoothctl not in PATH? ({e})"))?;
+    checked(args, out)
+}
+
+/// `None` when the limit ran out; the tool is killed then.
+fn bluetoothctl_within(args: &[&str], limit: Duration) -> anyhow::Result<Option<String>> {
+    let out = output_within(&mut bluetoothctl_command(args), limit)
+        .map_err(|e| anyhow::anyhow!("bluetoothctl not in PATH? ({e})"))?;
+    out.map(|out| checked(args, out)).transpose()
+}
+
+/// `Command::output` with a deadline. The pipes are read only at the
+/// end, which holds for the few lines bluetoothctl prints.
+fn output_within(cmd: &mut Command, limit: Duration) -> std::io::Result<Option<Output>> {
+    let mut child = cmd.spawn()?;
+    let deadline = Instant::now() + limit;
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Ok(None);
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    if let Some(mut s) = child.stdout.take() {
+        s.read_to_end(&mut stdout)?;
+    }
+    if let Some(mut s) = child.stderr.take() {
+        s.read_to_end(&mut stderr)?;
+    }
+    Ok(Some(Output {
+        status,
+        stdout,
+        stderr,
+    }))
+}
+
+fn checked(args: &[&str], out: Output) -> anyhow::Result<String> {
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
         let stdout = String::from_utf8_lossy(&out.stdout);
@@ -411,6 +477,31 @@ pub fn primary_airpods() -> Option<DeviceSummary> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_tool_that_hangs_is_cut_off() {
+        use std::process::Command;
+        use std::time::{Duration, Instant};
+        let start = Instant::now();
+        let mut slow = Command::new("sleep");
+        slow.arg("5");
+        let out = super::output_within(&mut slow, Duration::from_millis(200)).expect("spawn");
+        assert!(out.is_none());
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            start.elapsed()
+        );
+        let mut quick = Command::new("echo");
+        quick.arg("hi").stdout(std::process::Stdio::piped());
+        let out = super::output_within(&mut quick, Duration::from_secs(5)).expect("spawn");
+        assert_eq!(out.expect("finished").stdout, b"hi\n");
+        let timeout = format!(
+            "bluetoothctl connect: page-timeout after {}s",
+            super::CONNECT_LIMIT.as_secs()
+        );
+        assert!(super::why_not_connected(&timeout).is_some());
+    }
+
     fn device(name: &str, modalias: Option<&str>) -> super::DeviceSummary {
         super::DeviceSummary {
             address: "AA:BB:CC:DD:EE:01".into(),

@@ -81,7 +81,14 @@ pub async fn run(daemon: Arc<Daemon>) {
                 let cached_lid = s.case_lid_open;
                 let cached_presses = s.press_counts.clone();
                 let cached_settings = s.settings.clone();
-                let cached_info = s.info.clone();
+                let mut cached_info = s.info.clone();
+                // Each connect brings the number of one bud only, so they
+                // are kept until other AirPods turn up, not just a link.
+                if let (Some(old), Some(new)) = (&s.address, &snap.address)
+                    && old != new
+                {
+                    cached_info.model_numbers.clear();
+                }
                 let cached_caps = s.capabilities;
                 let had_model = cached_caps.model != Model::Unknown;
                 *s = snap;
@@ -290,7 +297,6 @@ impl AapSupervisor {
         s.battery_at = None;
         s.in_ear = podctl::InEar::default();
         s.case_lid_open = None;
-        s.info.model_number = None;
         // Settings too: they come from the device's own dump, and the
         // next pair may answer differently. Ear detection and the mic
         // mode are the exception — podctl remembers those itself.

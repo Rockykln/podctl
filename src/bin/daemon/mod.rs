@@ -264,10 +264,11 @@ impl Daemon {
         s.battery
     }
 
-    pub async fn set_model_number(&self, number: String) {
+    pub async fn add_model_number(&self, number: String) {
         let mut s = self.state.write().await;
-        if s.info.model_number.as_deref() != Some(number.as_str()) {
-            s.info.model_number = Some(number);
+        if !s.info.model_numbers.contains(&number) {
+            s.info.model_numbers.push(number);
+            s.info.model_numbers.sort();
             Self::touch(&mut s);
         }
     }
