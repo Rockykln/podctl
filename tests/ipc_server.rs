@@ -120,7 +120,17 @@ fn a_silent_connection_is_let_go() {
 fn an_endless_request_is_refused() {
     let Some(daemon) = start("long") else { return };
     let padded = format!(r#"{{"op":"status","pad":"{}"}}"#, "x".repeat(70_000));
-    let answer = ask(&daemon, &padded);
+    let stream = UnixStream::connect(&daemon.socket).expect("connect");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .expect("timeout");
+    // The daemon answers and hangs up once the limit is reached, so the
+    // rest of the write can find the pipe gone; the answer is there anyway.
+    let _ = writeln!(&stream, "{padded}");
+    let mut answer = String::new();
+    BufReader::new(&stream)
+        .read_line(&mut answer)
+        .expect("read");
     assert!(answer.contains("longer than"), "{answer}");
 }
 
