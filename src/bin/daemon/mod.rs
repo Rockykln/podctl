@@ -31,6 +31,10 @@ const RESUBSCRIBE_COOLDOWN: Duration = Duration::from_secs(5);
 /// asked for. Long enough for a healthy link, short enough that the CLI
 /// still feels instant.
 const BATTERY_WAIT: Duration = Duration::from_millis(900);
+/// How long a request waits for the link task's first BlueZ read. One
+/// `bluetoothctl` call takes a few hundred milliseconds; past that the
+/// honest answer is better than more waiting.
+const FIRST_POLL_WAIT: Duration = Duration::from_millis(1500);
 
 const NO_POPUP: &str =
     "no popup process is listening — start it with 'systemctl --user enable --now podctl-popup'";
@@ -62,6 +66,9 @@ pub struct Daemon {
     /// Bumped when the AirPods turn up without connecting, which no event
     /// says: watchers then get the whole state again.
     resync: tokio::sync::watch::Sender<u64>,
+    /// False until the link task has read BlueZ once. A `status` served
+    /// before that would call a paired pair unpaired.
+    polled: tokio::sync::watch::Sender<bool>,
 }
 
 impl Daemon {
@@ -82,6 +89,7 @@ impl Daemon {
             media: media::Media::default(),
             link_wake: tokio::sync::Notify::new(),
             resync: tokio::sync::watch::Sender::new(0),
+            polled: tokio::sync::watch::Sender::new(false),
         }
     }
 
@@ -167,10 +175,32 @@ impl Daemon {
         }
     }
 
+    /// The link task has read BlueZ at least once.
+    pub fn mark_polled(&self) {
+        self.polled
+            .send_if_modified(|seen| !std::mem::replace(seen, true));
+    }
+
+    /// Waits for that first read, at most `FIRST_POLL_WAIT`. Without it
+    /// a `status` in the first moments after a restart reports "no
+    /// AirPods paired" — the state is simply still empty.
+    async fn wait_for_first_poll(&self) {
+        let mut rx = self.polled.subscribe();
+        let _ = tokio::time::timeout(FIRST_POLL_WAIT, async {
+            while !*rx.borrow_and_update() {
+                if rx.changed().await.is_err() {
+                    return;
+                }
+            }
+        })
+        .await;
+    }
+
     /// Snapshot for `status` / `battery`. When the link is up but no
     /// battery level has ever arrived, nudge the device once and give it
     /// a moment to answer rather than handing back three em-dashes.
     async fn snapshot_fresh(&self) -> DeviceState {
+        self.wait_for_first_poll().await;
         let snap = self.snapshot().await;
         if !snap.connected || snap.battery.any_known() {
             return snap;
@@ -764,5 +794,42 @@ async fn audio_set_latency(d: &Daemon, ms: i32) -> Response {
         }
         Ok(Err(e)) => audio_err(e.to_string()),
         Err(e) => Response::err_code(ErrorCode::Internal, format!("audio task: {e}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Daemon, Duration, FIRST_POLL_WAIT};
+
+    #[tokio::test(start_paused = true)]
+    async fn a_request_waits_for_the_first_bluez_read() {
+        let d = Daemon::new();
+        let start = tokio::time::Instant::now();
+        d.wait_for_first_poll().await;
+        // Nothing read BlueZ, so the wait runs out instead of hanging.
+        assert!(start.elapsed() >= FIRST_POLL_WAIT);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_read_landing_releases_the_request() {
+        let d = std::sync::Arc::new(Daemon::new());
+        let marker = std::sync::Arc::clone(&d);
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            marker.mark_polled();
+        });
+        let start = tokio::time::Instant::now();
+        d.wait_for_first_poll().await;
+        assert!(start.elapsed() >= Duration::from_millis(200));
+        assert!(start.elapsed() < FIRST_POLL_WAIT);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn later_requests_do_not_wait_again() {
+        let d = Daemon::new();
+        d.mark_polled();
+        let start = tokio::time::Instant::now();
+        d.wait_for_first_poll().await;
+        assert!(start.elapsed() < Duration::from_millis(10));
     }
 }

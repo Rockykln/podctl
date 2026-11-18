@@ -118,7 +118,7 @@ pub async fn run(daemon: Arc<Daemon>) {
                         // connecting: no event covers that, and a tray
                         // that asked before would say "Not paired".
                         resync = prev_addr.as_deref() != Some(addr.as_str())
-                            && !(s.connected && !first_poll);
+                            && (!s.connected || first_poll);
                         prev_addr = Some(addr.clone());
                         prev_connected = s.connected;
                         if s.connected && !first_poll {
@@ -154,6 +154,10 @@ pub async fn run(daemon: Arc<Daemon>) {
             aap.sync(&daemon, &snap_addr, snap_connected).await;
             aap.watchdog(&daemon).await;
         }
+        // Also after a BlueZ call that came back empty: a status waiting
+        // for the first poll is better off with that answer than with
+        // the full timeout.
+        daemon.mark_polled();
         tokio::select! {
             _ = sleep(POLL_INTERVAL) => {}
             _ = daemon.link_wake.notified() => sleep(LINK_DROP_SETTLE).await,
