@@ -53,6 +53,10 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 - **`podctld` took any argument and started anyway**, so a mistyped
   `podctld --help` quietly ran a second daemon. It knows `--help` and
   `--version` now and refuses anything else with exit status 64.
+- **A test took it for granted that no AirPods were connected.** The
+  one covering `podctl bar` asserted the away text as the first line,
+  which a connected pair turns into the state — it now asks for a line
+  rather than for one particular line.
 - **`podctl debug` claimed a BLE state it never asked the daemon for.**
   The line read the client's own `daemon.toml` — which differs as soon
   as the daemon runs with another configuration — while sitting in the
