@@ -36,6 +36,10 @@ const BATTERY_WAIT: Duration = Duration::from_millis(900);
 /// `bluetoothctl` call takes a few hundred milliseconds; past that the
 /// honest answer is better than more waiting.
 const FIRST_POLL_WAIT: Duration = Duration::from_millis(1500);
+/// How long the buds get to echo a listening mode back before the
+/// command says they did not take it.
+const MODE_ECHO_WAIT: Duration = Duration::from_secs(2);
+const MODE_ECHO_POLL: Duration = Duration::from_millis(100);
 
 const NO_POPUP: &str =
     "no popup process is listening — start it with 'systemctl --user enable --now podctl-popup'";
@@ -508,9 +512,38 @@ impl Daemon {
         if let Err(e) = self.aap_send(&frame).await {
             return Response::err(e);
         }
-        // The device's own settings notification (0x09 0d) will land via
-        // the AAP loop and update state.settings.mode + emit Event::Mode.
-        Response::ok_done()
+        // The buds echo the new mode as a settings notification
+        // (0x09 0d), which the AAP loop puts into state.settings.mode.
+        // No echo means they did not take it — they ignore the mode
+        // while both sit in the case — and answering "ok" to that sent
+        // people looking for the fault in podctl.
+        if self.mode_echoed(mode).await {
+            Response::ok_done()
+        } else {
+            Response::err_code(
+                ErrorCode::Unavailable,
+                format!(
+                    "the buds did not confirm {mode} within {}s — they ignore the listening mode while both are in the case",
+                    MODE_ECHO_WAIT.as_secs()
+                ),
+            )
+        }
+    }
+
+    /// Waits for the buds' own word on the mode. Generous on purpose:
+    /// the echo is a local L2CAP round trip, so a wait this long
+    /// means it is not coming.
+    async fn mode_echoed(&self, mode: Mode) -> bool {
+        let deadline = tokio::time::Instant::now() + MODE_ECHO_WAIT;
+        loop {
+            if self.state.read().await.settings.mode == Some(mode) {
+                return true;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(MODE_ECHO_POLL).await;
+        }
     }
 
     async fn set_conv(&self, conv: ConvAwareness) -> Response {
@@ -843,6 +876,32 @@ async fn audio_set_latency(d: &Daemon, ms: i32) -> Response {
 #[cfg(test)]
 mod tests {
     use super::{Daemon, Duration, FIRST_POLL_WAIT};
+    use podctl::Mode;
+
+    #[tokio::test]
+    async fn a_mode_already_echoed_needs_no_waiting() {
+        let d = Daemon::new();
+        d.state.write().await.settings.mode = Some(Mode::Transparency);
+        let start = std::time::Instant::now();
+        assert!(d.mode_echoed(Mode::Transparency).await);
+        // The answer is in the state, so nothing is slept away. The
+        // other direction — no echo at all — costs real seconds and is
+        // checked on the device instead of with a paused clock, which
+        // this binary has enough of.
+        assert!(start.elapsed() < Duration::from_millis(100));
+    }
+
+    #[tokio::test]
+    async fn another_mode_in_the_state_is_not_the_echo() {
+        let d = Daemon::new();
+        d.state.write().await.settings.mode = Some(Mode::NoiseCancellation);
+        let waited = tokio::time::timeout(
+            Duration::from_millis(250),
+            d.mode_echoed(Mode::Transparency),
+        )
+        .await;
+        assert!(waited.is_err(), "it keeps waiting for the mode asked for");
+    }
 
     #[tokio::test(start_paused = true)]
     async fn a_request_waits_for_the_first_bluez_read() {

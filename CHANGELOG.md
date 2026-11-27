@@ -74,6 +74,10 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
     under the wait a client allows.
   - The hint still promised a button to hold. The AirPods Pro 3 have
     none; it now says what to do for either kind.
+- **`podctl mode` reported success without the buds agreeing.** They
+  ignore the listening mode while both sit in the case: the command
+  answered "ok" and exit 0, and the mode stayed as it was. It waits for
+  the buds' own echo now and says so when it does not come.
 - **A test took it for granted that no AirPods were connected.** The
   one covering `podctl bar` asserted the away text as the first line,
   which a connected pair turns into the state — it now asks for a line
