@@ -234,7 +234,7 @@ fn run(mut args: Vec<String>) -> Result<i32, CliError> {
     // Twenty seconds of silence otherwise, with nothing to say whether
     // anything is happening.
     if let Request::Pair { address: None, .. } = &request {
-        eprintln!("{PROG}: looking for AirPods in pairing mode (about 20s)…");
+        eprintln!("{PROG}: looking for AirPods in pairing mode (about 15s)…");
     }
     let response = match try_daemon(&verb, &request)? {
         Some(resp) => resp,

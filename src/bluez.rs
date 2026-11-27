@@ -104,9 +104,25 @@ pub fn info(addr: &str) -> anyhow::Result<DeviceSummary> {
         bonded: field(&out, "Bonded:").map(|v| v == "yes"),
         modalias: field(&out, "Modalias:"),
         icon: field(&out, "Icon:"),
-        rssi_dbm: field(&out, "RSSI:").and_then(|v| v.parse::<i16>().ok()),
+        rssi_dbm: field(&out, "RSSI:").as_deref().and_then(signed_property),
         random_address: random_address(&out),
     })
+}
+
+/// bluetoothctl prints signed integer properties through its generic
+/// formatter: `RSSI: 0xffffffa2 (-94)`. Reading the plain number alone
+/// came up empty for every device — the value was never there to begin
+/// with, and since it decides which pair `pair` talks about, that
+/// silence was worse than no check at all.
+fn signed_property(v: &str) -> Option<i16> {
+    let v = v.trim();
+    if let Some(open) = v.find('(')
+        && let Some(close) = v.rfind(')')
+        && open < close
+    {
+        return v[open + 1..close].trim().parse().ok();
+    }
+    v.parse().ok()
 }
 
 /// BlueZ opens its report with the address type: "Device AA:… (public)".
@@ -115,9 +131,12 @@ pub fn info(addr: &str) -> anyhow::Result<DeviceSummary> {
 /// already paired, under a name the user recognised, that it then could
 /// not pair with.
 fn random_address(out: &str) -> bool {
+    // Not `lines().next()`: anything bluetoothctl prints first — an
+    // agent registering, a warning — would hide the type and make a
+    // rotating address look like a device one can pair with.
     out.lines()
-        .next()
         .map(strip_ansi)
+        .find(|l| l.trim_start().starts_with("Device "))
         .is_some_and(|l| l.trim_end().ends_with("(random)"))
 }
 
@@ -136,8 +155,11 @@ fn device_addresses(out: &str) -> Vec<String> {
 }
 
 fn field(out: &str, key: &str) -> Option<String> {
+    // Colours have to come off first. BlueZ 5.86 started printing parts
+    // of its listings in grey, and a stray escape would turn every
+    // field of a device into None at once — name, paired, the lot.
     for line in out.lines() {
-        if let Some(rest) = line.trim_start().strip_prefix(key) {
+        if let Some(rest) = strip_ansi(line).trim_start().strip_prefix(key) {
             return Some(rest.trim().to_string());
         }
     }
@@ -255,11 +277,23 @@ pub fn pair_choice(address: Option<String>, yes: bool) -> anyhow::Result<()> {
         }
         return pair(&addr);
     }
-    let found = discover(12)?;
-    let (known, mut fresh): (Vec<DeviceSummary>, Vec<DeviceSummary>) = found
+    let found = discover(SCAN_SECS)?;
+    let (known, candidates): (Vec<DeviceSummary>, Vec<DeviceSummary>) = found
         .into_iter()
         .filter(|d| !d.random_address)
         .partition(|d| d.paired);
+    // `bluetoothctl devices` also lists devices BlueZ merely remembers.
+    // Offering one of those as "in pairing mode" sent `--yes` after a
+    // pair that is not there, and cost the wait for a pairing that
+    // could not happen. Only drop them while the scan heard something
+    // at all — otherwise a BlueZ that reports no signal strength would
+    // leave nothing to pair with.
+    let heard: Vec<DeviceSummary> = candidates
+        .iter()
+        .filter(|d| d.rssi_dbm.is_some())
+        .cloned()
+        .collect();
+    let mut fresh = if heard.is_empty() { candidates } else { heard };
     fresh.sort_by(|a, b| a.name.cmp(&b.name));
     match fresh.as_slice() {
         // `bluetoothctl devices` lists everything BlueZ remembers, so a
@@ -332,6 +366,13 @@ pub fn discover(secs: u32) -> anyhow::Result<Vec<DeviceSummary>> {
 /// wait a client allows for `pair` (`client::timeout_for`), scan time
 /// included, or the CLI gives up on an answer the daemon is still owed.
 pub const PAIR_LIMIT: Duration = Duration::from_secs(25);
+/// How long `pair` scans before it says what it found. Named because
+/// the wait a client allows has to cover this *and* `PAIR_LIMIT`, and a
+/// test checks that it does.
+pub const SCAN_SECS: u32 = 12;
+/// Taking a hanging pairing back must not hang in turn — BlueZ is the
+/// part that just missed its deadline.
+const CANCEL_LIMIT: Duration = Duration::from_secs(5);
 
 pub fn pair(addr: &str) -> anyhow::Result<()> {
     // Debian ships the adapter not pairable. BlueZ then pairs anyway but
@@ -345,16 +386,25 @@ pub fn pair(addr: &str) -> anyhow::Result<()> {
         let _ = bluetoothctl(&["pairable", "off"]);
     }
     if paired.as_ref().is_ok_and(|done| done.is_none()) {
-        // A pairing left hanging in BlueZ makes it answer InProgress to
-        // every later attempt, this program's and every other one's, so
-        // take it back before saying so.
-        let _ = bluetoothctl(&["cancel-pairing", addr]);
-        anyhow::bail!(
-            "pairing did not finish within {}s and was called off — make sure the AirPods are in pairing mode, then try again",
-            PAIR_LIMIT.as_secs()
-        );
+        // BlueZ may have won the race against the limit. Calling a
+        // finished pairing a failure would skip the trust and the
+        // no-key check below and leave the next attempt to run into
+        // AlreadyExists.
+        if !info(addr).is_ok_and(|d| d.paired) {
+            // A pairing left hanging in BlueZ makes it answer
+            // InProgress to every later attempt, this program's and
+            // every other one's, so take it back before saying so. With
+            // a limit of its own: BlueZ is the thing that just failed
+            // to answer.
+            let _ = bluetoothctl_within(&["cancel-pairing", addr], CANCEL_LIMIT);
+            anyhow::bail!(
+                "pairing did not finish within {}s and was called off — make sure the AirPods are in pairing mode, then try again",
+                PAIR_LIMIT.as_secs()
+            );
+        }
+    } else {
+        paired?;
     }
-    paired?;
     let _ = bluetoothctl(&["trust", addr]);
     if info(addr).is_ok_and(|d| d.bonded == Some(false)) {
         anyhow::bail!(
@@ -538,6 +588,18 @@ pub fn primary_airpods() -> Option<DeviceSummary> {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn signal_strength_is_read_in_the_shape_bluetoothctl_prints_it() {
+        // The real line, hex and decimal: parsing the plain number made
+        // every device look unheard.
+        assert_eq!(super::signed_property("0xffffffa2 (-94)"), Some(-94));
+        assert_eq!(super::signed_property("\t0xffffffac (-84) "), Some(-84));
+        // A bare number, should a BlueZ ever print one.
+        assert_eq!(super::signed_property("-52"), Some(-52));
+        assert_eq!(super::signed_property(""), None);
+        assert_eq!(super::signed_property("(nonsense)"), None);
+    }
+
+    #[test]
     fn a_rotating_le_address_is_no_candidate() {
         // What BlueZ prints for the LE advertisement of a pair that is
         // already paired over the classic link.
@@ -596,6 +658,7 @@ mod tests {
 
     #[test]
     fn a_pairing_answers_before_the_client_gives_up() {
+        use std::time::Duration;
         // The CLI waits `timeout_for` for an answer; BlueZ gets less
         // than that, scan time included, so the daemon is never left
         // working on a request nobody is listening for any more.
@@ -603,11 +666,17 @@ mod tests {
             address: None,
             yes: false,
         });
-        let scan = std::time::Duration::from_secs(12);
+        let scan = Duration::from_secs(super::SCAN_SECS as u64);
+        // Between the scan and the pairing come a `bluetoothctl info`
+        // per remembered device, plus show/pairable/trust — a handful
+        // of process starts whose number nobody controls. The margin
+        // has to hold those too.
+        let margin = Duration::from_secs(10);
         assert!(
-            super::PAIR_LIMIT + scan < waits,
-            "pair limit {:?} plus the scan must stay under the client's {:?}",
+            super::PAIR_LIMIT + scan + margin <= waits,
+            "pair limit {:?} plus the scan {:?} and room for the calls in between must stay under the client's {:?}",
             super::PAIR_LIMIT,
+            scan,
             waits
         );
     }

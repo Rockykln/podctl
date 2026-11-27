@@ -117,11 +117,18 @@ impl Client {
 }
 
 /// How long an answer may take. Everything that reads cached state is
-/// immediate, but `pair` scans for twelve seconds before it answers at
-/// all, and BlueZ takes its time over a connect.
+/// immediate, but `pair` scans before it answers at all and then gives
+/// BlueZ its own deadline, and BlueZ takes its time over a connect.
+///
+/// For `pair` this has to cover `bluez::SCAN_SECS` plus
+/// `bluez::PAIR_LIMIT` plus the handful of `bluetoothctl` calls in
+/// between — one per device BlueZ remembers, so their number is nobody's
+/// to choose. At 45s a machine with a long device list made the CLI
+/// report "no answer from the daemon" while the pairing was running.
+/// A test in `bluez` keeps the three in step.
 pub fn timeout_for(req: &Request) -> Duration {
     let secs = match req {
-        Request::Pair { .. } => 45,
+        Request::Pair { .. } => 60,
         Request::Connect | Request::Disconnect | Request::Unpair => 30,
         _ => 10,
     };
