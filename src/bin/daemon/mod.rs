@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use tokio::sync::{RwLock, broadcast};
-use tracing::debug;
+use tracing::{debug, info};
 
 use podctl::{
     Capabilities, ConvAwareness, DeviceState, Event, Mode, PressSide, Request, Response,
@@ -294,11 +294,36 @@ impl Daemon {
         s.battery
     }
 
+    /// Learn from a reported setting while the model is unknown. A
+    /// pair podctl has no table row for would otherwise be refused
+    /// every command it can in fact do.
+    pub async fn learn_capability(&self, id: u8, value: u8) {
+        let mut s = self.state.write().await;
+        if s.capabilities.model != podctl::caps::Model::Unknown {
+            return;
+        }
+        if s.capabilities.learn_from_setting(id, value) {
+            info!(
+                setting = format!("{id:02x}"),
+                "unknown model: learned a capability from its own settings"
+            );
+            Self::touch(&mut s);
+        }
+    }
+
     pub async fn add_model_number(&self, number: String) {
         let mut s = self.state.write().await;
         if !s.info.model_numbers.contains(&number) {
             s.info.model_numbers.push(number);
             s.info.model_numbers.sort();
+            // Two models can share a product code — the AirPods 5 and
+            // the AirPods 5 with the wireless case do. The A-number is
+            // the only thing that tells them apart, and it arrives here.
+            let refined = s.capabilities.model.refine(&s.info.model_numbers);
+            if refined != s.capabilities.model {
+                info!(was = ?s.capabilities.model, now = ?refined, "model refined by its A-number");
+                s.capabilities = refined.capabilities();
+            }
             Self::touch(&mut s);
         }
     }

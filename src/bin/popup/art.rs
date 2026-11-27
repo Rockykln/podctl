@@ -54,24 +54,10 @@ pub struct CaseSpec {
 }
 
 impl Art {
-    /// The drawing for a detected model. An unknown one gets the most
-    /// common case rather than none.
+    /// The drawing for a detected model, by the slug the model table
+    /// carries. An unknown one gets the commonest case rather than none.
     pub fn of(m: podctl::caps::Model) -> Self {
-        use podctl::caps::Model as M;
-        match m {
-            M::Gen1 => Art::Gen1,
-            M::Gen2 => Art::Gen2,
-            M::Gen3 => Art::Gen3,
-            M::Gen4 => Art::Gen4,
-            M::Gen4Anc => Art::Gen4Anc,
-            M::Pro => Art::Pro1,
-            M::Pro2 => Art::Pro2L,
-            M::Pro2UsbC | M::Unknown => Art::Pro2C,
-            M::Pro3 => Art::Pro3,
-            M::Max => Art::MaxL,
-            M::MaxUsbC => Art::MaxC,
-            M::Max2 => Art::Max2,
-        }
+        Self::by_slug(m.art()).unwrap_or(Art::Pro2C)
     }
 
     /// How far the buds stand above the case's floor, in mm: their

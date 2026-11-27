@@ -84,10 +84,12 @@ pub async fn run(daemon: Arc<Daemon>) {
                 let mut cached_info = s.info.clone();
                 // Each connect brings the number of one bud only, so they
                 // are kept until other AirPods turn up, not just a link.
+                let mut other_device = false;
                 if let (Some(old), Some(new)) = (&s.address, &snap.address)
                     && old != new
                 {
                     cached_info.model_numbers.clear();
+                    other_device = true;
                 }
                 let cached_caps = s.capabilities;
                 let had_model = cached_caps.model != Model::Unknown;
@@ -109,6 +111,23 @@ pub async fn run(daemon: Arc<Daemon>) {
                 // flapping this prevents.)
                 if had_model && s.capabilities.model == Model::Unknown {
                     s.capabilities = cached_caps;
+                }
+                // For a model with no table row the capabilities are
+                // learned from the device's own settings dump. BlueZ
+                // hands back the bare row every poll, which would throw
+                // that away — but only for the same pair.
+                if !other_device
+                    && s.capabilities.model == Model::Unknown
+                    && cached_caps.model == Model::Unknown
+                {
+                    s.capabilities = cached_caps;
+                }
+                // Two variants can share a product code, and only the
+                // A-number from the AAP link tells them apart. BlueZ
+                // does not know it, so the poll would undo it.
+                let refined = s.capabilities.model.refine(&s.info.model_numbers);
+                if refined != s.capabilities.model {
+                    s.capabilities = refined.capabilities();
                 }
                 Daemon::touch(&mut s);
                 if let Some(addr) = &s.address {

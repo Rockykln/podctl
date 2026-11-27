@@ -116,7 +116,22 @@ pub fn run(no_redact: bool) -> String {
     section(&mut out, "airpods");
     match bluez::primary_airpods() {
         Some(dev) => {
-            let _ = writeln!(out, "  model         {}", dev.model().label());
+            // Every row but the owner's own pair is read off Apple's
+            // specs and other projects, not off hardware. A bug report
+            // should say which it is.
+            let model = dev.model();
+            let learned = model == podctl::caps::Model::Unknown
+                && daemon_state
+                    .as_ref()
+                    .is_some_and(|st| st.capabilities != podctl::caps::Capabilities::default());
+            let note = if learned {
+                "  (capabilities learned from the device)"
+            } else if model.verified() {
+                ""
+            } else {
+                "  (capability row unverified)"
+            };
+            let _ = writeln!(out, "  model         {}{}", model.label(), note);
             let _ = writeln!(
                 out,
                 "  address       {}",

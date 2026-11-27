@@ -282,6 +282,7 @@ async fn apply_settings(daemon: &Daemon, payload: &[u8]) {
         debug!(id = format!("{id:02x}"), "settings frame without a value");
         return;
     };
+    daemon.learn_capability(id, v0).await;
     match id {
         setting::NOISE_CONTROL => {
             let mode = wire::mode_from_byte(v0);
