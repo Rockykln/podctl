@@ -89,17 +89,22 @@ fn parse(args: &[String]) -> Result<Opts, String> {
             "--once" => o.once = true,
             "--low" => {
                 let v = it.next().ok_or("--low needs a percentage")?;
-                o.low = v
-                    .parse::<u8>()
-                    .map_err(|_| format!("--low wants 0…100, not '{v}'"))?
-                    .min(100);
+                // One answer for one mistake: 150 used to be clamped
+                // while 300 was refused, both being the same slip.
+                o.low = match v.parse::<u8>() {
+                    Ok(n) if n <= 100 => n,
+                    _ => return Err(format!("--low wants 0…100, not '{v}'")),
+                };
             }
-            "--away" => o.away = it.next().cloned().unwrap_or_default(),
+            // Not `unwrap_or_default`: a missing value is a typo, and
+            // swallowing it made `podctl bar --away` look like it had
+            // worked while every other option says so.
+            "--away" => o.away = it.next().ok_or("--away needs a text")?.clone(),
             "--low-color" => {
                 let v = it.next().ok_or("--low-color needs a colour like #f38ba8")?;
                 o.low_color = Some(v.clone());
             }
-            "--prefix" => o.prefix = it.next().cloned().unwrap_or_default(),
+            "--prefix" => o.prefix = it.next().ok_or("--prefix needs a text")?.clone(),
             other => return Err(format!("unknown option '{other}'")),
         }
     }
@@ -117,14 +122,33 @@ fn pull_status() -> Option<DeviceState> {
 }
 
 fn serve(opts: &Opts) -> i32 {
-    let mut last = String::new();
+    let mut last: Option<String> = None;
     let mut delay = RETRY_FIRST;
     loop {
         match session(opts, &mut last) {
             // A stream that stood and then ended is a daemon restart,
-            // not a daemon that is gone: start the waiting over.
-            Ok(Attached::Yes) => delay = RETRY_FIRST,
+            // not a daemon that is gone: start the waiting over, and
+            // try again at once before saying anything. A daemon back
+            // within a moment used to make the module disappear and
+            // reappear for nothing.
+            Ok(Attached::Yes) => {
+                delay = RETRY_FIRST;
+                match session(opts, &mut last) {
+                    Ok(Attached::Yes) => continue,
+                    Ok(Attached::Hiccup) => {
+                        std::thread::sleep(RETRY_FIRST);
+                        continue;
+                    }
+                    Ok(Attached::No) => {}
+                    Err(Gone::Pipe) => return exitcode::OK,
+                }
+            }
             Ok(Attached::No) => {}
+            // Leave the line that is on screen alone and try again.
+            Ok(Attached::Hiccup) => {
+                std::thread::sleep(RETRY_FIRST);
+                continue;
+            }
             // Nobody is reading our lines any more.
             Err(Gone::Pipe) => return exitcode::OK,
         }
@@ -140,29 +164,37 @@ fn serve(opts: &Opts) -> i32 {
 enum Attached {
     Yes,
     No,
+    /// The daemon answered a status, but the stream did not come up.
+    /// Worth another go without calling the AirPods away first.
+    Hiccup,
 }
 
 /// The bar stopped reading.
+#[derive(Debug, PartialEq, Eq)]
 enum Gone {
     Pipe,
 }
 
 /// One connected run: full state first, then a line per event. Returns
 /// when the stream ends.
-fn session(opts: &Opts, last: &mut String) -> Result<Attached, Gone> {
+fn session(opts: &Opts, last: &mut Option<String>) -> Result<Attached, Gone> {
     let Some(mut state) = pull_status() else {
         return Ok(Attached::No);
     };
     show(&render(&view(Some(&state), opts), opts), last)?;
 
+    // From here the daemon has answered once, so a stream that will not
+    // open is a hiccup, not an absence. Reporting "offline" over it
+    // painted over a line that was right and then waited up to half a
+    // minute to correct itself.
     let Some(mut stream) = client::Client::connect() else {
-        return Ok(Attached::No);
+        return Ok(Attached::Hiccup);
     };
     let req = Request::Watch {
         role: WatchRole::Observer,
     };
     match stream.request(&req, client::timeout_for(&req)) {
-        Ok(Response::Err(_)) | Err(_) => return Ok(Attached::No),
+        Ok(Response::Err(_)) | Err(_) => return Ok(Attached::Hiccup),
         Ok(_) => {}
     }
     loop {
@@ -208,23 +240,27 @@ fn apply(state: &mut DeviceState, ev: Event) {
         Event::Battery(b) => state.battery = b,
         Event::Mode { mode } => state.settings.mode = Some(mode),
         Event::ConvAwareness { conv } => state.settings.conv_awareness = Some(conv),
-        Event::InEar(_)
-        | Event::CaseLid { .. }
-        | Event::Press { .. }
-        | Event::SettingsChanged
-        | Event::ShowPopup => {}
+        // Dropping this froze the in-ear class for the whole session:
+        // the full state only arrives on attach, on a lost event and on
+        // a resync, none of which a bud coming out triggers.
+        Event::InEar(in_ear) => state.in_ear = in_ear,
+        Event::CaseLid { .. } | Event::Press { .. } | Event::SettingsChanged | Event::ShowPopup => {
+        }
     }
 }
 
 /// Only print what changed: bars redraw on every line they read.
-fn show(line: &str, last: &mut String) -> Result<(), Gone> {
-    if line == last {
-        return Ok(());
+/// `None` means nothing has been printed yet — without that, an empty
+/// first line (no `--away` text, plain or polybar) counted as "already
+/// shown" and the bar got no line at all until something moved.
+/// `Ok(false)` when the line was already on screen.
+fn show(line: &str, last: &mut Option<String>) -> Result<bool, Gone> {
+    if last.as_deref() == Some(line) {
+        return Ok(false);
     }
     emit(line)?;
-    last.clear();
-    last.push_str(line);
-    Ok(())
+    *last = Some(line.to_string());
+    Ok(true)
 }
 
 /// Rust ignores SIGPIPE, so a bar that closed its end shows up here as
@@ -306,13 +342,17 @@ fn view(state: Option<&DeviceState>, opts: &Opts) -> View {
         classes.push("low");
     }
     // A bar that only ever hears about the battery cannot tell "in my
-    // ears" from "on the desk" — and taking a bud out changed nothing
-    // on screen before this.
-    classes.push(match s.in_ear.count_in_ear() {
-        0 => "out-of-ear",
-        1 => "one-in-ear",
-        _ => "in-ear",
-    });
+    // ears" from "on the desk". But only a device that reports where
+    // its buds are can be asked, and only a state it has actually sent
+    // says anything: the AirPods Max have no in-ear detection at all,
+    // and the first seconds of every link are simply unknown. Claiming
+    // "out-of-ear" there would style a headset as idle while someone
+    // wears it.
+    if s.capabilities.has_in_ear_detection
+        && let Some(class) = ear_class(&s.in_ear)
+    {
+        classes.push(class);
+    }
     let text = match lowest {
         Some(p) => format!("{}{p}%", opts.prefix),
         // Connected, but the buds have not reported yet.
@@ -333,6 +373,23 @@ fn view(state: Option<&DeviceState>, opts: &Opts) -> View {
         tooltip,
         low,
     }
+}
+
+/// `None` while the buds have not said where they are.
+fn ear_class(in_ear: &podctl::InEar) -> Option<&'static str> {
+    use podctl::EarStatus;
+    let known = |e: EarStatus| e != EarStatus::Unknown;
+    if !known(in_ear.primary) && !known(in_ear.secondary) {
+        return None;
+    }
+    Some(match in_ear.count_in_ear() {
+        0 if in_ear.primary == EarStatus::InCase || in_ear.secondary == EarStatus::InCase => {
+            "in-case"
+        }
+        0 => "out-of-ear",
+        1 => "one-in-ear",
+        _ => "in-ear",
+    })
 }
 
 fn levels(b: &Battery) -> Option<String> {
@@ -421,6 +478,8 @@ mod tests {
             ..DeviceState::default()
         };
         s.capabilities = Model::Pro2UsbC.capabilities();
+        s.in_ear.primary = podctl::EarStatus::OutOfEar;
+        s.in_ear.secondary = podctl::EarStatus::OutOfEar;
         s.battery.left = left;
         s.battery.right = right;
         s.settings.mode = Some(Mode::Transparency);
@@ -436,6 +495,62 @@ mod tests {
         assert_eq!(v.classes, vec!["connected", "out-of-ear"]);
         assert_eq!(v.tooltip[0], "Test AirPods — Transparency");
         assert_eq!(v.tooltip[1], "L 84% · R 78%");
+    }
+
+    #[test]
+    fn nothing_is_claimed_about_ears_that_cannot_be_seen() {
+        use podctl::EarStatus;
+        // AirPods Max: no in-ear detection, so no class either.
+        let mut max = connected(Some(84), None);
+        max.capabilities = Model::Max.capabilities();
+        let v = view(Some(&max), &Opts::default());
+        assert!(
+            !v.classes.iter().any(|c| c.contains("ear")),
+            "a headset with no detection must not be called idle: {:?}",
+            v.classes
+        );
+        // A fresh link, before the buds have said anything.
+        let mut fresh = connected(Some(84), Some(78));
+        fresh.in_ear.primary = EarStatus::Unknown;
+        fresh.in_ear.secondary = EarStatus::Unknown;
+        assert!(
+            !view(Some(&fresh), &Opts::default())
+                .classes
+                .iter()
+                .any(|c| c.contains("ear"))
+        );
+        // Both in the case is its own thing, not "out of ear".
+        let mut cased = connected(Some(84), Some(78));
+        cased.in_ear.primary = EarStatus::InCase;
+        cased.in_ear.secondary = EarStatus::InCase;
+        assert!(
+            view(Some(&cased), &Opts::default())
+                .classes
+                .contains(&"in-case")
+        );
+    }
+
+    #[test]
+    fn an_ear_event_reaches_the_rendered_line() {
+        // The class is only worth having if the event that carries it
+        // is applied: this went through `view()` in a test while the
+        // event itself was being thrown away.
+        use podctl::EarStatus;
+        let mut s = connected(Some(84), Some(78));
+        s.in_ear.primary = EarStatus::InEar;
+        s.in_ear.secondary = EarStatus::InEar;
+        let opts = Opts::default();
+        let before = render(&view(Some(&s), &opts), &opts);
+        apply(
+            &mut s,
+            Event::InEar(podctl::InEar {
+                primary: EarStatus::OutOfEar,
+                secondary: EarStatus::OutOfEar,
+            }),
+        );
+        let after = render(&view(Some(&s), &opts), &opts);
+        assert_ne!(before, after, "taking the buds out has to show");
+        assert!(after.contains("out-of-ear"));
     }
 
     #[test]
@@ -575,16 +690,34 @@ mod tests {
 
     #[test]
     fn unchanged_state_prints_nothing_twice() {
-        let mut last = String::new();
+        let mut last = None;
         let opts = Opts::default();
         let v = view(Some(&connected(Some(84), Some(78))), &opts);
         let line = render(&v, &opts);
-        assert!(show(&line, &mut last).is_ok());
-        assert_eq!(last, line);
-        // Same line again: `show` leaves `last` alone, which is what the
-        // caller checks.
-        assert!(show(&line, &mut last).is_ok());
-        assert_eq!(last, line);
+        // Asserting on what `show` reports, not on `last`: `last`
+        // holds the line after every call, so comparing it would pass
+        // with the skip taken out altogether.
+        assert_eq!(show(&line, &mut last), Ok(true), "the first line goes out");
+        assert_eq!(show(&line, &mut last), Ok(false), "the same line does not");
+        let moved = render(&view(Some(&connected(Some(84), Some(77))), &opts), &opts);
+        assert_eq!(show(&moved, &mut last), Ok(true));
+    }
+
+    #[test]
+    fn an_empty_first_line_is_still_a_line() {
+        // Plain and polybar with no --away text render nothing at all
+        // while the buds are away. That empty line has to reach the bar
+        // once, or a module started before the daemon stays blank.
+        let opts = Opts {
+            format: Format::Plain,
+            away: String::new(),
+            ..Opts::default()
+        };
+        let line = render(&view(None, &opts), &opts);
+        assert_eq!(line, "");
+        let mut last = None;
+        assert_eq!(show(&line, &mut last), Ok(true), "even an empty one");
+        assert_eq!(show(&line, &mut last), Ok(false));
     }
 
     #[test]
