@@ -7,8 +7,50 @@ use tracing::info;
 
 use daemon::Daemon;
 
+/// Printed for --help and for an argument the daemon does not know.
+/// Without this it took anything and started regardless, so a mistyped
+/// `podctld --help` quietly ran a second daemon.
+const USAGE: &str = "\
+podctld — the podctl daemon
+
+It takes no arguments of its own; the settings live in daemon.toml.
+
+    -h, --help       this text
+    -V, --version    version and protocol
+
+Start it through systemd:
+
+    systemctl --user enable --now podctld
+
+Settings:  $XDG_CONFIG_HOME/podctl/daemon.toml
+Socket:    $XDG_RUNTIME_DIR/podctl.sock
+Log level: PODCTL_LOG (for instance PODCTL_LOG=debug)
+";
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    if let Some(arg) = std::env::args().nth(1) {
+        match arg.as_str() {
+            "-h" | "--help" => {
+                print!("{USAGE}");
+                return Ok(());
+            }
+            "-V" | "--version" => {
+                println!(
+                    "podctld {} (protocol {})",
+                    env!("CARGO_PKG_VERSION"),
+                    podctl::ipc::PROTO
+                );
+                return Ok(());
+            }
+            other => {
+                eprintln!("podctld: unknown argument: {other}");
+                eprint!("{USAGE}");
+                std::process::exit(64);
+            }
+        }
+    }
+
     podctl::logging::init("info");
 
     info!("podctld starting");

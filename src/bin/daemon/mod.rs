@@ -312,6 +312,18 @@ impl Daemon {
         }
     }
 
+    /// Same, for what the ear-detection frame proves by itself.
+    pub async fn learn_in_ear_capability(&self) {
+        let mut s = self.state.write().await;
+        if s.capabilities.model != podctl::caps::Model::Unknown {
+            return;
+        }
+        if s.capabilities.learn_in_ear() {
+            info!("unknown model: it reports in-ear state, so it has the detection");
+            Self::touch(&mut s);
+        }
+    }
+
     pub async fn add_model_number(&self, number: String) {
         let mut s = self.state.write().await;
         if !s.info.model_numbers.contains(&number) {

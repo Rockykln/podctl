@@ -102,7 +102,13 @@ pub fn run(no_redact: bool) -> String {
             let _ = writeln!(out, "  bluez link    ?  (no answer from daemon)");
         }
     }
-    let _ = writeln!(out, "  ble listening {}", yesno(podctl::config::load().ble));
+    // The daemon does not report its own BLE state over the socket, so
+    // this is the file's value — say so rather than claim the running one.
+    let _ = writeln!(
+        out,
+        "  ble setting   {}  (daemon.toml)",
+        yesno(podctl::config::load().ble)
+    );
     let _ = writeln!(
         out,
         "  proximity key {}",

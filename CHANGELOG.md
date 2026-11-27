@@ -23,13 +23,17 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
   the buds report tells the plain one from the one with the wireless
   charging case, which is the only one with volume swipes on the stem.
   AirPods 4 without ANC (`0x2019`) was detected as "unknown model"
-  before.
+  before. The AirPods Pro 3 entry carries its model number A3064, read
+  off a connected pair.
 - **An unknown model is no longer refused everything.** podctl used to
   gate every setting behind its capability table, so a pair of AirPods
   with a product code nobody has written down could do almost nothing.
   The daemon now turns on what the buds report in their own settings
   dump — noise control, conversation awareness, ear detection, the
   microphone choice — and `podctl debug` says the row was learned.
+  In-ear detection is taken from the frame that names the bud in the
+  ear, because a settings dump need not mention it at all: the AirPods
+  Pro 3 leave that id out.
 - **One table for every model** — product codes, name, A-numbers, the
   drawing in the bubble and the capability row — in `src/caps.rs`. The
   bubble reads its drawing from there instead of keeping a second list,
@@ -46,6 +50,14 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
   moment after `podctld` started: requests were answered before BlueZ
   had been read even once. They now wait for that first read, at most
   1.5 s.
+- **`podctld` took any argument and started anyway**, so a mistyped
+  `podctld --help` quietly ran a second daemon. It knows `--help` and
+  `--version` now and refuses anything else with exit status 64.
+- **`podctl debug` claimed a BLE state it never asked the daemon for.**
+  The line read the client's own `daemon.toml` — which differs as soon
+  as the daemon runs with another configuration — while sitting in the
+  daemon section as if it came from there. It now says where the value
+  is from.
 
 ## [0.4.0] - 2026-10-23
 

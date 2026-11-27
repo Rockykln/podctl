@@ -3,6 +3,19 @@
 podctld \- AirPods control daemon
 .SH SYNOPSIS
 .B podctld
+.RB [ \-h | \-\-help ]
+.RB [ \-V | \-\-version ]
+.SH OPTIONS
+The daemon takes no arguments of its own; its settings live in
+.IR daemon.toml .
+.TP
+.BR \-h ", " \-\-help
+Print a short usage text and exit.
+.TP
+.BR \-V ", " \-\-version
+Print version and protocol number and exit.
+.PP
+Any other argument is refused with exit status 64.
 .SH DESCRIPTION
 .B podctld
 is the long-running companion daemon for the

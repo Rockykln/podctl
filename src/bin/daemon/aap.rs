@@ -434,6 +434,7 @@ async fn apply_ear(daemon: &Arc<Daemon>, payload: &[u8]) {
         return;
     };
     debug!(primary = %in_ear.primary, secondary = %in_ear.secondary, "ear-detection update");
+    daemon.learn_in_ear_capability().await;
     let Some(prev) = daemon.set_in_ear(in_ear).await else {
         return;
     };

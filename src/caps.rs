@@ -401,6 +401,14 @@ impl Capabilities {
         *self != before
     }
 
+    /// The device said which bud sits in an ear, so it has in-ear
+    /// detection whatever its product code is. Settings dumps do not
+    /// always carry 0x0a — the AirPods Pro 3 leave it out — so this is
+    /// the only proof for an unknown model.
+    pub fn learn_in_ear(&mut self) -> bool {
+        !std::mem::replace(&mut self.has_in_ear_detection, true)
+    }
+
     /// What any pair of AirPods does: report a case battery and take a
     /// new name. Used for a product code nobody has written down yet.
     pub fn conservative(model: Model) -> Self {
@@ -551,6 +559,21 @@ mod tests {
         caps.learn_from_setting(setting::CHIME_VOLUME, 50);
         caps.learn_from_setting(setting::ONE_BUD_ANC, 1);
         assert_eq!(caps, Capabilities::conservative(Model::Unknown));
+    }
+
+    #[test]
+    fn the_ear_frame_alone_proves_the_detection() {
+        // The AirPods Pro 3 never send setting 0x0a, so a dump cannot
+        // show it. The frame that names the bud in the ear does.
+        let mut caps = Capabilities::conservative(Model::Unknown);
+        assert!(!caps.has_in_ear_detection);
+        assert!(caps.learn_in_ear());
+        assert!(caps.has_in_ear_detection);
+        // Nothing else is invented, and the second frame changes nothing.
+        assert!(!caps.learn_in_ear());
+        assert!(!caps.has_ear_detection_setting);
+        assert!(!caps.has_mic_selection);
+        assert!(!caps.has_anc);
     }
 
     #[test]
