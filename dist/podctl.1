@@ -159,6 +159,23 @@ falling back to
 from
 .IR pulseaudio-utils .
 .TP
+.BR "bar" " [" "--format " name "] [" "--once" "] [" "--low " percent "] [" "--low-color " hex "] [" "--away " text "] [" "--prefix " text ]
+One line per state change, for a status bar: the current state first,
+then a line whenever something moves, and it keeps going when
+.B podctld
+restarts. Formats are
+.IR waybar " (JSON, the default), " i3blocks " (an i3bar block per line), "
+.IR polybar " (one line of text) and " plain .
+Nothing is printed twice. The waybar object carries
+.IR text ", " alt ", " class ", " tooltip " and " percentage ;
+.I alt
+is one of
+.IR connected ", " disconnected ", " unpaired " or " offline .
+Ready-made modules for waybar, i3blocks, polybar, Quickshell, AGS and
+eww are under
+.I contrib/
+in the source tree.
+.TP
 .BR "ble" " [" on | off ]
 Whether the daemon listens for the case's Bluetooth LE announcement while
 the buds are disconnected. That announcement is what opens the bubble as

@@ -1,0 +1,14 @@
+; eww: deflisten takes one line at a time as the new value.
+(deflisten podctl
+  :initial '{"text":"","alt":"offline","class":["offline"],"tooltip":"","percentage":null}'
+  `podctl bar`)
+
+(defwidget pods []
+  (eventbox :tooltip {podctl.tooltip}
+    (button :onclick "podctl popup"
+            :class {podctl.alt}
+      {podctl.text})))
+
+; The tooltip holds its lines separated by a carriage return, which is
+; what waybar wants. For eww, `podctl bar --format plain` with a second
+; module is often simpler than taking that apart.

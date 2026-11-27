@@ -64,6 +64,40 @@ fn ask(daemon: &Daemon, line: &str) -> String {
     answer
 }
 
+/// `podctl bar` is a long-lived client of this socket: it has to start
+/// with the state, and it has to notice when the daemon goes away.
+#[test]
+fn the_bar_starts_with_the_state_and_notices_a_daemon_leaving() {
+    let Some(mut daemon) = start("bar") else {
+        return;
+    };
+    let dir = daemon.socket.parent().expect("dir").to_path_buf();
+    let mut bar = Command::new(env!("CARGO_BIN_EXE_podctl"))
+        .args(["bar", "--format", "plain", "--away", "off"])
+        .env("XDG_RUNTIME_DIR", &dir)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn podctl bar");
+    let out = bar.stdout.take().expect("stdout");
+    let mut lines = BufReader::new(out).lines();
+    let first = lines.next().expect("a line").expect("read");
+    // No AirPods in a test container, so the away text is the state.
+    assert_eq!(first, "off", "the bar starts with what is true now");
+
+    let _ = daemon.child.kill();
+    let _ = daemon.child.wait();
+    // Nothing changes on screen — "off" is "off" — but the bar must
+    // stay alive and keep its own counsel rather than exit or spin.
+    std::thread::sleep(Duration::from_secs(2));
+    assert!(
+        bar.try_wait().expect("wait").is_none(),
+        "the bar outlives the daemon"
+    );
+    let _ = bar.kill();
+    let _ = bar.wait();
+}
+
 /// The handshake tells a client whether the two halves fit, before a
 /// setter fails with "malformed request".
 #[test]

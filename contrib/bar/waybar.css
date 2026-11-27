@@ -1,0 +1,7 @@
+/* ~/.config/waybar/style.css — the classes podctl bar sets */
+#custom-podctl.connected    { color: @foreground; }
+#custom-podctl.charging     { color: #a6e3a1; }
+#custom-podctl.low          { color: #f38ba8; }
+#custom-podctl.disconnected { opacity: 0.5; }
+#custom-podctl.unpaired,
+#custom-podctl.offline      { opacity: 0.4; }

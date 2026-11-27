@@ -9,7 +9,7 @@ _podctl() {
         cword=$COMP_CWORD
     fi
 
-    local cmds="status s battery b bat ping mode m conv c spatial ear ear-detection mic loud-reduction loud press tone-on-press tone rename one-bud-anc obanc auto-anc anc-strength chime chime-volume connect disconnect dc pair unpair forget list ls auto-connect auto volume v vol mute profile p codec default default-sink latency watch w meter ble tray popup reboot completion debug install uninstall help version"
+    local cmds="status s battery b bat ping mode m conv c spatial ear ear-detection mic loud-reduction loud press tone-on-press tone rename one-bud-anc obanc auto-anc anc-strength chime chime-volume connect disconnect dc pair unpair forget list ls auto-connect auto volume v vol mute profile p codec default default-sink latency watch w meter bar ble tray popup reboot completion debug install uninstall help version"
     local globals="--json --pretty --verbose -v --help -h --version"
 
     local i vi=0 verb=""
@@ -107,6 +107,12 @@ _podctl() {
             *) COMPREPLY=( $(compgen -W "--plain --json --once --interval --device" -- "$cur") );;
             esac
             ;;
+        bar)
+            case $argpos in
+            1) COMPREPLY=( $(compgen -W "--format --once --low --low-color --away --prefix" -- "$cur") );;
+            *) COMPREPLY=( $(compgen -W "--format --once --low --low-color --away --prefix" -- "$cur") );;
+            esac
+            ;;
         ble)
             case $argpos in
             1) COMPREPLY=( $(compgen -W "on off" -- "$cur") );;
@@ -142,7 +148,7 @@ _podctl() {
             ;;
         help)
             case $argpos in
-            1) COMPREPLY=( $(compgen -W "status battery ping mode conv spatial ear mic loud-reduction press tone-on-press rename one-bud-anc auto-anc chime connect disconnect pair unpair list auto-connect volume mute profile codec default latency watch meter ble tray popup reboot completion debug install uninstall help version" -- "$cur") );;
+            1) COMPREPLY=( $(compgen -W "status battery ping mode conv spatial ear mic loud-reduction press tone-on-press rename one-bud-anc auto-anc chime connect disconnect pair unpair list auto-connect volume mute profile codec default latency watch meter bar ble tray popup reboot completion debug install uninstall help version" -- "$cur") );;
             esac
             ;;
     esac

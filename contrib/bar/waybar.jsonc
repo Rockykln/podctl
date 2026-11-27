@@ -1,0 +1,22 @@
+// ~/.config/waybar/config.jsonc
+{
+  "modules-right": ["custom/podctl"],
+
+  "custom/podctl": {
+    "exec": "podctl bar",
+    "return-type": "json",
+    // podctl bar runs for as long as the bar does, so no "interval".
+    // This only restarts it if it ever exits.
+    "restart-interval": 5,
+    "escape": true,
+    "format": "{}",
+    "on-click": "podctl popup",
+    "on-click-middle": "podctl mode next",
+    "tooltip": true
+  }
+
+  // An icon per state: "format": "{icon} {}" plus a "format-icons"
+  // object keyed by the `alt` value (connected, disconnected, unpaired,
+  // offline). Check it against your waybar version — the key lookup by
+  // alt is not in waybar-custom(5).
+}

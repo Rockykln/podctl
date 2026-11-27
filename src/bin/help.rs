@@ -92,6 +92,7 @@ pub fn print_verb(verb: &str) -> i32 {
         "latency" => LATENCY,
         "watch" => WATCH,
         "meter" => METER,
+        "bar" => BAR,
         "ble" => BLE,
         "one-bud-anc" => ONE_BUD_ANC,
         "chime" => CHIME,
@@ -490,6 +491,34 @@ OPTIONS
 Requires `pw-record` (pipewire-audio); falls back to `parec` from
 pulseaudio-utils, which reads the sink monitor and stays silent for
 Bluetooth sinks on PipeWire.
+";
+
+const BAR: &str = "\
+podctl bar — a line per state change, for status bars
+
+Prints the current state once, then one line every time it changes, and
+keeps going when podctld restarts. Nothing is printed twice, so a bar
+only redraws when something actually moved.
+
+    podctl bar                          # waybar JSON (default)
+    podctl bar --format i3blocks        # i3bar block per line
+    podctl bar --format polybar         # one line of text
+    podctl bar --format plain --once    # just the text, then exit
+
+OPTIONS
+    --format <name>     waybar | i3blocks | polybar | plain
+    --once              print the current state and exit
+    --low <percent>     below this the line carries the 'low' class (20)
+    --low-color <hex>   colour for that state, where the format has one
+                        (i3blocks, polybar; waybar styles by class)
+    --away <text>       shown while the buds are away (default: nothing,
+                        which hides the module in waybar)
+    --prefix <text>     put before the percentage, e.g. an icon
+
+The waybar object carries text, alt, class, tooltip and percentage;
+'alt' is connected, disconnected, unpaired or offline. Ready-made
+modules for waybar, i3blocks, polybar, Quickshell, AGS and eww are in
+contrib/ in the source tree.
 ";
 
 const ONE_BUD_ANC: &str = "\

@@ -32,6 +32,7 @@ _podctl() {
         'latency:output latency offset'
         'watch:live event stream'
         'meter:live RMS / peak meter'
+        'bar:a line per change for status bars'
         'ble:listen for the case over LE'
         'tray:status-bar icon'
         'popup:show the case bubble now'
@@ -165,6 +166,12 @@ _podctl() {
                 *) compadd --plain --json --once --interval --device ;;
             esac
             ;;
+        bar)
+            case $argpos in
+                1) compadd --format --once --low --low-color --away --prefix ;;
+                *) compadd --format --once --low --low-color --away --prefix ;;
+            esac
+            ;;
         ble)
             case $argpos in
                 1) compadd on off ;;
@@ -200,7 +207,7 @@ _podctl() {
             ;;
         help)
             case $argpos in
-                1) compadd status battery ping mode conv spatial ear mic loud-reduction press tone-on-press rename one-bud-anc auto-anc chime connect disconnect pair unpair list auto-connect volume mute profile codec default latency watch meter ble tray popup reboot completion debug install uninstall help version ;;
+                1) compadd status battery ping mode conv spatial ear mic loud-reduction press tone-on-press rename one-bud-anc auto-anc chime connect disconnect pair unpair list auto-connect volume mute profile codec default latency watch meter bar ble tray popup reboot completion debug install uninstall help version ;;
             esac
             ;;
     esac

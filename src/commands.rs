@@ -195,6 +195,9 @@ pub const COMMANDS: &[Cmd] = &[
     cmd!("meter", &[], STREAMING, &[], "[options]",
         &["--plain", "--json", "--once", "--interval", "--device"],
         "live RMS / peak meter", Ready),
+    cmd!("bar", &[], STREAMING, &[], "[options]",
+        &["--format", "--once", "--low", "--low-color", "--away", "--prefix"],
+        "a line per change for status bars", Ready),
     cmd!("ble", &[], STREAMING, &[opt("on|off", ON_OFF)], &[],
         "listen for the case over LE", Ready),
 

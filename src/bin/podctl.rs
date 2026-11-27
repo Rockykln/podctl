@@ -8,6 +8,7 @@ use podctl::{
     model::{ConvAwareness, DeviceState, MicSelection, Mode, PressAction, Profile, SpatialAudio},
 };
 
+mod bar;
 mod completion;
 mod debug;
 mod fmt;
@@ -188,6 +189,9 @@ fn run(mut args: Vec<String>) -> Result<i32, CliError> {
         }
         Some("meter") => {
             return Ok(meter::run(&args[1..], out.json, out.pretty));
+        }
+        Some("bar") => {
+            return Ok(bar::run(&args[1..]));
         }
         Some("ble") => {
             return ble_switch(args.get(1).map(String::as_str), out);
