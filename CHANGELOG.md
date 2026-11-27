@@ -11,6 +11,10 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
   Plasma and GNOME panels, `upower` and anything reading it list the
   buds next to the mouse and the keyboard — the emptier bud, as a phone
   shows it. `battery_provider = false` in `daemon.toml` turns it off.
+- **`podctl bar` says where the buds are**: `in-ear`, `one-in-ear` or
+  `out-of-ear` as a class next to `charging` and `low`. Taking a bud out
+  changed nothing on screen before, because the line carried the battery
+  and nothing else.
 - **`podctl bar`** writes a line per state change for a status bar: the
   state as it stands, then one line whenever something moves, and it
   carries on when `podctld` restarts. Four formats — `waybar` (a JSON

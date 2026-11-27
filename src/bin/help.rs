@@ -516,7 +516,8 @@ OPTIONS
     --prefix <text>     put before the percentage, e.g. an icon
 
 The waybar object carries text, alt, class, tooltip and percentage;
-'alt' is connected, disconnected, unpaired or offline. Ready-made
+'alt' is connected, disconnected, unpaired or offline, and 'class' adds
+charging, low and one of in-ear, one-in-ear, out-of-ear. Ready-made
 modules for waybar, i3blocks, polybar, Quickshell, AGS and eww are in
 contrib/ in the source tree.
 ";

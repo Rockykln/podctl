@@ -290,7 +290,8 @@ Four formats: `waybar` (the JSON object above, the default), `i3blocks`
 `polybar` (one line of text for `tail = true`) and `plain`. Nothing is
 printed twice, so the bar only redraws when something moved. `alt` is
 `connected`, `disconnected`, `unpaired` or `offline`, and `class` adds
-`charging` and `low` — enough to style it without parsing the text.
+`charging`, `low` and where the buds are — `in-ear`, `one-in-ear` or
+`out-of-ear` — enough to style it without parsing the text.
 
 Ready-made modules for waybar, i3blocks, polybar, Quickshell, AGS and
 eww are in [`contrib/bar/`](contrib/bar).

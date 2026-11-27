@@ -305,6 +305,14 @@ fn view(state: Option<&DeviceState>, opts: &Opts) -> View {
     if low {
         classes.push("low");
     }
+    // A bar that only ever hears about the battery cannot tell "in my
+    // ears" from "on the desk" — and taking a bud out changed nothing
+    // on screen before this.
+    classes.push(match s.in_ear.count_in_ear() {
+        0 => "out-of-ear",
+        1 => "one-in-ear",
+        _ => "in-ear",
+    });
     let text = match lowest {
         Some(p) => format!("{}{p}%", opts.prefix),
         // Connected, but the buds have not reported yet.
@@ -425,9 +433,30 @@ mod tests {
         assert_eq!(v.text, "78%");
         assert_eq!(v.percentage, Some(78));
         assert_eq!(v.alt, "connected");
-        assert_eq!(v.classes, vec!["connected"]);
+        assert_eq!(v.classes, vec!["connected", "out-of-ear"]);
         assert_eq!(v.tooltip[0], "Test AirPods — Transparency");
         assert_eq!(v.tooltip[1], "L 84% · R 78%");
+    }
+
+    #[test]
+    fn the_bar_says_whether_the_buds_are_in() {
+        use podctl::EarStatus;
+        let mut s = connected(Some(84), Some(78));
+        s.in_ear.primary = EarStatus::InEar;
+        s.in_ear.secondary = EarStatus::InEar;
+        assert!(view(Some(&s), &Opts::default()).classes.contains(&"in-ear"));
+        s.in_ear.secondary = EarStatus::OutOfEar;
+        assert!(
+            view(Some(&s), &Opts::default())
+                .classes
+                .contains(&"one-in-ear")
+        );
+        s.in_ear.primary = EarStatus::OutOfEar;
+        assert!(
+            view(Some(&s), &Opts::default())
+                .classes
+                .contains(&"out-of-ear")
+        );
     }
 
     #[test]
