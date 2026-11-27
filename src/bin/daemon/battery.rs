@@ -28,6 +28,10 @@ const RETRY_MAX: Duration = Duration::from_secs(300);
 /// How many ticks BlueZ gets to publish the battery before we say that
 /// it did not.
 const PUBLISH_TICKS: u32 = 5;
+/// How long a confirmed battery is taken for granted before looking
+/// again. Long enough to cost nothing, short enough that an adapter
+/// coming back is noticed.
+const RECHECK: Duration = Duration::from_secs(300);
 
 struct Battery {
     device: OwnedObjectPath,
@@ -107,13 +111,14 @@ pub async fn run(daemon: Arc<Daemon>) {
         // BlueZ keeps the first battery it is told about for a device
         // and drops a second one with nothing but a line in its own
         // log, so look at whose reading it actually kept.
+        let now = Instant::now();
         if let Some(device) = published.clone()
-            && !slot.settled()
+            && !slot.settled(now)
         {
             match holder(&conn, &device).await {
-                Holder::Ours => slot.ours(),
+                Holder::Ours => slot.ours(now),
                 Holder::Other(source) => {
-                    slot.taken(source.as_deref(), Instant::now());
+                    slot.taken(&source, now);
                     // Give the place back and ask again later: BlueZ
                     // does not come looking for us when the other one
                     // goes away.
@@ -122,7 +127,9 @@ pub async fn run(daemon: Arc<Daemon>) {
                     published = None;
                     continue;
                 }
-                Holder::Nobody => slot.waiting(),
+                // Nothing there yet, or nothing that will say whose it
+                // is: wait rather than tear our own entry down.
+                Holder::Nobody | Holder::Unclear => slot.waiting(),
             }
         }
 
@@ -132,26 +139,37 @@ pub async fn run(daemon: Arc<Daemon>) {
         }
         match &want {
             Some((mac, percent)) => {
-                let Some(device) = device_path(&conn, mac).await else {
-                    // The address is ours but BlueZ has no object for
-                    // it: drop what we published rather than leave a
-                    // level standing that belongs to nothing.
-                    if shown.is_some() {
-                        debug!(%mac, "BlueZ dropped the device — taking the battery back");
-                        remove(&conn).await;
-                        shown = None;
-                        published = None;
-                        slot = Slot::default();
-                    }
+                // Ask BlueZ for its object tree only when we would act
+                // on the answer: during a five-minute backoff this ran
+                // every two seconds for nothing.
+                if !state.may_try(now) || !slot.may_try(now) {
                     continue;
+                }
+                let device = match device_path(&conn, mac).await {
+                    // BlueZ itself could not be asked. Saying "the
+                    // device is gone" over one failed call cost the
+                    // entry and made the panel flicker.
+                    None => continue,
+                    Some(None) => {
+                        // The address is ours but BlueZ has no object
+                        // for it: drop what we published rather than
+                        // leave a level standing that belongs to
+                        // nothing.
+                        if shown.is_some() {
+                            debug!(%mac, "BlueZ dropped the device — taking the battery back");
+                            remove(&conn).await;
+                            shown = None;
+                            published = None;
+                            slot = Slot::default();
+                        }
+                        continue;
+                    }
+                    Some(Some(path)) => path,
                 };
                 if shown.is_some() && published.as_ref() != Some(&device) {
                     remove(&conn).await;
+                    published = None;
                     slot = Slot::default();
-                }
-                let now = Instant::now();
-                if !state.may_try(now) || !slot.may_try(now) {
-                    continue;
                 }
                 if let Err(e) = publish(&conn, device.clone(), *percent).await {
                     warn!(error = %e, "cannot publish the battery");
@@ -225,7 +243,8 @@ impl Registration {
 /// What became of the battery we handed to BlueZ.
 #[derive(Default)]
 struct Slot {
-    confirmed: bool,
+    /// When the last look found our own reading in place.
+    confirmed_at: Option<Instant>,
     /// Said once per holder, so a headset that another program reports
     /// does not fill the log.
     told: bool,
@@ -235,25 +254,29 @@ struct Slot {
 }
 
 impl Slot {
-    /// Nothing left to look at: either it is ours or we gave up asking.
-    fn settled(&self) -> bool {
-        self.confirmed
+    /// True while the last look said the battery is ours. It expires on
+    /// purpose: an adapter that goes and comes back takes its providers
+    /// with it without anyone changing the name on the bus, and without
+    /// this the battery would stay gone until the daemon restarts.
+    fn settled(&self, now: Instant) -> bool {
+        self.confirmed_at
+            .is_some_and(|t| now.duration_since(t) < RECHECK)
     }
 
-    fn ours(&mut self) {
-        self.confirmed = true;
+    fn ours(&mut self, now: Instant) {
+        let first = self.confirmed_at.is_none();
+        self.confirmed_at = Some(now);
         self.waited = 0;
-        info!("the desktop shows the battery");
+        self.wait = Duration::ZERO;
+        self.retry_at = None;
+        if first {
+            info!("the desktop shows the battery");
+        }
     }
 
-    fn taken(&mut self, source: Option<&str>, now: Instant) {
+    fn taken(&mut self, source: &str, now: Instant) {
         if !self.told {
-            match source {
-                Some(s) => {
-                    warn!(source = %s, "another program already reports this battery to BlueZ")
-                }
-                None => warn!("something else already reports this battery to BlueZ"),
-            }
+            warn!(source = %source, "another program already reports this battery to BlueZ");
             self.told = true;
         }
         self.waited = 0;
@@ -281,23 +304,28 @@ impl Slot {
 /// Who holds the battery BlueZ shows for a device.
 enum Holder {
     Ours,
-    Other(Option<String>),
+    /// Someone else's, said so by a `Source` we could read.
+    Other(String),
     Nobody,
+    /// A battery is there but will not say where it is from. BlueZ does
+    /// not always publish `Source`, and a read can fail on its own, so
+    /// this must not count as someone else's: podctl would tear down
+    /// its own working entry over it.
+    Unclear,
 }
 
 async fn holder(conn: &Connection, device: &OwnedObjectPath) -> Holder {
     let Ok(proxy) = Proxy::new(conn, BLUEZ, device.as_ref(), "org.bluez.Battery1").await else {
         return Holder::Nobody;
     };
-    // Percentage says whether the interface is there at all; Source is
-    // optional, so a battery without one is not ours either.
+    // Percentage says whether the interface is there at all.
     if proxy.get_property::<u8>("Percentage").await.is_err() {
         return Holder::Nobody;
     }
     match proxy.get_property::<String>("Source").await {
         Ok(s) if s == SOURCE => Holder::Ours,
-        Ok(s) => Holder::Other(Some(s)),
-        Err(_) => Holder::Other(None),
+        Ok(s) => Holder::Other(s),
+        Err(_) => Holder::Unclear,
     }
 }
 
@@ -334,8 +362,15 @@ async fn publish(conn: &Connection, device: OwnedObjectPath, percentage: u8) -> 
         let emitter = iface.signal_emitter().clone();
         let mut battery = iface.get_mut().await;
         if battery.percentage != percentage {
+            let was = battery.percentage;
             battery.percentage = percentage;
-            battery.percentage_changed(&emitter).await?;
+            if let Err(e) = battery.percentage_changed(&emitter).await {
+                // Keeping the new value would make the next round think
+                // it had nothing to send, and the panel would sit on the
+                // old reading while podctl counted it as published.
+                battery.percentage = was;
+                return Err(e);
+            }
         }
         return Ok(());
     }
@@ -349,22 +384,41 @@ async fn remove(conn: &Connection) {
     let _ = conn.object_server().remove::<Battery, _>(OBJECT).await;
 }
 
+/// Registers with **every** adapter. BlueZ keeps battery providers per
+/// adapter and quietly ignores an object whose device hangs off another
+/// one, while `RegisterBatteryProvider` succeeds anywhere — so stopping
+/// at the first success left the battery invisible on any machine with
+/// a second adapter, with nothing in the log to say why.
 async fn register(conn: &Connection) -> zbus::Result<()> {
     let adapters = adapters(conn).await;
     let mut last = None;
+    let mut done = 0usize;
     for adapter in adapters {
-        let proxy = Proxy::new(
+        let root = ObjectPath::try_from(ROOT)?;
+        // One adapter saying no must not hide the others.
+        match Proxy::new(
             conn,
             BLUEZ,
             adapter.as_ref(),
             "org.bluez.BatteryProviderManager1",
         )
-        .await?;
-        let root = ObjectPath::try_from(ROOT)?;
-        match proxy.call_method("RegisterBatteryProvider", &(root,)).await {
-            Ok(_) => return Ok(()),
-            Err(e) => last = Some(e),
+        .await
+        {
+            Ok(proxy) => match proxy.call_method("RegisterBatteryProvider", &(root,)).await {
+                Ok(_) => done += 1,
+                Err(e) => {
+                    debug!(adapter = %adapter.as_str(), error = %e, "adapter took no battery provider");
+                    last = Some(e);
+                }
+            },
+            Err(e) => {
+                debug!(adapter = %adapter.as_str(), error = %e, "no provider manager on this adapter");
+                last = Some(e);
+            }
         }
+    }
+    if done > 0 {
+        return Ok(());
     }
     Err(last.unwrap_or_else(|| zbus::Error::Failure("no Bluetooth adapter".into())))
 }
@@ -372,6 +426,7 @@ async fn register(conn: &Connection) -> zbus::Result<()> {
 async fn adapters(conn: &Connection) -> Vec<OwnedObjectPath> {
     managed(conn)
         .await
+        .unwrap_or_default()
         .into_iter()
         .filter(|(_, ifaces)| ifaces.contains_key("org.bluez.Adapter1"))
         .map(|(path, _)| path)
@@ -381,9 +436,9 @@ async fn adapters(conn: &Connection) -> Vec<OwnedObjectPath> {
 /// The device object BlueZ keeps for this address. Built from the
 /// object tree rather than from the MAC, so a second adapter does not
 /// send the battery to the wrong path.
-async fn device_path(conn: &Connection, mac: &str) -> Option<OwnedObjectPath> {
+async fn device_path(conn: &Connection, mac: &str) -> Option<Option<OwnedObjectPath>> {
     let want = mac.to_ascii_uppercase();
-    for (path, ifaces) in managed(conn).await {
+    for (path, ifaces) in managed(conn).await? {
         let Some(props) = ifaces.get("org.bluez.Device1") else {
             continue;
         };
@@ -392,10 +447,10 @@ async fn device_path(conn: &Connection, mac: &str) -> Option<OwnedObjectPath> {
             .and_then(|v| v.try_clone().ok())
             .and_then(|v| v.try_into().ok());
         if address.is_some_and(|a| a.to_ascii_uppercase() == want) {
-            return Some(path);
+            return Some(Some(path));
         }
     }
-    None
+    Some(None)
 }
 
 type Managed = Vec<(
@@ -403,28 +458,30 @@ type Managed = Vec<(
     HashMap<String, HashMap<String, OwnedVariant>>,
 )>;
 
-async fn managed(conn: &Connection) -> Managed {
+/// `None` when BlueZ could not be asked at all — a caller must not read
+/// that as "nothing is there".
+async fn managed(conn: &Connection) -> Option<Managed> {
     let Ok(proxy) = Proxy::new(conn, BLUEZ, "/", "org.freedesktop.DBus.ObjectManager").await else {
-        return Vec::new();
+        return None;
     };
     match proxy.call_method("GetManagedObjects", &()).await {
         Ok(reply) => reply
             .body()
             .deserialize::<HashMap<OwnedObjectPath, HashMap<String, HashMap<String, OwnedVariant>>>>()
             .map(|m| m.into_iter().collect())
-            .unwrap_or_default(),
+            .ok(),
         Err(e) => {
             debug!(error = %e, "BlueZ listed no objects");
-            Vec::new()
+            None
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{PUBLISH_TICKS, RETRY_FIRST, Slot, reportable};
+    use super::{PUBLISH_TICKS, RECHECK, RETRY_FIRST, Slot, reportable};
     use podctl::DeviceState;
-    use std::time::Instant;
+    use std::time::{Duration, Instant};
 
     fn state(connected: bool, left: Option<u8>, right: Option<u8>) -> DeviceState {
         let mut s = DeviceState {
@@ -474,30 +531,46 @@ mod tests {
         let start = Instant::now();
         let mut slot = Slot::default();
         assert!(slot.may_try(start));
-        slot.taken(Some("HFP 1.7"), start);
+        slot.taken("HFP 1.7", start);
         assert!(!slot.may_try(start), "we just gave the place back");
-        assert!(!slot.settled());
+        assert!(!slot.settled(start));
         assert!(
             slot.may_try(start + RETRY_FIRST),
             "after the wait we try to take it again"
         );
         // The second refusal waits longer than the first.
-        slot.taken(Some("HFP 1.7"), start);
+        slot.taken("HFP 1.7", start);
         assert!(!slot.may_try(start + RETRY_FIRST));
     }
 
     #[test]
-    fn ours_stops_the_looking_and_a_silent_bluez_is_reported() {
+    fn a_confirmed_battery_is_looked_at_again_after_a_while() {
+        let start = Instant::now();
         let mut slot = Slot::default();
-        slot.ours();
-        assert!(slot.settled());
-        assert!(slot.may_try(Instant::now()));
+        slot.ours(start);
+        assert!(slot.settled(start), "just confirmed, nothing to do");
+        assert!(slot.may_try(start));
+        // An adapter that goes and comes back takes the provider with
+        // it and changes nobody's name on the bus, so the check has to
+        // come round again.
+        assert!(
+            !slot.settled(start + RECHECK + Duration::from_secs(1)),
+            "a confirmation does not hold forever"
+        );
+        // Confirming clears a backoff from an earlier refusal.
+        let mut after_refusal = Slot::default();
+        after_refusal.taken("HFP 1.7", start);
+        after_refusal.ours(start);
+        assert!(after_refusal.may_try(start));
+    }
 
+    #[test]
+    fn a_silent_bluez_is_reported_once() {
         let mut quiet = Slot::default();
         for _ in 0..PUBLISH_TICKS {
             quiet.waiting();
         }
         assert!(quiet.told, "a BlueZ that publishes nothing is said once");
-        assert!(!quiet.settled());
+        assert!(!quiet.settled(Instant::now()));
     }
 }
