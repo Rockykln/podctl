@@ -53,6 +53,27 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 - **`podctld` took any argument and started anyway**, so a mistyped
   `podctld --help` quietly ran a second daemon. It knows `--help` and
   `--version` now and refuses anything else with exit status 64.
+- **`podctl pair` named the wrong AirPods, and five other things.**
+  All of it came out of pairing a set that podctl had never seen:
+  - It said "already paired — use 'podctl connect'" about whichever
+    paired set BlueZ happened to remember first, even one far out of
+    range. Only a set the scan actually heard is named now; otherwise
+    it says that nothing is in pairing mode.
+  - Connected AirPods also advertise over Bluetooth LE under an address
+    that rotates, and those showed up as fresh candidates: a pair
+    recognised by name, offered for pairing, that could never be
+    paired. Random addresses are left out.
+  - A failed pairing could report raw packet bytes as its reason
+    (`failed: 03 01 00 01 0a 01 28 00 4a 13`), because the last line
+    bluetoothctl printed was a hex dump.
+  - Pairing had no time limit of its own and could outlast the CLI's
+    wait, which then said the daemon "may still be working on it".
+  - Worse, a pairing left hanging made BlueZ answer `InProgress` to
+    every later attempt — from any program, not just this one. It is
+    called off now when the limit runs out, and a test keeps the limit
+    under the wait a client allows.
+  - The hint still promised a button to hold. The AirPods Pro 3 have
+    none; it now says what to do for either kind.
 - **A test took it for granted that no AirPods were connected.** The
   one covering `podctl bar` asserted the away text as the first line,
   which a connected pair turns into the state — it now asks for a line

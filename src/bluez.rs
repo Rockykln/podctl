@@ -18,6 +18,14 @@ pub struct DeviceSummary {
     pub bonded: Option<bool>,
     pub modalias: Option<String>,
     pub icon: Option<String>,
+    /// Signal strength, and with it the answer to "was this device
+    /// actually heard just now?". BlueZ sets it while a scan runs and
+    /// drops it again afterwards, so it has to be read in the same
+    /// breath as the rest, not later.
+    pub rssi_dbm: Option<i16>,
+    /// True for an LE advertisement whose address rotates, which is not
+    /// a device one can pair with.
+    pub random_address: bool,
 }
 
 impl DeviceSummary {
@@ -96,12 +104,21 @@ pub fn info(addr: &str) -> anyhow::Result<DeviceSummary> {
         bonded: field(&out, "Bonded:").map(|v| v == "yes"),
         modalias: field(&out, "Modalias:"),
         icon: field(&out, "Icon:"),
+        rssi_dbm: field(&out, "RSSI:").and_then(|v| v.parse::<i16>().ok()),
+        random_address: random_address(&out),
     })
 }
 
-pub fn rssi(addr: &str) -> Option<i16> {
-    let out = bluetoothctl(&["info", addr]).ok()?;
-    field(&out, "RSSI:").and_then(|v| v.parse::<i16>().ok())
+/// BlueZ opens its report with the address type: "Device AA:… (public)".
+/// Connected AirPods also advertise over LE under an address that
+/// rotates, and `pair` offered those as fresh candidates — a pair
+/// already paired, under a name the user recognised, that it then could
+/// not pair with.
+fn random_address(out: &str) -> bool {
+    out.lines()
+        .next()
+        .map(strip_ansi)
+        .is_some_and(|l| l.trim_end().ends_with("(random)"))
 }
 
 /// The addresses in a `bluetoothctl devices` listing. BlueZ 5.86 and
@@ -239,19 +256,23 @@ pub fn pair_choice(address: Option<String>, yes: bool) -> anyhow::Result<()> {
         return pair(&addr);
     }
     let found = discover(12)?;
-    let (known, mut fresh): (Vec<DeviceSummary>, Vec<DeviceSummary>) =
-        found.into_iter().partition(|d| d.paired);
+    let (known, mut fresh): (Vec<DeviceSummary>, Vec<DeviceSummary>) = found
+        .into_iter()
+        .filter(|d| !d.random_address)
+        .partition(|d| d.paired);
     fresh.sort_by(|a, b| a.name.cmp(&b.name));
     match fresh.as_slice() {
-        [] => match known.first() {
+        // `bluetoothctl devices` lists everything BlueZ remembers, so a
+        // paired set is in there whether or not it is anywhere near.
+        // Saying "already paired" about a pair in another room hides the
+        // only thing that happened: the scan found nothing new.
+        [] => match heard_among(&known) {
             Some(d) => anyhow::bail!(
                 "{} ({}) are already paired — use 'podctl connect'",
                 d.name,
                 d.address
             ),
-            None => anyhow::bail!(
-                "no new AirPods spotted — open the case and hold the button until the LED blinks white."
-            ),
+            None => anyhow::bail!("{NOTHING_IN_PAIRING_MODE}"),
         },
         [one] if yes => pair(&one.address),
         several => {
@@ -270,9 +291,23 @@ pub fn pair_choice(address: Option<String>, yes: bool) -> anyhow::Result<()> {
     }
 }
 
+/// Which paired set to name when the scan turned up nothing new: only
+/// one the scan actually heard. Everything BlueZ remembers is in the
+/// listing, so without this the message was about whichever pair came
+/// first — one left at the office included.
+fn heard_among(known: &[DeviceSummary]) -> Option<&DeviceSummary> {
+    known.iter().find(|d| d.rssi_dbm.is_some())
+}
+
 /// Starts the message when `pair` found candidates and needs to be told
 /// which: a question back, not a failure.
 const CHOOSE: &str = "in pairing mode right now:";
+
+/// Not every pair has a button any more — the AirPods Pro 3 do not — so
+/// the text says what to do without promising one.
+const NOTHING_IN_PAIRING_MODE: &str = "no AirPods in pairing mode nearby — open the case next to this \
+machine. Older models need the button on the back held until the LED blinks white; newer ones are put \
+into pairing mode from the phone they belong to.";
 
 pub fn discover(secs: u32) -> anyhow::Result<Vec<DeviceSummary>> {
     let res = bluetoothctl(&["--timeout", &secs.to_string(), "scan", "on"]);
@@ -293,6 +328,11 @@ pub fn discover(secs: u32) -> anyhow::Result<Vec<DeviceSummary>> {
     Ok(found)
 }
 
+/// How long BlueZ gets to finish a pairing. It has to stay under the
+/// wait a client allows for `pair` (`client::timeout_for`), scan time
+/// included, or the CLI gives up on an answer the daemon is still owed.
+pub const PAIR_LIMIT: Duration = Duration::from_secs(25);
+
 pub fn pair(addr: &str) -> anyhow::Result<()> {
     // Debian ships the adapter not pairable. BlueZ then pairs anyway but
     // keeps no key, and the pairing is gone after the next disconnect.
@@ -300,9 +340,19 @@ pub fn pair(addr: &str) -> anyhow::Result<()> {
     if was_pairable == Some(false) {
         bluetoothctl(&["pairable", "on"])?;
     }
-    let paired = bluetoothctl(&["pair", addr]);
+    let paired = bluetoothctl_within(&["pair", addr], PAIR_LIMIT);
     if was_pairable == Some(false) {
         let _ = bluetoothctl(&["pairable", "off"]);
+    }
+    if paired.as_ref().is_ok_and(|done| done.is_none()) {
+        // A pairing left hanging in BlueZ makes it answer InProgress to
+        // every later attempt, this program's and every other one's, so
+        // take it back before saying so.
+        let _ = bluetoothctl(&["cancel-pairing", addr]);
+        anyhow::bail!(
+            "pairing did not finish within {}s and was called off — make sure the AirPods are in pairing mode, then try again",
+            PAIR_LIMIT.as_secs()
+        );
     }
     paired?;
     let _ = bluetoothctl(&["trust", addr]);
@@ -331,7 +381,7 @@ pub fn to_paired_device(s: &DeviceSummary) -> PairedDevice {
 
 pub fn bt_state(s: &DeviceSummary) -> BtState {
     BtState {
-        rssi_dbm: rssi(&s.address),
+        rssi_dbm: s.rssi_dbm,
         paired: s.paired,
         trusted: s.trusted,
         auto_connect: s.trusted,
@@ -415,8 +465,18 @@ fn failure_reason(stderr: &str, stdout: &str) -> String {
     let lines = || stdout.lines().map(strip_ansi).map(|l| l.trim().to_string());
     lines()
         .rfind(|l| l.contains("Failed") || l.contains("org.bluez.Error"))
-        .or_else(|| lines().rfind(|l| !l.is_empty()))
+        .or_else(|| lines().rfind(|l| !l.is_empty() && !is_hex_dump(l)))
         .unwrap_or_else(|| "no reason given".into())
+}
+
+/// bluetoothctl prints raw packet dumps among its messages. Without this
+/// a failed pair once told the user
+/// "failed: 03 01 00 01 0a 01 28 00 4a 13".
+fn is_hex_dump(line: &str) -> bool {
+    line.split_whitespace()
+        .take_while(|w| w.len() == 2 && w.chars().all(|c| c.is_ascii_hexdigit()))
+        .count()
+        >= 4
 }
 
 fn strip_ansi(line: &str) -> String {
@@ -478,6 +538,81 @@ pub fn primary_airpods() -> Option<DeviceSummary> {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn a_rotating_le_address_is_no_candidate() {
+        // What BlueZ prints for the LE advertisement of a pair that is
+        // already paired over the classic link.
+        let out = "Device C0:BB:CC:DD:EE:03 (random)\n\tName: Test AirPods\n\tPaired: no\n";
+        assert!(super::random_address(out));
+        assert!(!super::random_address(
+            "Device AA:BB:CC:DD:EE:01 (public)\n\tName: Test AirPods\n"
+        ));
+        assert!(!super::random_address(""));
+    }
+
+    #[test]
+    fn only_a_pair_the_scan_heard_is_named() {
+        let mut far = device("Test AirPods", None);
+        far.rssi_dbm = None;
+        let mut near = device("Other AirPods", None);
+        near.address = "AA:BB:CC:DD:EE:02".into();
+        near.rssi_dbm = Some(-52);
+        // The one in the drawer at work must not be the answer to
+        // "nothing new in pairing mode".
+        assert!(super::heard_among(std::slice::from_ref(&far)).is_none());
+        assert_eq!(
+            super::heard_among(&[far, near]).map(|d| d.name.as_str()),
+            Some("Other AirPods")
+        );
+    }
+
+    #[test]
+    fn a_packet_dump_is_not_a_failure_reason() {
+        // This exact line once reached a user as the reason a pairing
+        // failed, raw bytes and all.
+        let dump = "03 01 00 01 0a 01 28 00 4a 13                    ......(.J.";
+        assert!(super::is_hex_dump(dump));
+        assert!(!super::is_hex_dump(
+            "Failed to pair: org.bluez.Error.AuthenticationRejected"
+        ));
+        assert_eq!(
+            super::failure_reason("", &format!("Attempting to pair\n{dump}\n")),
+            "Attempting to pair"
+        );
+    }
+
+    #[test]
+    fn a_real_reason_beats_the_last_line() {
+        let out = "Attempting to pair\nFailed to pair: org.bluez.Error.AuthenticationRejected\n03 01 00 01 0a\n";
+        assert_eq!(
+            super::failure_reason("", out),
+            "Failed to pair: org.bluez.Error.AuthenticationRejected"
+        );
+        // stderr still wins when there is any.
+        assert_eq!(
+            super::failure_reason("no such device", out),
+            "no such device"
+        );
+    }
+
+    #[test]
+    fn a_pairing_answers_before_the_client_gives_up() {
+        // The CLI waits `timeout_for` for an answer; BlueZ gets less
+        // than that, scan time included, so the daemon is never left
+        // working on a request nobody is listening for any more.
+        let waits = crate::client::timeout_for(&crate::Request::Pair {
+            address: None,
+            yes: false,
+        });
+        let scan = std::time::Duration::from_secs(12);
+        assert!(
+            super::PAIR_LIMIT + scan < waits,
+            "pair limit {:?} plus the scan must stay under the client's {:?}",
+            super::PAIR_LIMIT,
+            waits
+        );
+    }
+
+    #[test]
     fn a_tool_that_hangs_is_cut_off() {
         use std::process::Command;
         use std::time::{Duration, Instant};
@@ -512,6 +647,8 @@ mod tests {
             bonded: Some(true),
             modalias: modalias.map(Into::into),
             icon: None,
+            rssi_dbm: None,
+            random_address: false,
         }
     }
 
