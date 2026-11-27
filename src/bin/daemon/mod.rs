@@ -37,8 +37,10 @@ const BATTERY_WAIT: Duration = Duration::from_millis(900);
 /// honest answer is better than more waiting.
 const FIRST_POLL_WAIT: Duration = Duration::from_millis(1500);
 /// How long the buds get to echo a listening mode back before the
-/// command says they did not take it.
-const MODE_ECHO_WAIT: Duration = Duration::from_secs(2);
+/// command says they did not take it. Measured on AirPods Pro 3 in the
+/// ear: the echo lands after about 1.1 s, so this leaves room for a
+/// weaker link without ever calling a mode that did arrive a failure.
+const MODE_ECHO_WAIT: Duration = Duration::from_secs(3);
 const MODE_ECHO_POLL: Duration = Duration::from_millis(100);
 
 const NO_POPUP: &str =
