@@ -221,11 +221,11 @@ neither will keep popping bubbles behind its lock screen.
 
 ## The daemon's settings file
 
-`~/.config/podctl/daemon.toml` is optional; the only setting so far is
-the Bluetooth LE listener:
+`~/.config/podctl/daemon.toml` is optional:
 
 ```
-ble = true      # false stops the daemon listening for the case
+ble = true                  # false stops the daemon listening for the case
+battery_provider = true     # false keeps the battery out of the desktop's list
 ```
 
 While the buds are disconnected the daemon listens for the case's own
@@ -235,6 +235,15 @@ announcements that resolve against the key the buds handed out over the
 connected link; that key stays in `~/.local/state/podctl/keys-<address>`
 (mode `0600`) and is never sent anywhere. `podctl ble off` turns the listening off
 and writes that setting; a running daemon notices within a few seconds.
+
+With `battery_provider` the daemon hands the battery to BlueZ while the
+buds are connected, so the AirPods turn up in the desktop's own battery
+list — the Plasma and GNOME panels, `upower -d`, waybar's `upower`
+module — next to the mouse and the keyboard. The level is the emptier
+bud, as on a phone. It needs BlueZ 5.70 or newer and nothing else; the
+entry disappears when the buds disconnect. Turn it off if something
+else already reports that battery, PipeWire's handsfree support for
+instance.
 
 ## Compositors without systemd session integration
 

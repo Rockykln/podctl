@@ -125,24 +125,37 @@ later by re-running `podctl install` (idempotent).
 
 ## Capabilities per model
 
-| Feature | 1/2/3 | 4 | 4 ANC | Pro | Pro 2 | Pro 3 | Max |
-| --- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| Battery L / R / C | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | L / R |
-| ANC / Transparency | — | — | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Adaptive | — | — | ✓ | — | ✓ | ✓ | — |
-| Conversation Awareness | — | — | ✓ | — | ✓ | ✓ | — |
-| In-Ear Detection | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — |
-| Loud-Sound Reduction | — | — | ✓ | — | ✓ | ✓ | ✓ |
-| Spatial Audio | 3 / 4 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Press-and-Hold | — | — | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Microphone Selection | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — |
-| Rename | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Feature | 1/2 | 3 | 4 | 4 ANC | 5 | Pro | Pro 2/3 | Max | Max 2 |
+| --- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| Battery L / R / C | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | one | one |
+| ANC / Transparency | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Adaptive | — | — | — | ✓ | ✓ | — | ✓ | — | — |
+| Conversation Awareness | — | — | — | ✓ | ✓ | — | ✓ | — | ✓ |
+| In-Ear Detection | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — |
+| Loud-Sound Reduction | — | — | — | ✓ | — | — | ✓ | — | ✓ |
+| Spatial Audio | 3 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Press-and-Hold | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Volume on the stem | — | — | — | — | W | — | ✓ | — | — |
+| Microphone Selection | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — |
+| Rename | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 
-Source of truth for this matrix is `src/caps.rs::Model::capabilities`.
-AirPods Max (2nd gen, `0x202D`) shares the original Max capability row.
-AirPods 4 (non-ANC) is not in the table yet: its product code `0x2019`
-is known, the capability row is not, so the bud shows up via the BlueZ
-headphones icon and resolves to `Unknown` until a capture lands.
+Source of truth for this matrix is the `MODELS` table in `src/caps.rs`:
+product codes, Apple's A-numbers, the drawing in the bubble and the row
+above, all in one place.
+
+A pair with a product code that is not in the table is no longer
+refused everything: the daemon turns on what the buds report in their
+own settings dump, so noise control, conversation awareness, ear
+detection and the microphone choice work on a model podctl has never
+seen. `podctl debug` says when a row was learned that way.
+
+Only the AirPods Pro 2 USB-C row is verified against hardware; the rest
+is read off Apple's specifications and other projects, and `podctl
+debug` says so for the model it finds. The AirPods 5 and the AirPods 5
+with Wireless Charging Case share their product codes (`0x2030`,
+`0x2036`) — the A-number the buds report tells them apart, and only the
+wireless case has volume swipes on the stem (**W** above). Loud-sound
+reduction is left off for them: Apple does not list it.
 
 `podctl` refuses commands the connected device can't do with a clear
 `not supported on <model>` error rather than silently failing.
@@ -212,6 +225,7 @@ podctl --json <cmd>           machine-readable response (every command)
 | --- | --- |
 | `podctl watch` (`w`) | live event stream — Ctrl-C to stop |
 | `podctl meter [--plain\|--json] [--interval N]` | live RMS / peak dBFS of audio going to the buds (software meter, not SPL) |
+| `podctl bar [--format waybar\|i3blocks\|polybar\|plain]` | a line per change for status bars (see below) |
 | `podctl ble [on\|off]` | listen for the case over Bluetooth LE (see below) |
 | `podctl completion <bash\|zsh\|fish>` | emit completion script |
 | `podctl debug [--no-redact]` | diagnostic report (DSGVO-redacted by default) |
@@ -241,6 +255,45 @@ bindsym $mod+minus exec podctl volume -5
 
 On KDE Plasma: System Settings → Keyboard → Shortcuts → Add New → Command or
 Script, with `podctl mode next` as the command.
+
+## In the desktop's own battery list
+
+While the buds are connected the daemon hands their level to BlueZ, so
+the AirPods appear wherever the desktop keeps its batteries — the Plasma
+and GNOME panels, `upower -d`, waybar's `upower` module — without podctl
+being involved at all. The level is the emptier bud, the way a phone
+shows it, and the entry goes away when the buds do. Needs BlueZ 5.71 or
+newer.
+
+BlueZ shows one battery per device and keeps the first one it is told
+about, so if another program already reports the same headset — PipeWire
+does for the level sent over the call profile — podctl leaves it the
+place and notes that once in the journal.
+
+```
+battery_provider = false    # in ~/.config/podctl/daemon.toml, to turn it off
+```
+
+## In a status bar
+
+`podctl bar` prints the current state once, then one line every time
+something changes, and it keeps running when `podctld` restarts — a bar
+started at login needs no further care.
+
+```
+$ podctl bar
+{"alt":"connected","class":["connected"],"percentage":78,"text":"78%","tooltip":"AirPods Pro — Transparency\rL 84% · R 78%"}
+```
+
+Four formats: `waybar` (the JSON object above, the default), `i3blocks`
+(an i3bar block per line, for `interval=persist` with `format=json`),
+`polybar` (one line of text for `tail = true`) and `plain`. Nothing is
+printed twice, so the bar only redraws when something moved. `alt` is
+`connected`, `disconnected`, `unpaired` or `offline`, and `class` adds
+`charging` and `low` — enough to style it without parsing the text.
+
+Ready-made modules for waybar, i3blocks, polybar, Quickshell, AGS and
+eww are in [`contrib/bar/`](contrib/bar).
 
 ## Debug reports — DSGVO-friendly
 

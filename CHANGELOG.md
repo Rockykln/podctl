@@ -3,6 +3,50 @@
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **The AirPods show up in the desktop's own battery list.** The daemon
+  registers their level with BlueZ while they are connected, so the
+  Plasma and GNOME panels, `upower` and anything reading it list the
+  buds next to the mouse and the keyboard — the emptier bud, as a phone
+  shows it. `battery_provider = false` in `daemon.toml` turns it off.
+- **`podctl bar`** writes a line per state change for a status bar: the
+  state as it stands, then one line whenever something moves, and it
+  carries on when `podctld` restarts. Four formats — `waybar` (a JSON
+  object with `text`, `alt`, `class`, `tooltip` and `percentage`),
+  `i3blocks`, `polybar` and `plain` — and nothing is printed twice.
+  Ready-made modules for waybar, i3blocks, polybar, Quickshell, AGS and
+  eww live in `contrib/bar/`.
+- **AirPods 5 and AirPods 4 (non-ANC) are recognised.** Both AirPods 5
+  variants share the product codes `0x2030` and `0x2036`; the A-number
+  the buds report tells the plain one from the one with the wireless
+  charging case, which is the only one with volume swipes on the stem.
+  AirPods 4 without ANC (`0x2019`) was detected as "unknown model"
+  before.
+- **An unknown model is no longer refused everything.** podctl used to
+  gate every setting behind its capability table, so a pair of AirPods
+  with a product code nobody has written down could do almost nothing.
+  The daemon now turns on what the buds report in their own settings
+  dump — noise control, conversation awareness, ear detection, the
+  microphone choice — and `podctl debug` says the row was learned.
+- **One table for every model** — product codes, name, A-numbers, the
+  drawing in the bubble and the capability row — in `src/caps.rs`. The
+  bubble reads its drawing from there instead of keeping a second list,
+  and `podctl debug` marks a capability row that nobody has checked
+  against hardware.
+
+### Changed
+- **AirPods Max (2nd gen) no longer borrows the first Max's row**: it
+  does conversation awareness and loud-sound reduction, the first Max
+  does neither.
+
+### Fixed
+- **`status` called a paired set of AirPods unpaired** for the first
+  moment after `podctld` started: requests were answered before BlueZ
+  had been read even once. They now wait for that first read, at most
+  1.5 s.
+
 ## [0.4.0] - 2026-10-23
 
 ### Changed
