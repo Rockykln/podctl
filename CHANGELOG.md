@@ -23,8 +23,8 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
   the buds report tells the plain one from the one with the wireless
   charging case, which is the only one with volume swipes on the stem.
   AirPods 4 without ANC (`0x2019`) was detected as "unknown model"
-  before. The AirPods Pro 3 entry carries its model number A3064, read
-  off a connected pair.
+  before. The AirPods Pro 3 entry carries both its model numbers, A3063
+  and A3064, read off a connected pair.
 - **An unknown model is no longer refused everything.** podctl used to
   gate every setting behind its capability table, so a pair of AirPods
   with a product code nobody has written down could do almost nothing.

@@ -222,15 +222,18 @@ pub const MODELS: &[ModelSpec] = &[
             ..ANC_BUDS
         },
     },
-    // Product code and A-number read off a connected pair on
-    // 27.11.2026; the noise-control, conversation-awareness, auto-ANC,
-    // one-bud-ANC and chime rows showed up in its settings dump. The
-    // rest of the row is still unchecked, so it stays unverified.
+    // Product code and both A-numbers read off a connected pair on
+    // 27.11.2026. Set and read back on the device: all four listening
+    // modes, conversation awareness, one-bud ANC, the auto-ANC level,
+    // the chime volume, the microphone choice and the ear detection
+    // setting. Loud-sound reduction, spatial audio, the press actions
+    // and the press tone are the ones podctl cannot write at all yet,
+    // so the row stays unverified.
     ModelSpec {
         model: Model::Pro3,
         label: "AirPods Pro (3rd gen)",
         pids: &[0x2027],
-        model_numbers: &["A3064"],
+        model_numbers: &["A3063", "A3064"],
         art: "pro3",
         verified: false,
         flags: Capabilities {
