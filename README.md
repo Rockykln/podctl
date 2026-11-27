@@ -118,7 +118,7 @@ Bluetooth operations in-process.
 | Mode | What works | What needs the daemon |
 | --- | --- | --- |
 | Daemon up | Everything | — |
-| Standalone | audio (volume / mute / profile / codec / default / latency), Bluetooth (list, connect, disconnect, pair, unpair, auto-connect, rename), `status` snapshot without live battery | `podctl watch`, live AAP state (battery, in-ear, mode echo), every AAP setter (mode, conv, mic, ear, one-bud-anc, auto-anc, chime) |
+| Standalone | audio (volume / mute / profile / codec / default / latency), Bluetooth (list, connect, disconnect, pair, unpair, auto-connect, rename), `status` snapshot without live battery | `podctl watch`, `podctl bar`, live AAP state (battery, in-ear, mode echo), every AAP setter (mode, conv, mic, ear, one-bud-anc, auto-anc, chime) |
 
 Skip the daemon on install: `podctl install --no-daemon`. Re-enable it
 later by re-running `podctl install` (idempotent).
@@ -133,7 +133,7 @@ later by re-running `podctl install` (idempotent).
 | Conversation Awareness | — | — | — | ✓ | ✓ | — | ✓ | — | ✓ |
 | In-Ear Detection | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — |
 | Loud-Sound Reduction | — | — | — | ✓ | — | — | ✓ | — | ✓ |
-| Spatial Audio | 3 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Spatial Audio | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Press-and-Hold | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Volume on the stem | — | — | — | — | W | — | ✓ | — | — |
 | Microphone Selection | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — |
@@ -191,7 +191,7 @@ podctl --json <cmd>           machine-readable response (every command)
 | --- | --- |
 | `podctl ear <on\|off>` | in-ear detection: pause on removal, resume on return |
 | `podctl mic <auto\|left\|right>` | microphone selection |
-| `podctl loud-reduction <on\|off>` | cap loud sound spikes (4 ANC, Pro 2, Pro 3, Max) — *AAP id TBD* |
+| `podctl loud-reduction <on\|off>` | cap loud sound spikes (4 ANC, Pro 2, Pro 3, Max 2) — *AAP id TBD* |
 | `podctl press <left\|right> <mode-cycle\|siri\|none>` | stem long-press — *AAP id TBD* |
 | `podctl tone <on\|off>` | acoustic feedback on press — *AAP id TBD* |
 | `podctl rename "name"` | bluetooth name |
@@ -282,7 +282,7 @@ started at login needs no further care.
 
 ```
 $ podctl bar
-{"alt":"connected","class":["connected"],"percentage":78,"text":"78%","tooltip":"AirPods Pro — Transparency\rL 84% · R 78%"}
+{"alt":"connected","class":["connected","in-ear"],"percentage":78,"text":"78%","tooltip":"AirPods Pro — Transparency\rL 84% · R 78%"}
 ```
 
 Four formats: `waybar` (the JSON object above, the default), `i3blocks`
@@ -402,6 +402,7 @@ src/
     debug.rs           diagnostic report (`podctl debug`)
     install.rs         podctl install / uninstall
     meter.rs           podctl meter (sink capture)
+    bar.rs             podctl bar (a line per change for status bars)
     standalone.rs      no-daemon fallback dispatcher
     tray_cli.rs        podctl tray start/stop/status/restart wrapper
     daemon/
@@ -410,6 +411,7 @@ src/
       link.rs          BlueZ + PipeWire poll loop
       aap.rs           L2CAP runtime + AAP frame pump
       scan.rs          BLE listener for the case lid
+      battery.rs       the battery, handed to BlueZ for the desktop
       media.rs         auto-pause + ducking on the host
     tray/              podctl-tray binary (SNI + DBusMenu)
     popup/             podctl-popup binary (wlr-layer-shell / X11 / notify)

@@ -2,9 +2,11 @@
 #custom-podctl.connected    { color: @foreground; }
 #custom-podctl.charging     { color: #a6e3a1; }
 #custom-podctl.low          { color: #f38ba8; }
-/* Where the buds are: one of these is always set while connected. */
-#custom-podctl.out-of-ear   { opacity: 0.7; }
+/* Where the buds are, while they report it at all. */
+#custom-podctl.in-ear       { color: @foreground; }
 #custom-podctl.one-in-ear   { font-style: italic; }
+#custom-podctl.out-of-ear   { opacity: 0.7; }
+#custom-podctl.in-case      { opacity: 0.7; }
 #custom-podctl.disconnected { opacity: 0.5; }
 #custom-podctl.unpaired,
 #custom-podctl.offline      { opacity: 0.4; }

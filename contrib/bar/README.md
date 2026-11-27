@@ -16,4 +16,6 @@ ready-made module; copy the snippet into your own config.
 The waybar object carries `text`, `alt`, `class`, `tooltip` and
 `percentage`. `alt` is `connected`, `disconnected`, `unpaired` or
 `offline`, which is what the icon in the examples switches on; `class`
-adds `charging` and `low`.
+adds `charging`, `low` and, while the buds report where they are, one of
+`in-ear`, `one-in-ear`, `out-of-ear` or `in-case`. A device without
+in-ear detection — the AirPods Max — carries none of those.

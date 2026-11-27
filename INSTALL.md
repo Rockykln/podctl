@@ -240,7 +240,7 @@ With `battery_provider` the daemon hands the battery to BlueZ while the
 buds are connected, so the AirPods turn up in the desktop's own battery
 list — the Plasma and GNOME panels, `upower -d`, waybar's `upower`
 module — next to the mouse and the keyboard. The level is the emptier
-bud, as on a phone. It needs BlueZ 5.70 or newer and nothing else; the
+bud, as on a phone. It needs BlueZ 5.71 or newer and nothing else; the
 entry disappears when the buds disconnect. Turn it off if something
 else already reports that battery, PipeWire's handsfree support for
 instance.

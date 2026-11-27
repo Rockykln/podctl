@@ -11,17 +11,15 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
   Plasma and GNOME panels, `upower` and anything reading it list the
   buds next to the mouse and the keyboard — the emptier bud, as a phone
   shows it. `battery_provider = false` in `daemon.toml` turns it off.
-- **`podctl bar` says where the buds are**: `in-ear`, `one-in-ear` or
-  `out-of-ear` as a class next to `charging` and `low`. Taking a bud out
-  changed nothing on screen before, because the line carried the battery
-  and nothing else.
 - **`podctl bar`** writes a line per state change for a status bar: the
   state as it stands, then one line whenever something moves, and it
   carries on when `podctld` restarts. Four formats — `waybar` (a JSON
   object with `text`, `alt`, `class`, `tooltip` and `percentage`),
-  `i3blocks`, `polybar` and `plain` — and nothing is printed twice.
-  Ready-made modules for waybar, i3blocks, polybar, Quickshell, AGS and
-  eww live in `contrib/bar/`.
+  `i3blocks`, `polybar` and `plain` — and nothing is printed twice. The
+  class says where the buds are as well as how full they are:
+  `charging`, `low`, and one of `in-ear`, `one-in-ear`, `out-of-ear` or
+  `in-case` while they report it. Ready-made modules for waybar,
+  i3blocks, polybar, Quickshell, AGS and eww live in `contrib/bar/`.
 - **AirPods 5 and AirPods 4 (non-ANC) are recognised.** Both AirPods 5
   variants share the product codes `0x2030` and `0x2036`; the A-number
   the buds report tells the plain one from the one with the wireless
@@ -45,11 +43,55 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
   against hardware.
 
 ### Changed
+- After updating, restart the services once (`podctl reboot`): the CLI
+  and the daemon check that they are the same version, and a daemon left
+  running from the version before answers every command with a note
+  instead of doing it.
 - **AirPods Max (2nd gen) no longer borrows the first Max's row**: it
   does conversation awareness and loud-sound reduction, the first Max
   does neither.
 
 ### Fixed
+- **The battery never reached a desktop with two Bluetooth adapters.**
+  BlueZ keeps battery providers per adapter and accepts a registration
+  at any of them, so registering once was enough to look successful and
+  never show anything. podctl registers with every adapter now, and a
+  confirmed battery is checked again now and then — an adapter that is
+  unplugged and comes back used to take the entry with it until the
+  daemon restarted.
+- **podctl could tear down its own battery entry.** A battery whose
+  source BlueZ does not publish was read as somebody else's, and podctl
+  politely withdrew. It now waits instead of guessing, and a failed
+  publish no longer leaves podctl thinking the panel is up to date.
+- **`podctl bar` never noticed a bud coming out.** The event that
+  carries it was dropped, so the class stayed on whatever it was when
+  the bar started. It also swallowed its first line when that line was
+  empty — a module started before the daemon stayed blank — reported
+  "away" over a stream that merely stumbled, and made the module blink
+  when `podctld` restarted. And it no longer claims that buds are out
+  of an ear for a device that cannot tell, like the AirPods Max.
+- **`podctl mode` still reported success without the buds agreeing** if
+  the mode asked for was the one already on record. It now waits for a
+  notification that arrives after the command, not for a value that was
+  already there.
+- **A second pair of AirPods inherited the first one's capabilities**,
+  its name, its model numbers and its serials — all it took was a poll
+  without a device in between, which happens on nearly every swap.
+- **An unknown model could be switched into adaptive and not out of
+  it**: learning the adaptive level without the two modes it switches
+  between left a row that contradicted itself. Learned capabilities
+  also reach the tray now instead of waiting for the next reconnect.
+- **Two A-numbers from two different pairs no longer decide a variant.**
+  Where a product code is shared, the number tells the variants apart —
+  but a list holding both belongs to two pairs, and the one that won
+  was simply the alphabetically smaller.
+- **`podctl pair` reported the signal strength it never read.** BlueZ
+  prints it as `0xffffffa2 (-94)`, which the plain number parser never
+  matched, so every device looked unheard — and the check meant to name
+  the pair that is actually nearby could not work. Devices BlueZ merely
+  remembers are left out of the candidate list, a pairing that beat its
+  own deadline is no longer called a failure, and taking a hanging one
+  back has a deadline of its own.
 - **`status` called a paired set of AirPods unpaired** for the first
   moment after `podctld` started: requests were answered before BlueZ
   had been read even once. They now wait for that first read, at most
@@ -82,10 +124,6 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
   ignore the listening mode while both sit in the case: the command
   answered "ok" and exit 0, and the mode stayed as it was. It waits for
   the buds' own echo now and says so when it does not come.
-- **A test took it for granted that no AirPods were connected.** The
-  one covering `podctl bar` asserted the away text as the first line,
-  which a connected pair turns into the state — it now asks for a line
-  rather than for one particular line.
 - **`podctl debug` claimed a BLE state it never asked the daemon for.**
   The line read the client's own `daemon.toml` — which differs as soon
   as the daemon runs with another configuration — while sitting in the

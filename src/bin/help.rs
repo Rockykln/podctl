@@ -194,7 +194,7 @@ podctl mode — switch listening mode
     off            passive
     anc            active noise cancellation
     transparency   pass outside sound through
-    adaptive       Pro 2 / AirPods 4 ANC only
+    adaptive       Pro 2, Pro 3, AirPods 4 ANC, AirPods 5
     next           the next one the model has, round anc, transparency,
                    adaptive; off is left out, as on a press of the stem
 
@@ -211,7 +211,7 @@ podctl conv — conversation awareness
 When your own voice is detected the buds switch towards transparency
 and podctld fades the music down to a level you can talk over: it
 measures how loud the music plays and lowers it by 6 to 30 dB to match,
-fading back 1.5 s after you stop. Only AirPods Pro 2 and AirPods 4 ANC.
+fading back 1.5 s after you stop. Only AirPods Pro 2, Pro 3, AirPods 4 ANC, AirPods 5 and Max 2.
 
     podctl conv on
     podctl c off
@@ -266,7 +266,7 @@ it in ~/.config/podctl/daemon.toml ('mic = auto').
 const LOUD: &str = "\
 podctl loud-reduction — cap loud sound spikes
 
-Apple's hearing-safety filter. Pro 2 / AirPods 4 ANC / Max.
+Apple's hearing-safety filter. Pro 2, Pro 3, AirPods 4 ANC, Max 2.
 
 Not implemented yet: the AAP setting id for this is not known, so
 the daemon answers with an error instead of pretending.
@@ -334,8 +334,10 @@ Pairing is preserved; 'podctl connect' brings it back.
 const PAIR: &str = "\
 podctl pair — pair a nearby AirPods
 
-Put the AirPods in pairing mode (long-press the case button until the
-LED blinks white), then run this. It scans for twelve seconds and shows
+Put the AirPods in pairing mode first: older models want the button on
+the back of the case held until the light blinks white, newer ones — the
+AirPods Pro 3 among them — have no button and are released from the
+phone they belong to. Then run this. It scans for twelve seconds and shows
 what it found; pairing then needs either the address or --yes, because
 anything in pairing mode within a few metres shows up here, including
 somebody else's.
@@ -507,6 +509,8 @@ only redraws when something actually moved.
 
 OPTIONS
     --format <name>     waybar | i3blocks | polybar | plain
+                        (also json, i3, text for the first, second
+                        and last of those)
     --once              print the current state and exit
     --low <percent>     below this the line carries the 'low' class (20)
     --low-color <hex>   colour for that state, where the format has one
@@ -529,7 +533,7 @@ podctl one-bud-anc — keep ANC active when only one bud is worn
     podctl one-bud-anc off
 
 Without this the AirPods normally drop out of ANC when only one bud
-is in the ear, so transparency-by-default kicks in. Pro 2 only.
+is in the ear, so transparency-by-default kicks in. Pro 2 and Pro 3.
 ";
 
 const CHIME: &str = "\

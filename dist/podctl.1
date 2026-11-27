@@ -37,13 +37,16 @@ Battery levels for left bud, right bud and case.
 .SS Listening modes
 .TP
 .BI "mode, m " "off|anc|transparency|adaptive|next"
-Switch listening mode. Adaptive requires AirPods Pro 2 or AirPods 4 ANC.
+Switch listening mode. Adaptive requires AirPods Pro 2, Pro 3,
+AirPods 4 ANC or AirPods 5. The buds have to confirm the change: while
+both sit in the case they ignore it, and the command then fails rather
+than reporting success.
 .B next
 goes to the next mode the model has, round anc, transparency and
 adaptive; off is left out, as on a press of the stem.
 .TP
 .BI "conv, c " "on|off"
-Conversation awareness (Pro 2 / AirPods 4 ANC only). While you talk,
+Conversation awareness (Pro 2, Pro 3, AirPods 4 ANC, AirPods 5, Max 2). While you talk,
 .B podctld
 measures the music level and fades it down to a level you can talk over
 (6 to 30\~dB lower), restoring it afterwards.
@@ -85,7 +88,7 @@ above.
 Change the Bluetooth name.
 .TP
 .BI "one-bud-anc, obanc " "on|off"
-Keep ANC active when only one bud is being worn (Pro 2).
+Keep ANC active when only one bud is being worn (Pro 2, Pro 3).
 .TP
 .BI "auto-anc, anc-strength " "less-noise|default|more-noise"
 How much outside noise Adaptive lets in, as the slider under Adaptive
@@ -102,6 +105,8 @@ Bring the link up or down.
 .TP
 .BR "pair " [ address ] " [" --yes ]
 Scan for twelve seconds and list what is in pairing mode nearby.
+Newer models have no button on the case and are put into pairing mode
+from the phone they belong to.
 Pairing needs either the address or
 .BR --yes ,
 which takes the one candidate when there is exactly one — anything in
