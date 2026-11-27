@@ -24,6 +24,28 @@ pub enum Model {
     Unknown,
 }
 
+impl Model {
+    /// Every model with a row, in table order. `Unknown` is not one of
+    /// them: it is the absence of a row, and a row for it would make
+    /// `refine` start working on it.
+    pub const ALL: [Model; 14] = [
+        Model::Gen1,
+        Model::Gen2,
+        Model::Gen3,
+        Model::Gen4,
+        Model::Gen4Anc,
+        Model::Gen5,
+        Model::Gen5Wireless,
+        Model::Pro,
+        Model::Pro2,
+        Model::Pro2UsbC,
+        Model::Pro3,
+        Model::Max,
+        Model::MaxUsbC,
+        Model::Max2,
+    ];
+}
+
 /// Everything known about one model.
 pub struct ModelSpec {
     pub model: Model,
@@ -321,16 +343,25 @@ impl Model {
         let Some(mine) = self.spec() else {
             return self;
         };
+        let mut hit: Option<Model> = None;
         for number in model_numbers {
             let number = number.trim();
             let found = MODELS.iter().find(|s| {
                 s.model_numbers.contains(&number) && s.pids.iter().any(|p| mine.pids.contains(p))
             });
             if let Some(other) = found {
-                return other.model;
+                match hit {
+                    // Numbers of both variants in one list: that list
+                    // belongs to two different pairs, and picking from
+                    // it would hand one of them the other's row. The
+                    // alphabetical order the daemon keeps them in made
+                    // that choice systematic rather than random.
+                    Some(first) if first != other.model => return self,
+                    _ => hit = Some(other.model),
+                }
             }
         }
-        self
+        hit.unwrap_or(self)
     }
 
     pub fn label(self) -> &'static str {
@@ -393,7 +424,21 @@ impl Capabilities {
                 }
             }
             setting::CONV_AWARE => self.has_conv_awareness = true,
-            setting::AUTO_ANC_LEVEL => self.has_adaptive = true,
+            setting::AUTO_ANC_LEVEL => {
+                // The slider only exists on buds that cancel noise and
+                // let it through. Learning adaptive alone let someone
+                // switch to it and then be told that Off "is not
+                // supported on AirPods (unknown model)".
+                self.has_adaptive = true;
+                self.has_anc = true;
+                self.has_transparency = true;
+            }
+            // Keeping ANC with one bud in is an ANC setting; a device
+            // that reports it has the two modes it switches between.
+            setting::ONE_BUD_ANC => {
+                self.has_anc = true;
+                self.has_transparency = true;
+            }
             setting::EAR_DETECTION => {
                 self.has_in_ear_detection = true;
                 self.has_ear_detection_setting = true;
@@ -559,9 +604,82 @@ mod tests {
     fn learning_never_invents_what_was_not_reported() {
         use crate::aap::setting;
         let mut caps = Capabilities::conservative(Model::Unknown);
+        // The chime is the sound the buds make on a mode change, not
+        // the tone on a press, and it says nothing about either.
         caps.learn_from_setting(setting::CHIME_VOLUME, 50);
-        caps.learn_from_setting(setting::ONE_BUD_ANC, 1);
         assert_eq!(caps, Capabilities::conservative(Model::Unknown));
+    }
+
+    #[test]
+    fn a_learned_row_never_contradicts_itself() {
+        use crate::aap::setting;
+        // Settings arrive one frame at a time and in the device's own
+        // order, so each one has to leave a row that holds together.
+        // Adaptive without ANC let someone switch to it and then be
+        // refused the way back.
+        for (id, value) in [
+            (setting::AUTO_ANC_LEVEL, 50),
+            (setting::ONE_BUD_ANC, 1),
+            (setting::NOISE_CONTROL, 4),
+            (setting::EAR_DETECTION, 1),
+            (setting::MIC_MODE, 0),
+        ] {
+            let mut caps = Capabilities::conservative(Model::Unknown);
+            caps.learn_from_setting(id, value);
+            assert!(coherent(&caps), "setting {id:02x} left a broken row");
+        }
+    }
+
+    /// The rules the table keeps and a learned row must keep too.
+    fn coherent(c: &Capabilities) -> bool {
+        (!c.has_adaptive || (c.has_anc && c.has_transparency))
+            && (!c.has_conv_awareness || c.has_anc)
+            && (!c.has_ear_detection_setting || c.has_in_ear_detection)
+    }
+
+    #[test]
+    fn every_model_has_exactly_one_row() {
+        // A new enum variant without a row goes quiet rather than
+        // wrong: `label()` turns into "unknown model" and
+        // `capabilities()` into the conservative guess.
+        for m in Model::ALL {
+            let rows = MODELS.iter().filter(|s| s.model == m).count();
+            assert_eq!(rows, 1, "{m:?} has {rows} rows");
+        }
+        assert_eq!(MODELS.len(), Model::ALL.len());
+        assert!(
+            !MODELS.iter().any(|s| s.model == Model::Unknown),
+            "Unknown must not have a row"
+        );
+        assert!(Model::Unknown.spec().is_none());
+    }
+
+    #[test]
+    fn numbers_of_two_variants_in_one_list_refine_nothing() {
+        // Such a list belongs to two different pairs — one was still
+        // remembered when the other turned up. Choosing from it handed
+        // one pair the other's row, and the daemon sorts the numbers,
+        // so it was always the same wrong one.
+        let mixed = vec!["A3440".to_string(), "A3532".to_string()];
+        assert_eq!(Model::Gen5.refine(&mixed), Model::Gen5);
+        assert_eq!(Model::Gen5Wireless.refine(&mixed), Model::Gen5Wireless);
+        // One number alone still decides.
+        assert_eq!(
+            Model::Gen5.refine(&["A3440".to_string()]),
+            Model::Gen5Wireless
+        );
+        // Twice the same number is not a conflict.
+        assert_eq!(
+            Model::Gen5.refine(&["A3440".to_string(), "A3440".to_string()]),
+            Model::Gen5Wireless
+        );
+    }
+
+    #[test]
+    fn every_row_in_the_table_holds_together() {
+        for s in MODELS {
+            assert!(coherent(&s.caps()), "{:?} has a broken row", s.model);
+        }
     }
 
     #[test]

@@ -52,7 +52,17 @@ fn an_unknown_model_is_refused() {
 /// differ — at most 5/255 per channel, on under 0.5 % of the pixels.
 #[test]
 fn every_model_matches_the_approved_design() {
+    // Each model names its drawing by a slug in the table. A typo
+    // there does not fail anywhere — the bubble quietly falls back to
+    // the Pro 2 picture — so check that every slug has a file of its
+    // own and that no drawing is left without a model.
+    let slugs: Vec<&str> = podctl::caps::MODELS.iter().map(|m| m.art).collect();
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden");
+    for slug in &slugs {
+        let want = dir.join(format!("model-{slug}-dark@2x.png"));
+        assert!(want.exists(), "no drawing for the slug {slug:?}");
+    }
+
     let mut refs: Vec<PathBuf> = std::fs::read_dir(&dir)
         .expect("tests/golden")
         .map(|e| e.unwrap().path())
