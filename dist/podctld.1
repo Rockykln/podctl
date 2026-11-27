@@ -58,6 +58,23 @@ Directory for the socket (default
 .B SIGTERM, SIGINT
 Initiate graceful shutdown: drain in-flight requests, remove the socket
 file, exit 0.
+.SH BATTERY IN THE DESKTOP
+While the buds are connected the daemon registers their level with
+BlueZ's battery provider API, which puts the AirPods in the desktop's
+own battery list next to the mouse and the keyboard \(em the Plasma and
+GNOME panels, UPower, and anything reading it. The level reported is the
+emptier bud, as a phone shows it, and the entry disappears when the buds
+do. Needs BlueZ 5.71 or newer.
+.PP
+BlueZ keeps the first battery it is told about for a device and ignores a
+second one, so when another program \(em PipeWire, for one, which reports
+the level a headset sends over its call profile \(em got there first, the
+daemon leaves the place to it, says so once in the journal, and asks
+again now and then in case it is given up. Set
+.BR battery_provider " = " false
+in
+.I daemon.toml
+to stay out of the list altogether.
 .SH FILES
 .TP
 .I $XDG_RUNTIME_DIR/podctl.sock

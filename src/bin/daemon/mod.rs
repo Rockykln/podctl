@@ -3,6 +3,7 @@
 //! actual BlueZ + L2CAP + PipeWire calls live in the sibling modules.
 
 pub mod aap;
+mod battery;
 mod link;
 mod media;
 mod scan;
@@ -378,6 +379,11 @@ impl Daemon {
     /// Run the BT-link loop: poll BlueZ + PipeWire and supervise the AAP channel.
     pub async fn link_loop(self: Arc<Self>) {
         link::run(self).await;
+    }
+
+    /// Hand the battery to BlueZ for the desktop's own battery list.
+    pub async fn battery_loop(self: Arc<Self>) {
+        battery::run(self).await;
     }
 
     /// Listen on the per-user Unix socket and handle CLI requests.

@@ -16,6 +16,9 @@ pub struct Config {
     pub ear_detection: bool,
     /// Which bud's microphone to use. Also absent from the dump.
     pub mic: MicSelection,
+    /// Hand the battery to BlueZ, so the desktop's own battery list
+    /// shows the AirPods.
+    pub battery_provider: bool,
 }
 
 impl Default for Config {
@@ -24,6 +27,7 @@ impl Default for Config {
             ble: true,
             ear_detection: true,
             mic: MicSelection::Auto,
+            battery_provider: true,
         }
     }
 }
@@ -75,6 +79,11 @@ fn from_text(text: &str) -> Config {
             "mic" => {
                 if let Ok(mic) = v.parse() {
                     cfg.mic = mic;
+                }
+            }
+            "battery_provider" => {
+                if let Some(on) = parse_bool(v) {
+                    cfg.battery_provider = on;
                 }
             }
             _ => {}

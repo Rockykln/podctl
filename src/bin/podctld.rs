@@ -22,6 +22,11 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
+    {
+        let d = Arc::clone(&daemon);
+        tokio::spawn(async move { d.battery_loop().await });
+    }
+
     let serve = {
         let d = Arc::clone(&daemon);
         tokio::spawn(async move { d.serve().await })
