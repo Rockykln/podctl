@@ -283,6 +283,9 @@ async fn apply_settings(daemon: &Daemon, payload: &[u8]) {
         return;
     };
     daemon.learn_capability(id, v0).await;
+    // Tells a waiting `set_mode` that the buds have spoken, whichever
+    // setting this is.
+    daemon.note_settings_echo();
     match id {
         setting::NOISE_CONTROL => {
             let mode = wire::mode_from_byte(v0);

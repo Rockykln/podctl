@@ -41,7 +41,6 @@ const FIRST_POLL_WAIT: Duration = Duration::from_millis(1500);
 /// ear: the echo lands after about 1.1 s, so this leaves room for a
 /// weaker link without ever calling a mode that did arrive a failure.
 const MODE_ECHO_WAIT: Duration = Duration::from_secs(3);
-const MODE_ECHO_POLL: Duration = Duration::from_millis(100);
 
 const NO_POPUP: &str =
     "no popup process is listening — start it with 'systemctl --user enable --now podctl-popup'";
@@ -76,6 +75,11 @@ pub struct Daemon {
     /// False until the link task has read BlueZ once. A `status` served
     /// before that would call a paired pair unpaired.
     polled: tokio::sync::watch::Sender<bool>,
+    /// Counts the settings notifications the buds send. `set_mode` has
+    /// to wait for a *new* one: with only the value to go by, asking
+    /// for the mode the state already held answered "ok" without the
+    /// buds having said anything at all.
+    settings_echo: tokio::sync::watch::Sender<u64>,
 }
 
 impl Daemon {
@@ -97,6 +101,7 @@ impl Daemon {
             link_wake: tokio::sync::Notify::new(),
             resync: tokio::sync::watch::Sender::new(0),
             polled: tokio::sync::watch::Sender::new(false),
+            settings_echo: tokio::sync::watch::Sender::new(0),
         }
     }
 
@@ -180,6 +185,11 @@ impl Daemon {
                 false
             }
         }
+    }
+
+    /// A settings notification arrived from the buds.
+    pub fn note_settings_echo(&self) {
+        self.settings_echo.send_modify(|n| *n += 1);
     }
 
     /// The link task has read BlueZ at least once.
@@ -315,6 +325,11 @@ impl Daemon {
                 "unknown model: learned a capability from its own settings"
             );
             Self::touch(&mut s);
+            drop(s);
+            // Capabilities ride in the state, not in any event, so
+            // without this the tray keeps its greyed-out entries until
+            // the next reconnect.
+            self.resync();
         }
     }
 
@@ -327,6 +342,8 @@ impl Daemon {
         if s.capabilities.learn_in_ear() {
             info!("unknown model: it reports in-ear state, so it has the detection");
             Self::touch(&mut s);
+            drop(s);
+            self.resync();
         }
     }
 
@@ -510,6 +527,10 @@ impl Daemon {
                 format!("{mode} is not supported on {}", caps.model.label()),
             );
         }
+        // Subscribed before sending, so an echo that comes back
+        // straight away is not missed.
+        let mut echoes = self.settings_echo.subscribe();
+        echoes.mark_unchanged();
         let frame = podctl::aap::set_noise_control(mode).encode();
         if let Err(e) = self.aap_send(&frame).await {
             return Response::err(e);
@@ -519,7 +540,7 @@ impl Daemon {
         // No echo means they did not take it — they ignore the mode
         // while both sit in the case — and answering "ok" to that sent
         // people looking for the fault in podctl.
-        if self.mode_echoed(mode).await {
+        if self.mode_echoed(mode, &mut echoes).await {
             Response::ok_done()
         } else {
             Response::err_code(
@@ -532,19 +553,36 @@ impl Daemon {
         }
     }
 
-    /// Waits for the buds' own word on the mode. Generous on purpose:
-    /// the echo is a local L2CAP round trip, so a wait this long
-    /// means it is not coming.
-    async fn mode_echoed(&self, mode: Mode) -> bool {
+    /// Waits for the buds' own word on the mode: a settings
+    /// notification that arrives after the frame went out and carries
+    /// the mode asked for. Generous on purpose — the echo is a local
+    /// L2CAP round trip, so a wait this long means it is not coming.
+    ///
+    /// Reading only `settings.mode` was not enough: asking for the mode
+    /// the state already held returned at once, and in the case, where
+    /// the buds ignore the mode entirely, that is exactly the lie this
+    /// is meant to catch.
+    async fn mode_echoed(
+        &self,
+        mode: Mode,
+        echoes: &mut tokio::sync::watch::Receiver<u64>,
+    ) -> bool {
         let deadline = tokio::time::Instant::now() + MODE_ECHO_WAIT;
         loop {
-            if self.state.read().await.settings.mode == Some(mode) {
-                return true;
-            }
-            if tokio::time::Instant::now() >= deadline {
+            let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if left.is_zero() {
                 return false;
             }
-            tokio::time::sleep(MODE_ECHO_POLL).await;
+            match tokio::time::timeout(left, echoes.changed()).await {
+                // The sender lives as long as the daemon; a closed
+                // channel means shutdown, not a confirmation.
+                Ok(Err(_)) | Err(_) => return false,
+                Ok(Ok(())) => {
+                    if self.state.read().await.settings.mode == Some(mode) {
+                        return true;
+                    }
+                }
+            }
         }
     }
 
@@ -881,25 +919,51 @@ mod tests {
     use podctl::Mode;
 
     #[tokio::test]
-    async fn a_mode_already_echoed_needs_no_waiting() {
+    async fn the_mode_in_the_state_is_not_a_confirmation() {
+        // This is what went wrong: the mode asked for already sat in
+        // the state, so the command answered at once — while the buds,
+        // both in the case, had ignored it.
         let d = Daemon::new();
         d.state.write().await.settings.mode = Some(Mode::Transparency);
-        let start = std::time::Instant::now();
-        assert!(d.mode_echoed(Mode::Transparency).await);
-        // The answer is in the state, so nothing is slept away. The
-        // other direction — no echo at all — costs real seconds and is
-        // checked on the device instead of with a paused clock, which
-        // this binary has enough of.
-        assert!(start.elapsed() < Duration::from_millis(100));
+        let mut echoes = d.settings_echo.subscribe();
+        echoes.mark_unchanged();
+        let waited = tokio::time::timeout(
+            Duration::from_millis(250),
+            d.mode_echoed(Mode::Transparency, &mut echoes),
+        )
+        .await;
+        assert!(waited.is_err(), "without an echo there is no yes");
     }
 
     #[tokio::test]
-    async fn another_mode_in_the_state_is_not_the_echo() {
-        let d = Daemon::new();
-        d.state.write().await.settings.mode = Some(Mode::NoiseCancellation);
+    async fn an_echo_carrying_the_mode_confirms_it() {
+        let d = std::sync::Arc::new(Daemon::new());
+        let mut echoes = d.settings_echo.subscribe();
+        echoes.mark_unchanged();
+        let buds = std::sync::Arc::clone(&d);
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            buds.state.write().await.settings.mode = Some(Mode::Adaptive);
+            buds.note_settings_echo();
+        });
+        assert!(d.mode_echoed(Mode::Adaptive, &mut echoes).await);
+    }
+
+    #[tokio::test]
+    async fn an_echo_about_something_else_is_not_the_answer() {
+        let d = std::sync::Arc::new(Daemon::new());
+        let mut echoes = d.settings_echo.subscribe();
+        echoes.mark_unchanged();
+        let buds = std::sync::Arc::clone(&d);
+        tokio::spawn(async move {
+            // The buds report the chime volume, say — a notification,
+            // but not the one being waited for.
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            buds.note_settings_echo();
+        });
         let waited = tokio::time::timeout(
             Duration::from_millis(250),
-            d.mode_echoed(Mode::Transparency),
+            d.mode_echoed(Mode::Transparency, &mut echoes),
         )
         .await;
         assert!(waited.is_err(), "it keeps waiting for the mode asked for");

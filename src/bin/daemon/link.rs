@@ -55,6 +55,11 @@ pub async fn run(daemon: Arc<Daemon>) {
     let (scan_tx, scan_rx) = tokio::sync::watch::channel(false);
     tokio::spawn(super::scan::run(Arc::clone(&daemon), scan_rx));
     let mut prev_addr: Option<String> = None;
+    // The last address seen at all. `prev_addr` is cleared whenever no
+    // device is there, and between two pairs there is almost always a
+    // poll without one — so it cannot tell "other AirPods" from "the
+    // same ones back again".
+    let mut last_seen: Option<String> = None;
     let mut prev_connected = false;
     let mut aap = AapSupervisor::default();
     // A link that was already up when the daemon started is no new
@@ -84,12 +89,17 @@ pub async fn run(daemon: Arc<Daemon>) {
                 let mut cached_info = s.info.clone();
                 // Each connect brings the number of one bud only, so they
                 // are kept until other AirPods turn up, not just a link.
-                let mut other_device = false;
-                if let (Some(old), Some(new)) = (&s.address, &snap.address)
-                    && old != new
-                {
-                    cached_info.model_numbers.clear();
-                    other_device = true;
+                let other_device =
+                    match (&snap.address, s.address.as_deref().or(last_seen.as_deref())) {
+                        (Some(new), Some(old)) => old != new.as_str(),
+                        _ => false,
+                    };
+                if other_device {
+                    // Model numbers, firmware and serials all belong to
+                    // the pair that reported them. Carrying them over
+                    // showed another pair's numbers and could flip the
+                    // variant that two A-numbers tell apart.
+                    cached_info = podctl::DeviceInfo::default();
                 }
                 let cached_caps = s.capabilities;
                 let had_model = cached_caps.model != Model::Unknown;
@@ -109,7 +119,7 @@ pub async fn run(daemon: Arc<Daemon>) {
                 // a *different* known one replaces it. (A real unpair
                 // leaves a stale label until restart — acceptable vs the
                 // flapping this prevents.)
-                if had_model && s.capabilities.model == Model::Unknown {
+                if !other_device && had_model && s.capabilities.model == Model::Unknown {
                     s.capabilities = cached_caps;
                 }
                 // For a model with no table row the capabilities are
@@ -139,6 +149,7 @@ pub async fn run(daemon: Arc<Daemon>) {
                         resync = prev_addr.as_deref() != Some(addr.as_str())
                             && (!s.connected || first_poll);
                         prev_addr = Some(addr.clone());
+                        last_seen = Some(addr.clone());
                         prev_connected = s.connected;
                         if s.connected && !first_poll {
                             // A duck from a session that was cut short
