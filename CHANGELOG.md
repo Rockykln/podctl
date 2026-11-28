@@ -3,7 +3,7 @@
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.5.1] - 2026-11-28
 
 ### Changed
 - **With two pairs of AirPods paired, podctl now follows the one you
@@ -15,17 +15,21 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
   longer paired falls back to the old order.
 
 ### Fixed
-- **The bubble stopped showing itself.** Before it appears on its own it
-  asks whether the screen is locked, and it trusted logind's
-  `LockedHint` for the answer. That hint is a flag the desktop sets on
-  lock and need not clear on unlock — on KDE it stayed on, so every
-  reason to show the bubble was dropped: a case that opened, a battery
-  running low, a pair connecting. Only `podctl popup` and the tray entry
-  still worked, because they ask for the bubble directly. podctl now
-  asks the screen saver, which answers for the state right now, and
-  falls back to the hint only where there is no screen saver to ask.
-  It says in the log which answer it got, and `podctl debug` names both
-  sources, so a lock that keeps the bubble away is visible.
+- **The status-bar modules were missing from the release.** `podctl bar`
+  shipped in 0.5.0 with ready-made modules for waybar, i3blocks,
+  polybar, Quickshell, AGS and eww, but only the repository carried
+  them: the release tarball left `contrib/bar/` out, so anyone
+  installing a package had nothing to copy. They are packed now, and
+  packages put them under `/usr/share/doc/podctl*/bar/`.
+- **The bubble stopped showing itself.** It asks whether the screen is
+  locked before appearing on its own, and took logind's `LockedHint` as
+  the answer — a flag the desktop sets on lock and need not clear on
+  unlock, which on KDE left it reading "locked" for good. Every reason
+  to show the bubble was dropped: a case that opened, a battery running
+  low, a pair connecting. Only `podctl popup` and the tray entry still
+  worked, because they ask directly. The screen saver is asked first
+  now, the hint covers only desktops without one, and both answers
+  appear in the log and in `podctl debug`.
 
 ## [0.5.0] - 2026-11-27
 

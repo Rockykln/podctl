@@ -294,7 +294,8 @@ printed twice, so the bar only redraws when something moved. `alt` is
 `out-of-ear` — enough to style it without parsing the text.
 
 Ready-made modules for waybar, i3blocks, polybar, Quickshell, AGS and
-eww are in [`contrib/bar/`](contrib/bar).
+eww are in [`contrib/bar/`](contrib/bar); packages ship them under
+`/usr/share/doc/podctl*/bar/`.
 
 ## Debug reports — DSGVO-friendly
 
