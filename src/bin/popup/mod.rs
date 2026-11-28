@@ -21,6 +21,7 @@ use tokio::time::sleep_until;
 use tracing::{debug, info, warn};
 
 use podctl::exitcode;
+use podctl::lock;
 use podctl::model::{Battery, DeviceState, Event};
 use podctl::{Request, Response, WatchRole};
 
@@ -199,10 +200,11 @@ struct ShowOpts {
 }
 
 /// Session lock state, asked at most once a second. A bubble triggers a
-/// handful of events, and logind answers over D-Bus.
+/// handful of events, and the answer comes over D-Bus.
 #[derive(Default)]
 struct LockState {
     last: Option<(Instant, bool)>,
+    told: Option<bool>,
 }
 
 impl LockState {
@@ -212,45 +214,22 @@ impl LockState {
         {
             return v;
         }
-        let v = session_locked().await;
+        let s = lock::sources().await;
+        let v = lock::verdict(s);
         self.last = Some((Instant::now(), v));
+        // A lock that keeps the bubble off screen has to be visible
+        // without debug logging.
+        if self.told != Some(v) {
+            self.told = Some(v);
+            info!(
+                locked = v,
+                screen_saver = ?s.screen_saver,
+                logind_hint = ?s.locked_hint,
+                "session lock"
+            );
+        }
         v
     }
-}
-
-/// logind's LockedHint is the reliable answer where the desktop sets it
-/// (KDE, GNOME); the ScreenSaver service covers the rest.
-async fn session_locked() -> bool {
-    if let Ok(conn) = zbus::Connection::system().await
-        && let Ok(p) = zbus::Proxy::new(
-            &conn,
-            "org.freedesktop.login1",
-            "/org/freedesktop/login1/session/auto",
-            "org.freedesktop.login1.Session",
-        )
-        .await
-        && let Ok(true) = p.get_property::<bool>("LockedHint").await
-    {
-        return true;
-    }
-    let Ok(conn) = zbus::Connection::session().await else {
-        return false;
-    };
-    let Ok(p) = zbus::Proxy::new(
-        &conn,
-        "org.freedesktop.ScreenSaver",
-        "/org/freedesktop/ScreenSaver",
-        "org.freedesktop.ScreenSaver",
-    )
-    .await
-    else {
-        return false;
-    };
-    p.call_method("GetActive", &())
-        .await
-        .ok()
-        .and_then(|m| m.body().deserialize::<bool>().ok())
-        .unwrap_or(false)
 }
 
 /// Backend names as the config and `--backend` spell them.
@@ -1677,6 +1656,38 @@ mod tests {
             rx.try_iter().filter(|c| matches!(c, Cmd::Show(_))).count(),
             1
         );
+    }
+
+    /// The lid is the bubble's whole point, and a lock that says
+    /// "locked" when it is not used to swallow it without a trace.
+    #[test]
+    fn an_opening_lid_arms_the_bubble_unless_the_screen_is_locked() {
+        use super::{ShowOpts, handle_event};
+        use podctl::model::Event;
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut snap = snap();
+        let opts = |allow| ShowOpts {
+            visible: Duration::from_secs(6),
+            allow,
+            was_connected: false,
+            lid_shut: false,
+        };
+        let mut run = |allow, pending: &mut Option<Instant>| {
+            handle_event(
+                &tx,
+                &mut snap,
+                Event::CaseLid { open: true },
+                pending,
+                &mut None,
+                &mut false,
+                opts(allow),
+            );
+        };
+        let mut pending = None;
+        run(false, &mut pending);
+        assert!(pending.is_none(), "a locked screen shows nothing");
+        run(true, &mut pending);
+        assert!(pending.is_some(), "an unlocked one arms the bubble");
     }
 
     #[test]

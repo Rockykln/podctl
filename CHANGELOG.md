@@ -3,6 +3,21 @@
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **The bubble stopped showing itself.** Before it appears on its own it
+  asks whether the screen is locked, and it trusted logind's
+  `LockedHint` for the answer. That hint is a flag the desktop sets on
+  lock and need not clear on unlock — on KDE it stayed on, so every
+  reason to show the bubble was dropped: a case that opened, a battery
+  running low, a pair connecting. Only `podctl popup` and the tray entry
+  still worked, because they ask for the bubble directly. podctl now
+  asks the screen saver, which answers for the state right now, and
+  falls back to the hint only where there is no screen saver to ask.
+  It says in the log which answer it got, and `podctl debug` names both
+  sources, so a lock that keeps the bubble away is visible.
+
 ## [0.5.0] - 2026-11-27
 
 ### Added

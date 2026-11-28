@@ -263,6 +263,7 @@ pub fn run(no_redact: bool) -> String {
     if let Some(state) = gnome_extension_state() {
         let _ = writeln!(out, "  gnome extension         {state}");
     }
+    let _ = writeln!(out, "  screen locked           {}", screen_lock());
     for var in ["WAYLAND_DISPLAY", "DISPLAY"] {
         let here = std::env::var_os(var).is_some();
         let systemd = systemd_env_has(var);
@@ -455,6 +456,29 @@ fn mac_prefix(s: &str) -> Option<char> {
         }
     }
     Some(sep as char)
+}
+
+/// What the bubble asks before it shows itself. Both sources are named
+/// because logind's hint can sit on "locked" after an unlock, and then it
+/// is the disagreement that explains a bubble nobody sees.
+fn screen_lock() -> String {
+    let s = podctl::lock::sources_blocking();
+    let say = |v: Option<bool>| match v {
+        Some(true) => "locked",
+        Some(false) => "no",
+        None => "no answer",
+    };
+    let note = match (s.screen_saver, s.locked_hint) {
+        (Some(false), Some(true)) => "  <- stale logind hint; the bubble follows the screen saver",
+        (None, None) => "  <- nothing answered; the bubble shows",
+        _ => "",
+    };
+    format!(
+        "{}  (screen saver {} / logind hint {}){note}",
+        say(Some(podctl::lock::verdict(s))),
+        say(s.screen_saver),
+        say(s.locked_hint)
+    )
 }
 
 /// Only on GNOME: whether the extension the popup draws through is
