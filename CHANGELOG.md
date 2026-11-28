@@ -5,6 +5,15 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+- **With two pairs of AirPods paired, podctl now follows the one you
+  last used.** It took whichever pair BlueZ happened to list first
+  whenever none was connected, and that order says nothing about which
+  pair is in use — so `podctl status`, the battery in the desktop's list
+  and the case podctl listens for all belonged to the pair you had
+  replaced. The pair that connects is noted, and a pair that is no
+  longer paired falls back to the old order.
+
 ### Fixed
 - **The bubble stopped showing itself.** Before it appears on its own it
   asks whether the screen is locked, and it trusted logind's

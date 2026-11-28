@@ -579,14 +579,139 @@ pub fn primary_airpods_address() -> Option<String> {
 
 pub fn primary_airpods() -> Option<DeviceSummary> {
     let all = paired_airpods().ok()?;
+    choose(&all, remembered_primary().as_deref()).cloned()
+}
+
+/// A connected pair is the one in use. Otherwise the pair that was
+/// connected last: whoever replaces their AirPods has two paired for a
+/// while, and BlueZ's order is not a preference. Falls back to that
+/// order only when nothing is remembered or the remembered pair is gone.
+fn choose<'a>(all: &'a [DeviceSummary], remembered: Option<&str>) -> Option<&'a DeviceSummary> {
     all.iter()
         .find(|d| d.connected)
-        .cloned()
-        .or_else(|| all.first().cloned())
+        .or_else(|| {
+            let want = remembered?;
+            all.iter().find(|d| d.address.eq_ignore_ascii_case(want))
+        })
+        .or_else(|| all.first())
+}
+
+fn primary_file() -> std::path::PathBuf {
+    crate::xdg::state_dir().join("primary")
+}
+
+fn remembered_primary() -> Option<String> {
+    read_primary(&primary_file())
+}
+
+fn read_primary(p: &std::path::Path) -> Option<String> {
+    let text = std::fs::read_to_string(p).ok()?;
+    let line = text.lines().next()?.trim().to_string();
+    (!line.is_empty()).then_some(line)
+}
+
+/// Note the pair in use, so a later look without a connection finds the
+/// same one. Without the note podctl falls back to BlueZ's order.
+pub fn remember_primary(addr: &str) {
+    write_primary(&primary_file(), addr);
+}
+
+fn write_primary(p: &std::path::Path, addr: &str) {
+    // Written on every poll that sees a link, so the common case is a
+    // read and nothing else.
+    if read_primary(p).as_deref() == Some(addr) {
+        return;
+    }
+    if let Some(dir) = p.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(p, format!("{addr}\n"));
 }
 
 #[cfg(test)]
 mod tests {
+    use super::DeviceSummary;
+
+    fn dev(addr: &str, connected: bool) -> DeviceSummary {
+        DeviceSummary {
+            address: addr.into(),
+            name: "Test AirPods".into(),
+            connected,
+            trusted: true,
+            paired: true,
+            bonded: Some(true),
+            modalias: None,
+            icon: None,
+            rssi_dbm: None,
+            random_address: false,
+        }
+    }
+
+    #[test]
+    fn the_noted_pair_survives_a_round_trip_through_the_file() {
+        let dir = std::env::temp_dir().join(format!("podctl-primary-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let p = dir.join("primary");
+        assert_eq!(super::read_primary(&p), None, "nothing noted yet");
+        super::write_primary(&p, "AA:BB:CC:DD:EE:01");
+        assert_eq!(
+            super::read_primary(&p).as_deref(),
+            Some("AA:BB:CC:DD:EE:01")
+        );
+        super::write_primary(&p, "AA:BB:CC:DD:EE:02");
+        assert_eq!(
+            super::read_primary(&p).as_deref(),
+            Some("AA:BB:CC:DD:EE:02"),
+            "a new pair replaces the note"
+        );
+        // An empty file must not name a pair.
+        std::fs::write(&p, "\n").unwrap();
+        assert_eq!(super::read_primary(&p), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Two paired sets and none connected: BlueZ lists them in its own
+    /// order, which said nothing about which pair is in use.
+    #[test]
+    fn the_pair_connected_last_wins_over_the_first_in_the_list() {
+        let all = [
+            dev("AA:BB:CC:DD:EE:01", false),
+            dev("AA:BB:CC:DD:EE:02", false),
+        ];
+        let picked = super::choose(&all, Some("AA:BB:CC:DD:EE:02")).unwrap();
+        assert_eq!(picked.address, "AA:BB:CC:DD:EE:02");
+    }
+
+    #[test]
+    fn a_connected_pair_beats_the_remembered_one() {
+        let all = [
+            dev("AA:BB:CC:DD:EE:01", true),
+            dev("AA:BB:CC:DD:EE:02", false),
+        ];
+        let picked = super::choose(&all, Some("AA:BB:CC:DD:EE:02")).unwrap();
+        assert_eq!(picked.address, "AA:BB:CC:DD:EE:01");
+    }
+
+    /// Unpaired in the meantime: podctl must not end up with no pair at
+    /// all just because the one it noted is gone.
+    #[test]
+    fn a_remembered_pair_that_is_gone_falls_back_to_the_list() {
+        let all = [dev("AA:BB:CC:DD:EE:01", false)];
+        let picked = super::choose(&all, Some("AA:BB:CC:DD:EE:09")).unwrap();
+        assert_eq!(picked.address, "AA:BB:CC:DD:EE:01");
+        assert!(super::choose(&[], Some("AA:BB:CC:DD:EE:09")).is_none());
+    }
+
+    #[test]
+    fn nothing_remembered_keeps_the_old_order() {
+        let all = [
+            dev("AA:BB:CC:DD:EE:01", false),
+            dev("AA:BB:CC:DD:EE:02", false),
+        ];
+        let picked = super::choose(&all, None).unwrap();
+        assert_eq!(picked.address, "AA:BB:CC:DD:EE:01");
+    }
+
     #[test]
     fn signal_strength_is_read_in_the_shape_bluetoothctl_prints_it() {
         // The real line, hex and decimal: parsing the plain number made

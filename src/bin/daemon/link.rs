@@ -151,6 +151,9 @@ pub async fn run(daemon: Arc<Daemon>) {
                         prev_addr = Some(addr.clone());
                         last_seen = Some(addr.clone());
                         prev_connected = s.connected;
+                        if s.connected {
+                            bluez::remember_primary(addr);
+                        }
                         if s.connected && !first_poll {
                             // A duck from a session that was cut short
                             // is undone as soon as the sink is back.
